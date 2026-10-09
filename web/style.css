@@ -1,0 +1,2471 @@
+/* Kaloriina: one spacing scale, one type scale, one button system.
+
+   Order: tokens, base, page layout, controls, forms and the editor shell,
+   overlays (toast, dialog), shared pieces (headers, cards, lists, tables,
+   the offline pill), then each tab in tab order (Diary, Foods, Summary,
+   Workouts, Profile).
+   A section's desktop overrides (html.desktop, set by layout.js) sit at its
+   end. Phone-narrow tweaks use a width query: they're about the space a
+   row has, not the layout picked. */
+
+:root {
+  /* Spacing */
+  --s1: 0.25rem;
+  --s2: 0.5rem;
+  --s3: 0.75rem;
+  --s4: 1rem;
+  --s6: 1.5rem;
+  /* Type */
+  --t-2xs: 0.6875rem;
+  --t-xs: 0.8125rem;
+  --t-sm: 0.875rem;
+  --t-md: 1rem;
+  --t-lg: 1.125rem;
+  --t-xl: 1.375rem;
+  --t-2xl: 1.75rem;
+  --t-display: 4rem;
+  /* Shape */
+  --r: 12px;
+  --r-sm: 8px;
+  --r-xs: 4px;
+  --r-pill: 999px;
+  --tap: 2.75rem;
+  --nav: 3.75rem;
+  --content: 40rem;
+  /* Toast, confirm and sheet: one width, a --s4 gutter each side on a phone. */
+  --overlay: 28rem;
+  --shadow: 0 1px 2px rgb(0 0 0 / 6%), 0 1px 1px rgb(0 0 0 / 4%);
+  --shadow-lift: 0 4px 16px rgb(0 0 0 / 20%);
+
+  /* Colour */
+  --bg: #f5f5f2;
+  --surface: #ffffff;
+  --surface-2: #ecebe6;
+  --fg: #1c1c1a;
+  --muted: #5c5c57;
+  --line: #e3e2dc;
+  --accent: #2e7d4f;
+  --on-accent: #ffffff;
+  --danger: #b42318;
+  /* One colour per macro, everywhere. */
+  --energy: var(--accent);
+  --protein: #2563eb;
+  /* One colour per kind of habit and for sleep: a Summary calendar shades
+     it in 4 steps. */
+  --alcohol: #b4235a;
+  --caffeine: #8a5a2b;
+  --habit: #0e7490;
+  --sleep: #5b4bb7;
+  /* A Summary calendar's colour: the accent unless its section sets one. */
+  --hue: var(--accent);
+  --carbs: #b45309;
+  --fat: #7c3aed;
+
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+  font-size: 16px;
+  line-height: 1.45;
+  color: var(--fg);
+  background: var(--bg);
+  /* Numbers line up in columns. */
+  font-variant-numeric: tabular-nums;
+  -webkit-text-size-adjust: 100%;
+  accent-color: var(--accent);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121211;
+    --surface: #1c1c1a;
+    --surface-2: #2a2a27;
+    --fg: #ecebe6;
+    --muted: #a3a29c;
+    --line: #33332f;
+    --accent: #5cbf83;
+    --on-accent: #0c1a11;
+    --danger: #f2b8b5;
+    --protein: #60a5fa;
+    --carbs: #fbbf24;
+    --alcohol: #f48fb1;
+    --caffeine: #d7a26f;
+    --habit: #5ec8de;
+    --sleep: #a99cf0;
+    --fat: #a78bfa;
+    --shadow: none;
+    color-scheme: dark;
+  }
+}
+
+/* ------------------------------------------------------------- base */
+
+* {
+  box-sizing: border-box;
+}
+
+/* Any `display` below would otherwise override the hidden attribute. */
+[hidden] {
+  display: none !important;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  line-height: 1.25;
+}
+
+h1 {
+  font-size: var(--t-xl);
+  font-weight: 700;
+}
+
+/* Focused by the router for screen readers; no ring for that. */
+h1:focus {
+  outline: none;
+}
+
+h2 {
+  font-size: var(--t-lg);
+  font-weight: 600;
+}
+
+p {
+  margin: 0;
+}
+
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.error {
+  color: var(--danger);
+}
+
+.note {
+  font-size: var(--t-sm);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+svg {
+  width: 1.375rem;
+  height: 1.375rem;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+progress {
+  width: 100%;
+  height: 0.5rem;
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  appearance: none;
+}
+
+progress::-webkit-progress-bar {
+  background: var(--surface-2);
+}
+
+progress::-webkit-progress-value {
+  border-radius: var(--r-pill);
+  background: var(--accent);
+}
+
+progress::-moz-progress-bar {
+  border-radius: var(--r-pill);
+  background: var(--accent);
+}
+
+/* ------------------------------------------------------- page layout */
+
+body {
+  margin: 0 auto;
+  max-width: var(--content);
+  padding: var(--s4) var(--s4)
+    calc(var(--nav) + var(--s6) + env(safe-area-inset-bottom));
+}
+
+/* A toast covers the bottom of the page; the page makes room for it. */
+body.toasting {
+  padding-bottom: calc(
+    var(--nav) + var(--s6) + 4.5rem + env(safe-area-inset-bottom)
+  );
+}
+
+/* minmax(0, …): wide content (tables, canvases) scrolls or shrinks instead of
+   stretching the page. */
+main,
+main > section,
+.split,
+.stack {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s4);
+}
+
+/* Columns that sit side by side on a desktop (see the end of this section). */
+.split {
+  align-items: start;
+}
+
+/* A screen slow to load (nav.mjs `loading`): a thin bar sweeps the top of
+   the window. Transform only, so it keeps moving while the page renders. */
+#app[aria-busy="true"]::before {
+  content: "";
+  position: fixed;
+  z-index: 5;
+  inset: 0 0 auto;
+  height: 3px;
+  background: var(--accent);
+  transform-origin: left;
+  animation: loading 1s ease-in-out infinite;
+}
+
+@keyframes loading {
+  from {
+    transform: scaleX(0);
+  }
+
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #app[aria-busy="true"]::before {
+    animation: none;
+  }
+}
+
+/* The first thing a keyboard reaches; out of sight until then. */
+.skip {
+  position: absolute;
+  z-index: 4;
+  top: var(--s2);
+  left: var(--s2);
+  transform: translateY(-200%);
+}
+
+.skip:focus-visible {
+  transform: none;
+}
+
+.tabs {
+  position: fixed;
+  z-index: 2;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  max-width: var(--content);
+  margin: 0 auto;
+  padding-bottom: env(safe-area-inset-bottom);
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+}
+
+.tabs a {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: var(--nav);
+  min-width: 0;
+  padding: var(--s1);
+  font-size: var(--t-xs);
+  color: var(--muted);
+}
+
+.tabs a > span:last-child {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Under 359 px (iPhone SE/mini at 320): five labels fit unclipped in a
+   smaller size with no inline padding ("Workouts" needs about 60 px). */
+@media (max-width: 22.4375rem) {
+  .tabs a {
+    padding-inline: 0;
+  }
+
+  .tabs a > span:last-child {
+    font-size: var(--t-2xs);
+    letter-spacing: -0.01em;
+  }
+}
+
+.tabs a:hover {
+  text-decoration: none;
+  color: var(--fg);
+}
+
+.tabs a[aria-current] {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* A wider page: the bottom tabs become a sidebar, and `.split` puts its
+   columns side by side. Every screen, forms included, uses the full width. */
+html.desktop body {
+  display: grid;
+  grid-template-columns: 12rem minmax(0, 60rem);
+  justify-content: center;
+  align-items: start;
+  column-gap: var(--s6);
+  max-width: none;
+  padding: var(--s6);
+}
+
+html.desktop main {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+html.desktop .tabs {
+  position: sticky;
+  top: var(--s6);
+  grid-column: 1;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  background: none;
+  border-top: 0;
+}
+
+html.desktop .tabs a {
+  flex-direction: row;
+  justify-content: flex-start;
+  gap: var(--s3);
+  min-height: var(--tap);
+  padding: var(--s2) var(--s3);
+  border-radius: var(--r-sm);
+  font-size: var(--t-md);
+}
+
+html.desktop .tabs a:hover {
+  background: var(--surface-2);
+}
+
+html.desktop .tabs a[aria-current] {
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+html.desktop .split {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s6);
+}
+
+/* ---------------------------------------------------------- controls */
+
+button,
+.button,
+input,
+select {
+  font: inherit;
+  color: var(--fg);
+  min-height: var(--tap);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  padding: var(--s2) var(--s3);
+}
+
+input,
+select {
+  width: 100%;
+  min-width: 0;
+}
+/* A recipe's instructions: grows with what's typed, like the inputs. */
+textarea {
+  font: inherit;
+  color: var(--fg);
+  width: 100%;
+  min-width: 0;
+  min-height: calc(4lh + 2 * var(--s2));
+  max-height: 60vh;
+  field-sizing: content;
+  resize: vertical;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  padding: var(--s2) var(--s3);
+}
+
+input[type="checkbox"] {
+  width: 1.25rem;
+  min-height: 1.25rem;
+}
+
+/* The search ✕ in the theme's colour, not the browser's blue. */
+input[type="search"]::-webkit-search-cancel-button {
+  width: 1rem;
+  height: 1rem;
+  background: var(--muted);
+  cursor: pointer;
+  appearance: none;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 3l10 10M13 3L3 13' stroke='black' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+}
+
+/* Tonal by default: the quiet, common button. */
+button,
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s2);
+  border-color: transparent;
+  background: var(--surface-2);
+  cursor: pointer;
+  font-weight: 600;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.button:hover,
+button:hover {
+  text-decoration: none;
+  filter: brightness(0.97);
+}
+
+button.primary,
+.button.primary {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+button.danger {
+  color: var(--danger);
+}
+
+button.icon,
+.button.icon {
+  min-width: var(--tap);
+  padding: 0;
+  background: none;
+  font-size: var(--t-xl);
+  line-height: 1;
+}
+
+button.danger.icon {
+  font-size: var(--t-lg);
+}
+
+/* A link in looks, a button in kind (it acts on the screen, not away). */
+button.link {
+  justify-content: flex-start;
+  padding: 0 var(--s1);
+  background: none;
+  color: var(--accent);
+  font-weight: 400;
+  text-align: left;
+  white-space: normal;
+}
+
+button.link:hover {
+  filter: none;
+  text-decoration: underline;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Shown, not edited (Fineli's values, a watch session's measurements): no
+   longer looks like a field to type in. */
+input:disabled,
+select:disabled,
+textarea:disabled {
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+}
+
+/* Inputs in a row share the width and wrap when narrow. */
+.row > input,
+.row > select {
+  flex: 1 1 6rem;
+  width: auto;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+.actions > * {
+  flex: 1 1 auto;
+}
+
+/* One choice from a few, all in sight; the chosen one raised. */
+.segmented {
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  padding: var(--s1);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+
+/* In a field, or switching a screen's view: the full width. */
+.field > .segmented,
+nav.segmented {
+  display: grid;
+}
+
+/* Four to a 320 px phone (Summary's Weight · Body fat · Water · Muscle): a
+   label wraps rather than push the row past the screen. */
+.segmented > .button {
+  padding-inline: var(--s1);
+  white-space: normal;
+  text-align: center;
+  border-radius: var(--r-xs);
+  background: none;
+  color: var(--muted);
+}
+
+.segmented > .button.active {
+  background: var(--surface);
+  color: var(--fg);
+  box-shadow: var(--shadow);
+}
+
+/* The Summary's view switches (period, chart pick, calendar metric, habit):
+   quiet text, no tray; the pick bold on a light accent pill. Each option
+   keeps a full tap target, and the row wraps rather than shrink. */
+.switch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 var(--s1);
+}
+
+.switch > .button {
+  position: relative;
+  isolation: isolate;
+  min-width: var(--tap);
+  min-height: var(--tap);
+  padding: 0 var(--s3);
+  border: 0;
+  background: none;
+  box-shadow: none;
+  font-size: var(--t-sm);
+  font-weight: 400;
+  color: var(--muted);
+  /* A long tracker name wraps rather than push the row off a phone. */
+  white-space: normal;
+}
+
+.switch > .button:hover {
+  filter: none;
+  color: var(--fg);
+}
+
+.switch > .button.active {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+/* 28 px of the 44: the pill reads as a mark, the box stays the tap. */
+.switch > .button.active::before {
+  content: "";
+  position: absolute;
+  inset: var(--s2) 0;
+  z-index: -1;
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+/* Quick picks shown at once (the exercises a workout already uses): pills. */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s1);
+}
+
+.chip {
+  min-height: var(--tap);
+  padding: 0 var(--s3);
+  border-radius: var(--r-pill);
+  font-size: var(--t-sm);
+}
+
+/* A check-in's 1–5: the segmented control's tray, five equal buttons on
+   one row of a 320 px phone's dialog; the pick raised, not a pill. */
+.switch.scale {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 0;
+  padding: var(--s1);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+
+.switch.scale > .button {
+  min-width: 0;
+  border-radius: var(--r-xs);
+}
+
+.switch.scale > .button.active {
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.switch.scale > .button.active::before {
+  content: none;
+}
+
+/* A toggle chip (a check-in's tags): pressed reads as picked. */
+.chip[aria-pressed="false"] {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+.chip[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+/* The check-in dialog's tags: part of the form, not a card of their own. */
+fieldset.check-in-tags {
+  padding: 0;
+  background: none;
+  box-shadow: none;
+}
+
+fieldset.check-in-tags > legend {
+  font-size: var(--t-sm);
+  color: var(--muted);
+}
+
+/* ------------------------------------------------------------- forms */
+
+form {
+  display: grid;
+  gap: var(--s4);
+}
+
+.field {
+  display: grid;
+  gap: var(--s1);
+}
+
+.field > span {
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.field > small {
+  font-size: var(--t-xs);
+  color: var(--muted);
+}
+
+[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+/* Long numeric lists: label left, compact input right. */
+.field.inline {
+  grid-template-columns: 1fr 7rem;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.field.inline > span {
+  font-size: var(--t-md);
+  font-weight: 400;
+  color: var(--fg);
+}
+
+/* Two short fields side by side (time and energy, height and weight). */
+.pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: var(--s3);
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: var(--tap);
+}
+
+fieldset {
+  display: grid;
+  gap: var(--s3);
+  min-width: 0;
+  margin: 0;
+  padding: var(--s4);
+  border: 0;
+  border-radius: var(--r);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+legend {
+  float: left;
+  padding: 0;
+  font-weight: 600;
+}
+
+/* A search inside a form's card is part of the card, not a card of its own. */
+fieldset .picker {
+  padding: 0;
+  box-shadow: none;
+}
+
+details > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: var(--tap);
+  cursor: pointer;
+  list-style: none;
+  font-weight: 600;
+}
+
+details > summary::-webkit-details-marker {
+  display: none;
+}
+
+details > summary::before {
+  content: "›";
+  color: var(--muted);
+  font-size: var(--t-xl);
+  line-height: 1;
+  transition: transform 0.15s;
+}
+
+details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+/* What's folded away in a form: shown under its heading when opened. */
+.fold > :not(summary) {
+  margin-top: var(--s3);
+}
+
+.fold-fields {
+  display: grid;
+  gap: var(--s3);
+}
+
+/* The editor shell's actions: Save under the thumb, stuck above the tabs
+   while the form runs on; Delete and Archive beside it. */
+.actions-bar {
+  position: sticky;
+  z-index: 1;
+  bottom: calc(var(--nav) + env(safe-area-inset-bottom));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0 calc(-1 * var(--s4));
+  padding: var(--s2) var(--s4);
+  background: var(--bg);
+}
+
+.actions-bar > .primary {
+  flex: 1 1 8rem;
+}
+
+.status {
+  flex: 1 1 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.status:empty {
+  display: none;
+}
+
+/* Wide screens: long lists of label-and-number fields (a food's nutrients)
+   run in two columns; headings, folds and other content span both. An
+   editor with a panel beside it (nutrition) puts the panel on the right. */
+html.desktop fieldset:has(> .field.inline),
+html.desktop .fold-fields {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s3) var(--s6);
+}
+
+html.desktop fieldset:has(> .field.inline) > :not(.field.inline),
+html.desktop .fold-fields > :not(.field.inline) {
+  grid-column: 1 / -1;
+}
+
+html.desktop .actions-bar {
+  bottom: 0;
+  justify-content: flex-end;
+  margin: 0;
+  padding: var(--s3) 0;
+}
+
+html.desktop .actions-bar > .primary {
+  flex: 0 0 auto;
+  min-width: 8rem;
+}
+
+/* Delete keeps its distance from Save. */
+html.desktop .actions-bar > .danger {
+  margin-right: auto;
+}
+
+html.desktop main > section:has(> .editor + .nutrition-panel) {
+  grid-template-columns: minmax(0, 3fr) minmax(16rem, 2fr);
+  align-items: start;
+  column-gap: var(--s6);
+}
+
+html.desktop main > section:has(> .editor + .nutrition-panel) > .title {
+  grid-column: 1 / -1;
+}
+
+html.desktop main > section > .editor + .nutrition-panel {
+  position: sticky;
+  top: var(--s6);
+}
+
+/* ---------------------------------------------------------- overlays */
+
+.toast {
+  /* Taps go through to what's under it; only its own buttons catch them. */
+  pointer-events: none;
+  position: fixed;
+  z-index: 3;
+  left: var(--s3);
+  right: var(--s3);
+  bottom: calc(var(--nav) + var(--s3) + env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  max-width: calc(var(--content) - 2rem);
+  margin: 0 auto;
+  padding: var(--s1) var(--s1) var(--s1) var(--s4);
+  min-height: calc(var(--tap) + var(--s2));
+  border-radius: var(--r);
+  background: var(--danger);
+  color: var(--bg);
+  box-shadow: var(--shadow-lift);
+}
+
+.toast.info {
+  background: var(--fg);
+}
+
+/* Above the editor's Save bar, not on it. */
+body:has(.actions-bar) .toast {
+  bottom: calc(
+    var(--nav) + var(--tap) + var(--s4) + var(--s3) +
+      env(safe-area-inset-bottom)
+  );
+}
+
+.toast-text {
+  flex: 1;
+  padding: var(--s2) 0;
+}
+
+.toast button {
+  pointer-events: auto;
+  background: none;
+  color: inherit;
+}
+
+.toast button:not(.toast-close) {
+  text-decoration: underline;
+}
+
+.toast-close {
+  font-size: var(--t-lg);
+}
+
+/* On a desktop the toast sits under the sidebar, clear of Save. */
+html.desktop .toast,
+html.desktop body:has(.actions-bar) .toast {
+  left: var(--s6);
+  right: auto;
+  bottom: var(--s6);
+  width: min(var(--overlay), calc(100vw - 2 * var(--s4)));
+  margin: 0;
+}
+
+dialog.confirm {
+  width: min(var(--overlay), calc(100vw - 2 * var(--s4)));
+  padding: var(--s6);
+  border: 0;
+  border-radius: var(--r);
+  background: var(--surface);
+  color: var(--fg);
+  box-shadow: var(--shadow-lift);
+}
+
+dialog.confirm[open] {
+  display: grid;
+  gap: var(--s3);
+}
+
+dialog.confirm::backdrop {
+  background: rgb(0 0 0 / 40%);
+}
+
+dialog.confirm .actions {
+  margin-top: var(--s3);
+}
+
+dialog.confirm .actions > * {
+  flex: 1 1 0;
+}
+
+/* ----------------------------------------------------------- headers */
+
+/* The Summary's sections over its period: tabs, the chosen one underlined;
+   the period and view switches below are quieter still. */
+.subtabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-bottom: 1px solid var(--line);
+}
+
+.subtabs a {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--tap);
+  min-width: 0;
+  padding: 0 var(--s1);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  color: var(--muted);
+  font-size: var(--t-sm);
+  overflow-wrap: break-word;
+}
+
+.subtabs a:hover {
+  text-decoration: none;
+  color: var(--fg);
+}
+
+.subtabs a[aria-current] {
+  border-bottom-color: var(--accent);
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.title,
+.day-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: var(--tap);
+}
+
+.title h1,
+.title h2,
+.day-nav h1 {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+/* Long food names would fill the screen at title size. */
+.title h1.long {
+  font-size: var(--t-lg);
+}
+
+.day-nav h1 {
+  text-align: center;
+}
+
+.day-nav input[type="date"] {
+  width: var(--tap);
+  padding: 0 var(--s2);
+  background: none;
+  border-color: transparent;
+}
+
+/* Only the calendar icon fits; the heading already names the day. */
+.day-nav input[type="date"]::-webkit-datetime-edit {
+  display: none;
+}
+
+.headline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--s2);
+}
+
+.headline strong {
+  font-size: var(--t-2xl);
+  font-weight: 700;
+}
+
+/* Section headings inside folds and tables ("Vitamins"). */
+.category {
+  margin: var(--s2) 0 0;
+  font-size: var(--t-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+th.category {
+  padding-top: var(--s4);
+}
+
+/* ------------------------------------------------------------- cards */
+
+.card,
+.targets,
+.group,
+.picker,
+.all-targets {
+  border-radius: var(--r);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.targets,
+.group,
+.picker {
+  padding: var(--s3) var(--s4);
+}
+
+.picker {
+  display: grid;
+  gap: var(--s2);
+}
+
+.empty {
+  padding: var(--s1) 0;
+}
+
+/* ---------------------------------------------------- lists & results */
+
+.results li + li,
+.menu li + li {
+  border-top: 1px solid var(--line);
+}
+
+.results.card,
+.menu {
+  padding: 0 var(--s4);
+}
+
+/* A row in a list: the name first, its details after; the details go under
+   the name when both don't fit, so a long name never gets squeezed. */
+.result {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0 var(--s3);
+  width: 100%;
+  min-height: var(--tap);
+  padding: var(--s3) 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--fg);
+  font-weight: 400;
+  text-align: left;
+  white-space: normal;
+}
+
+.result .name {
+  flex: 1 1 10rem;
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+.result .muted {
+  margin-left: auto;
+  font-size: var(--t-sm);
+  text-align: right;
+}
+
+.result:hover {
+  text-decoration: none;
+  filter: none;
+}
+
+.result:hover .name {
+  text-decoration: underline;
+}
+
+/* A row with a favourite star or an action (Start): the row's main
+   button takes the space; the action keeps room around it. */
+.starred-row,
+.row-with-action {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+}
+
+.starred-row .result,
+.row-with-action .result {
+  flex: 1;
+  min-width: 0;
+}
+
+.row-with-action > .button {
+  flex: none;
+  margin: var(--s2) 0 var(--s2) var(--s2);
+}
+
+.star[aria-pressed="true"] {
+  color: var(--accent);
+}
+
+/* Menu rows: title over detail, chevron on the right. */
+.menu-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0 var(--s2);
+  min-height: var(--tap);
+  padding: var(--s3) 0;
+  color: var(--fg);
+}
+
+.menu-row:hover {
+  text-decoration: none;
+}
+
+/* A row that acts here (use a profile) reads like the rows that lead. */
+button.menu-row {
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  font-weight: 400;
+  text-align: start;
+  white-space: normal;
+}
+
+button.menu-row:hover {
+  filter: none;
+}
+
+.menu-row .name {
+  font-weight: 600;
+  overflow-wrap: break-word;
+}
+
+.menu-row:hover .name {
+  text-decoration: underline;
+}
+
+.menu-row .muted {
+  grid-column: 1;
+  font-size: var(--t-sm);
+}
+
+.menu-row::after {
+  content: "›";
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  color: var(--muted);
+  font-size: var(--t-xl);
+}
+
+/* A row that leads nowhere (the profile in use, backups) has no chevron. */
+div.menu-row::after {
+  content: none;
+}
+
+/* A detail that needs action (a stale backup). */
+.menu-row .error {
+  color: var(--danger);
+}
+
+/* ------------------------------------------------------------ tables */
+
+table.grid {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--t-sm);
+}
+
+.grid th,
+.grid td {
+  padding: var(--s2) var(--s1);
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.grid th {
+  font-weight: 500;
+}
+
+.grid thead th {
+  font-size: var(--t-xs);
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.grid td {
+  white-space: nowrap;
+}
+
+.grid input {
+  width: 6rem;
+}
+
+.grid .over {
+  color: var(--danger);
+}
+
+/* Targets: one set of columns for every section, so inputs line up. */
+table.goals {
+  table-layout: fixed;
+}
+
+.goals col.label {
+  width: 40%;
+}
+
+.goals col.sign {
+  width: 3rem;
+}
+
+.goals col.share {
+  width: 3.5rem;
+}
+
+.goals th {
+  overflow-wrap: anywhere;
+}
+
+.goals input {
+  width: 100%;
+  max-width: 6rem;
+}
+
+.goals select {
+  padding-inline: var(--s1);
+}
+
+/* "18 % over" goes under the share, keeping the column narrow. */
+.grid td small {
+  display: block;
+}
+
+/* Nutrition panel: label left, numbers right; narrow screens wrap. */
+.nutrition-panel {
+  display: grid;
+  gap: var(--s2);
+}
+
+table.nutrition td,
+table.nutrition thead th {
+  white-space: normal;
+  text-align: right;
+}
+
+table.nutrition thead th:first-child {
+  text-align: left;
+}
+/* ---------------------------------------------------------- offline */
+
+/* The sync pill: on a phone a chip above the tabs (and a count on the
+   Diary tab), clear of an editor's Save bar; on a desktop a sidebar row. */
+.tabs .sync {
+  position: fixed;
+  right: var(--s3);
+  bottom: calc(var(--nav) + var(--s2) + env(safe-area-inset-bottom));
+  flex-direction: row;
+  min-height: var(--tap);
+  padding: var(--s1) var(--s3);
+  border-radius: var(--r-pill);
+  background: var(--fg);
+  color: var(--bg);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  box-shadow: var(--shadow-lift);
+}
+
+body:has(.actions-bar) .tabs .sync {
+  bottom: calc(
+    var(--nav) + var(--tap) + var(--s4) + var(--s2) +
+      env(safe-area-inset-bottom)
+  );
+}
+
+html:not(.desktop) body:not(.toasting):has(.tabs .sync:not([hidden])) {
+  padding-bottom: calc(
+    var(--nav) + var(--s6) + var(--tap) + var(--s2) +
+      env(safe-area-inset-bottom)
+  );
+}
+
+.tabs a[data-tab="diary"] {
+  position: relative;
+}
+
+.tab-badge {
+  position: absolute;
+  top: var(--s1);
+  left: calc(50% + 0.375rem);
+  min-width: 1.125rem;
+  padding: 0 var(--s1);
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: var(--t-2xs);
+  font-weight: 600;
+  line-height: 1.125rem;
+  text-align: center;
+}
+
+html.desktop .tab-badge {
+  display: none;
+}
+
+html.desktop .tabs .sync,
+html.desktop body:has(.actions-bar) .tabs .sync {
+  position: static;
+  box-shadow: none;
+  border-radius: var(--r-sm);
+}
+
+/* ------------------------------------------------------------- diary */
+
+.all-targets {
+  padding: 0 var(--s4);
+}
+
+.all-targets[open] {
+  padding-bottom: var(--s3);
+}
+
+.all-targets > .targets {
+  padding: 0;
+  box-shadow: none;
+}
+
+.targets {
+  display: grid;
+  gap: var(--s3);
+}
+
+.target {
+  display: grid;
+  gap: var(--s1);
+}
+
+.target-label {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--s2);
+  font-size: var(--t-sm);
+}
+
+.target-label span:first-child {
+  font-weight: 600;
+}
+
+.target-label span:last-child {
+  text-align: right;
+}
+
+.k-energy {
+  --c: var(--energy);
+}
+
+.k-protein {
+  --c: var(--protein);
+}
+
+.k-net-carbs {
+  --c: var(--carbs);
+}
+
+.k-fat {
+  --c: var(--fat);
+}
+
+.bar {
+  display: flex;
+  height: 0.5rem;
+  overflow: hidden;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+}
+
+.bar .consumed {
+  background: var(--c, var(--accent));
+}
+
+.bar .planned {
+  background: color-mix(in srgb, var(--c, var(--accent)) 35%, transparent);
+}
+
+.target small {
+  font-size: var(--t-xs);
+  color: var(--muted);
+}
+
+.target.over small {
+  color: var(--danger);
+}
+
+.target.over .bar .consumed {
+  background: var(--danger);
+}
+
+.group > header {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding-bottom: var(--s2);
+}
+
+.group > header h2 {
+  flex: 1;
+}
+
+/* An entry: name over amount and kcal on the right (the whole of it opens
+   the entry), then Eaten / Plan. */
+.entry {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  border-top: 1px solid var(--line);
+}
+
+.entry-main {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0 var(--s2);
+  padding: var(--s2) 0;
+  color: var(--fg);
+}
+
+.entry-main:hover {
+  text-decoration: none;
+}
+
+.entry-main:hover .name {
+  text-decoration: underline;
+}
+
+.entry-main .name {
+  overflow-wrap: break-word;
+}
+
+.entry-main .muted {
+  grid-column: 1;
+  font-size: var(--t-sm);
+}
+
+.entry-main .kcal {
+  grid-column: 2;
+  grid-row: 1;
+  white-space: nowrap;
+}
+
+/* A planned entry's to-do tick: an empty ring; the ✓ shows on hover,
+   focus and press. */
+.entry .tick {
+  flex: none;
+  height: var(--tap);
+  border: 2px solid var(--line);
+  border-radius: 50%;
+  color: transparent;
+  font-size: var(--t-lg);
+}
+
+.entry .tick:hover,
+.entry .tick:focus-visible,
+.entry .tick:active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* A day's writes still on this device: muted, and nothing to tap. */
+.waiting .entry-main,
+.waiting .entry-main .name {
+  color: var(--muted);
+}
+
+/* The Log card and its + Log sheet; selecting entries in a group. */
+
+/* Selecting entries: the checkbox, then the entry as it reads. */
+.entry-main.check {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0 var(--s2);
+}
+
+.entry-main.check > input {
+  grid-row: span 2;
+}
+
+.entry-main.check .muted {
+  grid-column: 2;
+}
+
+.entry-main.check .kcal {
+  grid-column: 3;
+}
+
+/* Select and + Add beside the heading; on a narrow phone they wrap under it. */
+.group > header {
+  flex-wrap: wrap;
+}
+
+.group .select-bar {
+  margin-top: var(--s2);
+}
+
+/* Select reads as a word; under 359 px as an icon (its aria-label names
+   it), so Eaten and Planned keep one header row with "+ Add". */
+.group > header .select > svg {
+  display: none;
+}
+
+@media (max-width: 22.4375rem) {
+  /* The total goes under the heading, the buttons beside both. */
+  .group > header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-auto-columns: auto;
+    gap: 0 var(--s2);
+  }
+
+  .group > header > h2 {
+    grid-area: 1 / 1;
+  }
+
+  .group > header > .total {
+    grid-area: 2 / 1;
+  }
+
+  .group > header > :not(h2, .total) {
+    grid-row: 1 / span 2;
+  }
+
+  .group > header .select {
+    min-width: var(--tap);
+    padding: 0;
+  }
+
+  .group > header .select > svg {
+    display: block;
+    width: 1.25rem;
+    height: 1.25rem;
+  }
+
+  .group > header .select > .label {
+    display: none;
+  }
+}
+
+/* The Log card's rows, one layout for every kind: the kind (muted, 5 rem),
+   the value (left-aligned, its details under it), then the actions. Short
+   of room, the actions wrap to a line of their own (at its end) rather
+   than squeeze the value. A tracker's name is its kind. */
+.log-row,
+.log-rows > .habit-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0 var(--s2);
+  border-top: 1px solid var(--line);
+}
+
+.log-row .kind,
+.log-rows > .habit-row .name {
+  flex: 0 0 5rem;
+  color: var(--muted);
+  font-size: var(--t-sm);
+}
+
+.log-row > .result {
+  flex: 1 1 7rem;
+  min-width: 0;
+  padding: var(--s2) 0;
+}
+
+.log-row > .result {
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.log-row > .result .name {
+  flex: none;
+}
+
+.log-row > .result .muted {
+  margin-left: 0;
+  text-align: left;
+}
+
+/* A tracker: − count + fill the value and action columns on one row; the
+   count gives way (its text may wrap) before the row does. */
+.log-rows > .habit-row {
+  justify-content: flex-start;
+  gap: 0 var(--s1);
+}
+
+.log-rows > .habit-row .count {
+  flex: 1 1 4rem;
+  max-width: 8rem;
+  min-width: 0;
+  padding-inline: var(--s1);
+  white-space: normal;
+}
+
+.log-row.muted {
+  min-height: var(--tap);
+}
+
+/* Today's gentle ask for a check-in. */
+.log-row.prompt .name {
+  color: var(--muted);
+}
+
+/* The scale's weight: where to remove it, on a line of its own. */
+.log-row > .scale-hint {
+  flex-basis: 100%;
+  padding-bottom: var(--s2);
+  font-size: var(--t-sm);
+}
+
+/* The + Log sheet: a centred dialog; on a phone, a sheet from the bottom. */
+dialog.sheet {
+  width: min(var(--overlay), calc(100vw - 2 * var(--s4)));
+  max-height: 85dvh;
+  overflow-y: auto;
+}
+
+dialog.sheet .menu {
+  padding: 0;
+}
+
+@media (max-width: 30rem) {
+  dialog.sheet {
+    width: 100%;
+    max-width: 100%;
+    margin: auto 0 0;
+    border-radius: var(--r) var(--r) 0 0;
+    padding-bottom: calc(var(--s6) + env(safe-area-inset-bottom));
+  }
+}
+
+/* Waist, hips and chest side by side (the Measurements dialog). */
+.measures {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: end;
+  gap: var(--s2);
+}
+
+/* A tracker in the Log: the name, then − count + on one row. */
+.habit-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s1);
+  border-top: 1px solid var(--line);
+  padding: var(--s1) 0;
+}
+
+.habit-row .name {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+.habit-row .count {
+  min-width: 5.5rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The sheet's note under a count kept on this device. */
+.habit-row .waiting-note {
+  flex-basis: 100%;
+  padding-bottom: var(--s1);
+}
+
+/* ------------------------------------------------------ foods & search */
+
+.finder,
+.finder-results,
+.finder-section,
+.log {
+  display: grid;
+  gap: var(--s4);
+}
+
+.finder-section {
+  gap: var(--s2);
+}
+
+.search-bar {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.filters {
+  display: grid;
+  gap: var(--s3);
+  padding: var(--s4);
+}
+
+.filters fieldset {
+  padding: 0;
+  box-shadow: none;
+}
+
+.rule {
+  display: grid;
+  grid-template-columns: 1fr 3.5rem 5rem auto;
+  gap: var(--s2);
+}
+
+.camera {
+  width: 100%;
+  border-radius: var(--r);
+  background: #000;
+}
+
+/* Servings, one per line: name, grams, "g", default, remove — the columns
+   line up down the list. */
+.servings {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 4.5rem auto auto var(--tap);
+  align-items: center;
+  gap: var(--s2);
+}
+
+.serving {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  align-items: center;
+}
+
+/* Fixed text lines up with what the inputs above hold. */
+.serving > .grams {
+  padding-left: calc(var(--s3) + 1px);
+}
+
+.serving .default {
+  font-size: var(--t-sm);
+  line-height: 1.2;
+}
+
+/* Items of a recipe or meal: food (opens it), grams, remove. */
+.items li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 4.5rem auto var(--tap);
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s1) 0;
+}
+
+.items .name {
+  overflow-wrap: break-word;
+}
+
+/* Shown as typed: line breaks kept, long words wrapped. */
+.instructions-text {
+  /* No minimum of its longest word: the column keeps the screen's width. */
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+/* --------------------------------------------------------- summary */
+
+/* The card pads the chart; Chart.js sizes the canvas from the inner box,
+   which has no padding of its own (padding there overflows the canvas). */
+.chart-card {
+  padding: var(--s4) var(--s3) var(--s3);
+}
+
+.chart-box {
+  position: relative;
+  height: 13rem;
+}
+
+/* Before Chart.js sizes it, a canvas is 300 px wide: never wider than the box. */
+.chart-box canvas {
+  max-width: 100%;
+}
+
+/* A chart's heading and, right of it (under it when narrow), what its
+   points are: a quiet switch, like the period's. */
+.chart-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+}
+
+.days li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--s2);
+  min-height: var(--tap);
+  border-top: 1px solid var(--line);
+}
+
+.days li:first-child {
+  border-top: 0;
+}
+
+.days .muted {
+  font-size: var(--t-sm);
+}
+
+/* A long day note wraps beside its day instead of pushing the row wide. */
+.notes .note-text {
+  text-align: end;
+  overflow-wrap: break-word;
+}
+
+/* A Summary nutrient name opens where it came from: a full-height target.
+   Every row of its table is that tall, linked or not (a cell's height
+   counts its bottom border, the link doesn't). */
+.grid th > a {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap);
+}
+
+.grid th:has(> a) {
+  padding-block: 0;
+}
+
+.grid:has(th > a) tbody :is(th[scope="row"], td) {
+  height: calc(var(--tap) + 1px);
+}
+
+/* Every Summary calendar and its legend: a cell's shade is its step of
+   `--hue`, the accent unless the section sets its own. */
+
+.sleep-summary {
+  --hue: var(--sleep);
+}
+
+.habits-summary {
+  --hue: var(--habit);
+}
+
+.habits-summary .habit-alcohol {
+  --hue: var(--alcohol);
+}
+
+.habits-summary .habit-caffeine {
+  --hue: var(--caffeine);
+}
+
+/* A Summary group's numbers: the value big, its caption under it; 2×2 on a
+   phone, one row on a desktop. A value never wraps. */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+  gap: var(--s2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tiles li {
+  padding: var(--s2) var(--s3);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+
+.tile-value {
+  display: block;
+  font-size: var(--t-xl);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.tile-caption {
+  display: block;
+  font-size: var(--t-xs);
+  color: var(--muted);
+}
+
+@media (max-width: 22.4375rem) {
+  .tile-value {
+    font-size: var(--t-lg);
+  }
+}
+
+/* A subtab's Highlights: a few quiet sentences, marked by the accent. */
+.highlights {
+  display: grid;
+  gap: var(--s1);
+  margin: 0;
+  padding: 0 0 0 var(--s3);
+  border-inline-start: 3px solid var(--accent);
+  list-style: none;
+  color: var(--muted);
+}
+
+.cal {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 2px;
+  font-size: var(--t-xs);
+}
+
+.cal caption {
+  text-align: left;
+  font-weight: 600;
+}
+
+.cal th {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.cal-cell {
+  border-radius: var(--r-xs);
+  background: var(--surface-2);
+}
+
+.cal-cell.shade-1 {
+  background: color-mix(in srgb, var(--hue) 25%, var(--surface));
+}
+
+.cal-cell.shade-2 {
+  background: color-mix(in srgb, var(--hue) 50%, var(--surface));
+}
+
+.cal-cell.shade-3 {
+  background: color-mix(in srgb, var(--hue) 75%, var(--surface));
+  color: var(--surface);
+}
+
+.cal-cell.shade-4 {
+  background: var(--hue);
+  color: var(--surface);
+}
+
+/* Nothing logged at all: hatched, never read as none. */
+.cal-cell.none {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--surface-2) 0 3px,
+    var(--surface) 3px 6px
+  );
+}
+
+/* Over the limit: outlined. */
+.cal-cell.over {
+  outline: 2px solid var(--danger);
+  outline-offset: -2px;
+}
+
+.cal td.cal-cell > a,
+.cal td.cal-cell > .cal-day {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--tap);
+  color: inherit;
+  line-height: 1.2;
+}
+
+.cal .cal-dim {
+  opacity: 0.75;
+}
+
+.cal .cal-amount {
+  font-weight: 600;
+}
+
+/* Food: up to 5 digits (10460 kJ) in a 320 px phone's cell. */
+.food-cal .cal-amount {
+  font-size: var(--t-2xs);
+}
+
+/* A plan on the day (training): ● planned, ○ missed. */
+.cal .cal-mark {
+  font-size: 0.625rem;
+}
+
+/* The year: 12 mini months, colour only (the words are for readers). */
+.cal-year {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s3);
+}
+
+.cal.mini {
+  border-spacing: 1px;
+}
+
+.cal.mini td {
+  height: 0.75rem;
+}
+
+.cal.mini caption > a {
+  display: flex;
+  align-items: center;
+  min-height: var(--tap);
+}
+
+html.desktop .cal-year {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.cal-legend ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1) var(--s3);
+  font-size: var(--t-sm);
+}
+
+.cal-legend li {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+}
+
+.cal-legend .cal-cell {
+  width: 1rem;
+  height: 1rem;
+}
+
+.cal-legend p {
+  margin-top: var(--s2);
+  font-size: var(--t-sm);
+}
+
+/* -------------------------------------------------------- workouts */
+
+.facets select {
+  flex: 1 1 9rem;
+  width: auto;
+}
+
+.results .chips {
+  padding: var(--s2) var(--s3);
+}
+
+/* Watch workouts waiting, as Log card rows: the list draws the lines. */
+.results > .log-row:first-child {
+  border-top: 0;
+}
+
+.choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+  gap: 0 var(--s2);
+}
+
+/* An exercise's traits (and records): label left, value right. */
+.traits {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--s1) var(--s3);
+  margin: 0;
+}
+
+.traits dt {
+  color: var(--muted);
+}
+
+.traits dd {
+  margin: 0;
+}
+
+/* Workout steps: one line each (a drag handle, then the step), its panel
+   opening under it; a repeat's steps sit inside it behind an accent rule,
+   so nesting reads at a glance. */
+.steps-editor {
+  position: relative;
+  display: grid;
+  gap: var(--s2);
+}
+
+.step-list {
+  display: grid;
+  gap: var(--s2);
+}
+
+.steps {
+  display: grid;
+  gap: var(--s1);
+}
+
+.step {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+
+.step-rest {
+  background: var(--surface-2);
+}
+
+.step.dragging {
+  opacity: 0.4;
+}
+
+.step-head {
+  display: flex;
+  align-items: start;
+  gap: var(--s1);
+  padding-right: var(--s3);
+}
+
+.step-head > details {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Normal-size box; the margin keeps the tap area at --tap. */
+.step-head > input[type="checkbox"] {
+  flex: none;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin: calc((var(--tap) - 1.25rem) / 2);
+}
+
+/* Name, then its details; the details wrap under a long name. */
+.step summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  align-content: center;
+  gap: 0 var(--s2);
+  font-weight: 400;
+}
+
+.step summary::before {
+  display: none;
+}
+
+.step summary .name {
+  overflow-wrap: break-word;
+}
+
+.step summary .muted {
+  font-size: var(--t-sm);
+  overflow-wrap: break-word;
+}
+
+.step-repeat > .step-head .name {
+  font-weight: 600;
+}
+
+.step-panel {
+  display: grid;
+  gap: var(--s3);
+  padding-bottom: var(--s3);
+}
+
+.step-fields input[type="number"] {
+  width: 6rem;
+}
+
+/* The handle is the only place a drag starts, so the page still scrolls
+   under a finger anywhere else. */
+.drag {
+  flex: none;
+  cursor: grab;
+  touch-action: none;
+  color: var(--muted);
+  background: none;
+}
+
+.drag[aria-pressed="true"] {
+  color: var(--on-accent);
+  background: var(--accent);
+}
+
+.drop-line {
+  position: absolute;
+  right: 0;
+  height: 3px;
+  margin-top: -2px;
+  border-radius: var(--r-xs);
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.step-repeat > .step-list {
+  margin: 0 var(--s2) var(--s2) var(--s4);
+  padding-left: var(--s3);
+  border-left: 3px solid var(--accent);
+}
+
+.step-empty {
+  padding: var(--s2);
+  border: 1px dashed var(--line);
+  border-radius: var(--r-sm);
+}
+
+.step-add button {
+  flex: 0 1 auto;
+}
+
+/* Selecting steps to wrap: the actions stay in reach while you tick. */
+.select-bar {
+  position: sticky;
+  bottom: calc(var(--nav) + var(--s2));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  box-shadow:
+    var(--shadow),
+    0 0 0 1px var(--line);
+}
+
+.select-bar .muted {
+  flex: 1;
+}
+
+/* On a phone the count takes its own line, the buttons the next. */
+@media (max-width: 30rem) {
+  .select-bar .muted {
+    flex-basis: 100%;
+  }
+}
+
+html.desktop .select-bar {
+  bottom: var(--s2);
+}
+
+/* Sets of a session: exercise, reps or seconds, weight, remove. On a phone
+   the name takes its own line above the numbers. */
+.sets {
+  display: grid;
+  gap: var(--s2);
+}
+
+.set {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 4.5rem auto 4.5rem auto var(--tap);
+  align-items: center;
+  gap: var(--s1) var(--s2);
+}
+
+.set > .name {
+  overflow-wrap: break-word;
+}
+
+@media (max-width: 30rem) {
+  .set {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto var(--tap);
+  }
+
+  .set > .name {
+    grid-column: 1 / -1;
+    font-weight: 600;
+  }
+
+  .set + .set {
+    padding-top: var(--s2);
+    border-top: 1px solid var(--line);
+  }
+}
+
+/* The run screen: what to do now, big, and the controls under the thumb;
+   on a wide screen it keeps a phone-like column. */
+.run {
+  display: grid;
+  gap: var(--s3);
+  text-align: center;
+}
+
+.run-what {
+  font-size: var(--t-2xl);
+  overflow-wrap: break-word;
+}
+
+.run-extra {
+  font-size: var(--t-lg);
+  color: var(--muted);
+}
+
+.run-amount {
+  font-size: var(--t-display);
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--accent);
+}
+
+/* − / + either side of the reps. */
+.run-amount-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s4);
+}
+
+.run-weight {
+  justify-content: center;
+}
+
+.run-weight > input {
+  flex: 0 1 6rem;
+}
+
+.run .actions > * {
+  flex: 1 1 0;
+}
+
+.run-controls {
+  position: sticky;
+  bottom: calc(var(--nav) + var(--s2));
+  padding: var(--s2) 0;
+  background: var(--bg);
+}
+
+/* Running a workout: the sound switch, last time's line, a set's Record badge. */
+.sound[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.run-last:empty {
+  display: none;
+}
+
+.badge {
+  margin-inline-start: var(--s2);
+  padding: 0 var(--s2);
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: var(--t-sm);
+  white-space: nowrap;
+}
+
+html.desktop .run-controls {
+  bottom: 0;
+}
+
+html.desktop .run-screen {
+  max-width: var(--content);
+  margin-inline: auto;
+}
+
+/* --------------------------------------------------------- profile */
+
+.share {
+  font-size: var(--t-sm);
+}
+
+/* Profile → Connections: the webhook URL with Copy, the openScale users each
+   with Use, what came in last, and the how-to. */
+.connections > .card {
+  padding: var(--s4);
+}
+
+.connections .menu {
+  padding: 0;
+}
+
+.connections .menu li {
+  padding: var(--s2) 0;
+}
+
+.grow {
+  flex: 1 1 10rem;
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+.attention {
+  font-weight: 600;
+}
+
+.howto {
+  padding: var(--s4) var(--s4) var(--s4) calc(var(--s4) + 1.25rem);
+  list-style: decimal;
+}
+
+.howto li + li {
+  margin-top: var(--s2);
+}

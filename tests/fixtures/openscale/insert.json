@@ -1,0 +1,55 @@
+{
+  "id": 12,
+  "userId": 1,
+  "username": "Alex",
+  "date": "2026-10-07T22:30:00.000Z",
+  "weight": 80.5,
+  "body_fat": 18.2,
+  "water": 55.1,
+  "muscle": 41.3,
+  "values": [
+    {
+      "key": "weight",
+      "name": "Weight",
+      "unit": "kg",
+      "isDerived": false,
+      "value": 80.5
+    },
+    {
+      "key": "body_fat",
+      "name": "Body fat",
+      "unit": "%",
+      "isDerived": false,
+      "value": 18.2
+    },
+    {
+      "key": "water",
+      "name": "Water",
+      "unit": "%",
+      "isDerived": false,
+      "value": 55.1
+    },
+    {
+      "key": "muscle",
+      "name": "Muscle",
+      "unit": "%",
+      "isDerived": false,
+      "value": 41.3
+    },
+    {
+      "key": "bmi",
+      "name": "BMI",
+      "unit": "",
+      "isDerived": true,
+      "value": 24.1
+    },
+    {
+      "key": "comment",
+      "name": "Comment",
+      "unit": "",
+      "isDerived": false,
+      "text": "after run"
+    }
+  ],
+  "event": "insert"
+}

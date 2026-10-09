@@ -1,0 +1,67 @@
+{
+  "from": "2026-10-02",
+  "to": "2026-10-08",
+  "device": "Pixel \"9\"",
+  "days": [
+    {
+      "day": "2026-10-08",
+      "active_kcal": 512,
+      "steps": 9120,
+      "resting_hr": 54,
+      "hrv_ms": 42,
+      "asleep_min": 460,
+      "in_bed_min": 475,
+      "bedtime": "23:10",
+      "wake_time": "07:05",
+      "deep_min": 110,
+      "rem_min": 90,
+      "light_min": 260
+    }
+  ],
+  "sessions": [
+    {
+      "key": "a-1",
+      "day": "2026-10-08",
+      "start_at": "2026-10-08T20:30:00Z",
+      "end_at": "2026-10-08T20:50:00Z",
+      "type": 33,
+      "name": "Running",
+      "kcal": 120,
+      "distance_m": null,
+      "recording_method": 1
+    },
+    {
+      "key": "a-3",
+      "day": "2026-10-05",
+      "start_at": "2026-10-05T06:00:00Z",
+      "end_at": "2026-10-05T07:00:00Z",
+      "type": 999,
+      "name": "Tempo \"run\"\n\u0001",
+      "kcal": null,
+      "distance_m": null,
+      "recording_method": 0
+    },
+    {
+      "key": "a-4",
+      "day": "2026-10-05",
+      "start_at": "2026-10-05T08:00:00Z",
+      "end_at": "2026-10-05T09:00:00Z",
+      "type": 999,
+      "name": "Workout",
+      "kcal": null,
+      "distance_m": null,
+      "recording_method": 0
+    },
+    {
+      "key": "a-5",
+      "day": "2026-10-06",
+      "start_at": "2026-10-06T15:00:00Z",
+      "end_at": "2026-10-06T15:45:00Z",
+      "type": 53,
+      "name": "Evening walk",
+      "kcal": 180,
+      "distance_m": 4210,
+      "recording_method": 2
+    }
+  ]
+}

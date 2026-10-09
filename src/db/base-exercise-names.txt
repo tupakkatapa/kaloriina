@@ -1,0 +1,276 @@
+# Every base exercise name a database may hold. Names may be added here, never
+# removed: a released name dropped from exercises.json would strand its rows
+# (see seed_exercises). Rename or remove one with a migration instead.
+Ab wheel rollout
+Advanced shrimp squat
+Ankle rocks
+Arch body hold
+Arch hang
+Archer pull-up
+Archer push-up
+Archer ring row
+Arm circles
+Arnold press
+Assisted pistol squat
+Assisted squat
+Back extension
+Back lever
+Back squat
+Banded nordic curl
+Banded nordic curl negative
+Banded Pallof press
+Barbell row
+Bear crawl
+Beginner shrimp squat
+Bench dip
+Bench press
+Bicep curl
+Bicycle crunch
+Bird dog
+Bodyweight squat
+Box jump
+Box pistol squat
+Box squat
+Bridge
+Broad jump
+Bulgarian split squat
+Burpee
+Butterfly stretch
+Cable crossover
+Cable woodchop
+Calf raise
+Calf stretch
+Cat-camel
+Chest-supported row
+Child's pose
+Chin-up
+Clap push-up
+Clean
+Clean and jerk
+Close-grip bench press
+Cobra stretch
+Commando pull-up
+Concentration curl
+Copenhagen plank
+Cossack squat
+Couch stretch
+Cross-body shoulder stretch
+Crow pose
+Crunch
+Curtsy lunge
+Dead bug
+Dead hang
+Deadlift
+Decline bench press
+Decline push-up
+Deep squat hold
+Diamond push-up
+Dip
+Doorway chest stretch
+Downward dog
+Dragon flag
+Dumbbell bench press
+Dumbbell fly
+Dumbbell pullover
+Dumbbell row
+Dumbbell shoulder press
+Elevated pike push-up
+Face pull
+False-grip ring row
+Farmer's carry
+Feet-up ring row
+Flexed-arm hang
+Floor L-sit
+Flutter kick
+Freestanding handstand
+Frog stand
+Front leg swing
+Front lever
+Front lever row
+Front raise
+Front split
+Front squat
+Full body circles
+German hang
+Glute bridge
+Glute-ham raise
+GMB wrist prep
+Goblet squat
+Good morning
+Hack squat
+Hammer curl
+Hamstring stretch
+Handstand hold
+Handstand push-up
+Hang clean
+Hanging knee raise
+Hanging leg raise
+Hanging windshield wiper
+Hindu push-up
+Hip circles
+Hip flexor stretch
+Hip thrust
+Hollow body hold
+Hollow body rock
+Incline bench press
+Incline dumbbell curl
+Incline push-up
+Incline row
+Intermediate shrimp squat
+Inverted row
+Jump rope
+Jump squat
+Jumping jack
+Jumping lunge
+Kettlebell swing
+Knee push-up
+Korean dip
+L-sit
+L-sit pull-up
+Landmine press
+Lat pulldown
+Lateral lunge
+Lateral raise
+Leg curl
+Leg extension
+Leg press
+Leg swing
+Long-lever plank
+Low plank
+Lunge
+Lying leg raise
+Mountain climber
+Muscle-up
+Negative dip
+Negative pull-up
+Neutral-grip pull-up
+Nordic curl negative
+Nordic hamstring curl
+Overhead press
+Overhead squat
+Overhead tricep extension
+Overhead triceps stretch
+Pallof press
+Palm pulses
+Pancake stretch
+Pendlay row
+Pigeon stretch
+Pike push-up
+Pike stretch
+Pistol squat
+Planche lean
+Plank
+Plank saw
+Plank shoulder tap
+Power clean
+Power snatch
+Preacher curl
+Pseudo planche push-up
+Pull-up
+Push press
+Push-up
+Rack pull
+Rear delt fly
+Reverse crunch
+Reverse curl
+Reverse hyper
+Reverse lunge
+Reverse nordic
+Reverse plank
+Ring ab rollout
+Ring dip
+Ring fly
+Ring muscle-up
+Ring push-up
+Ring row
+Ring support hold
+Romanian deadlift
+Rowing
+RTO archer push-up
+RTO ring dip
+RTO ring push-up
+RTO support hold
+Russian twist
+Scapular dip
+Scapular pull-up
+Scapular push-up
+Scapular shrug
+Seated cable row
+Seated calf raise
+Seated spinal twist
+Shoulder band dislocate
+Shoulder extension stretch
+Shrimp squat
+Shrug
+Side leg swing
+Side plank
+Side split
+Single-leg calf raise
+Single-leg glute bridge
+Single-leg hip thrust
+Single-leg Romanian deadlift
+Sissy squat
+Sit-up
+Skater squat
+Skin the cat
+Skull crusher
+Snatch
+Split squat
+Squat sky reach
+Step-up
+Stiff-leg deadlift
+Straight bar dip
+Straight-arm pulldown
+Straight-leg raise
+Suitcase carry
+Sumo deadlift
+Superman hold
+Support hold
+T-bar row
+Thoracic rotation
+Thruster
+Toes-to-bar
+Trap bar deadlift
+Tricep pushdown
+Tuck back lever
+Tuck front lever
+Tuck L-sit
+Tuck planche
+Turkish get-up
+Typewriter pull-up
+Upright row
+V-sit
+V-up
+Vertical row
+Walking lunge
+Wall handstand
+Wall push-up
+Wall sit
+Wall walk
+Wide push-up
+Wide row
+Wide-grip pull-up
+World's greatest stretch
+Wrist circles
+Wrist flexor stretch
+Wrist mobility
+Yuri's shoulder band warm-up
+Zercher squat
+Band pull-apart
+Banded face pull
+Band-assisted pull-up
+Lateral band walk
+Running
+Sprint
+Walking
+Hiking
+Cycling
+Stationary bike
+Swimming
+Elliptical
+Stair climber
+Ski erg
+High knees
+Butt kicks
+90/90 hip switch
+Jefferson curl

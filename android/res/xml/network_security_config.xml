@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- HTTPS only. The server's address is entered at first run, so its CA can't
+     be built in: the system's and the user's CAs are trusted (the origin lock
+     in MainActivity keeps the WebView on that one server). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

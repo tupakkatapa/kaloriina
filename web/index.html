@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="light dark" />
+    <!-- The service worker caches a page as the app only with this. -->
+    <meta name="kaloriina-shell" content="1" />
+    <title>Kaloriina</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon.svg" />
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/layout.js"></script>
+    <script type="module" src="/main.mjs"></script>
+  </head>
+  <body>
+    <nav class="tabs" aria-label="Main">
+      <a href="#/" data-tab="diary">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="3" y="5" width="18" height="16" rx="2" />
+          <path d="M3 10h18M8 3v4M16 3v4" />
+        </svg>
+        <span
+          class="tab-badge"
+          id="sync-badge"
+          aria-hidden="true"
+          hidden
+        ></span>
+        <span>Diary</span>
+      </a>
+      <a href="#/foods" data-tab="foods">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M3 11h18a9 9 0 0 1-18 0zM9 7c0-2 2-2 2-4M14 7c0-2 2-2 2-4" />
+        </svg>
+        <span>Foods</span>
+      </a>
+      <a href="#/workouts" data-tab="workouts">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M6.5 6.5v11M17.5 6.5v11M3.5 9v6M20.5 9v6M6.5 12h11" />
+        </svg>
+        <span>Workouts</span>
+      </a>
+      <a href="#/summary" data-tab="summary">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M3 21h18M6 17v-6M11 17V5M16 17v-9" />
+        </svg>
+        <span>Summary</span>
+      </a>
+      <a href="#/profile" data-tab="profile">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="8" r="4" />
+          <path d="M4 21c0-4 4-6 8-6s8 2 8 6" />
+        </svg>
+        <span class="sr-only">Profile: </span
+        ><span id="profile-name">Profile</span>
+      </a>
+      <!-- Sync state (screens/outbox.mjs): what waits to be sent, or why not. -->
+      <a href="#/outbox" id="sync" class="sync" hidden></a>
+    </nav>
+    <main id="app"></main>
+    <p id="toast" class="toast" role="status" hidden></p>
+  </body>
+</html>

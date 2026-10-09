@@ -1,0 +1,122 @@
+[
+  {
+    "exercise": {
+      "name": "Pull-up",
+      "measure": "reps",
+      "load": "optional",
+      "laterality": "bilateral"
+    },
+    "step": { "reps": 8 },
+    "error": null
+  },
+  {
+    "exercise": {
+      "name": "Pull-up",
+      "measure": "reps",
+      "load": "optional",
+      "laterality": "bilateral"
+    },
+    "step": { "reps": 8, "kg": 10 },
+    "error": null
+  },
+  {
+    "exercise": {
+      "name": "Pull-up",
+      "measure": "reps",
+      "load": "optional",
+      "laterality": "bilateral"
+    },
+    "step": { "seconds": 30 },
+    "error": "Pull-up is done for reps"
+  },
+  {
+    "exercise": {
+      "name": "Pull-up",
+      "measure": "reps",
+      "load": "optional",
+      "laterality": "bilateral"
+    },
+    "step": { "reps": 8, "side": "left" },
+    "error": "Pull-up has no sides"
+  },
+  {
+    "exercise": {
+      "name": "Plank",
+      "measure": "time",
+      "load": "optional",
+      "laterality": "bilateral"
+    },
+    "step": { "reps": 3 },
+    "error": "Plank is done for a time"
+  },
+  {
+    "exercise": {
+      "name": "Burpee",
+      "measure": "reps",
+      "load": "none",
+      "laterality": "bilateral"
+    },
+    "step": { "reps": 10, "kg": 5 },
+    "error": "Burpee takes no weight"
+  },
+  {
+    "exercise": {
+      "name": "Bench press",
+      "measure": "reps",
+      "load": "required",
+      "laterality": "bilateral"
+    },
+    "step": { "reps": 5 },
+    "error": "Bench press needs a weight (kg)"
+  },
+  {
+    "exercise": {
+      "name": "Bench press",
+      "measure": "reps",
+      "load": "required",
+      "laterality": "bilateral"
+    },
+    "step": { "reps": 5, "kg": 60 },
+    "error": null
+  },
+  {
+    "exercise": {
+      "name": "Side plank",
+      "measure": "time",
+      "load": "optional",
+      "laterality": "unilateral"
+    },
+    "step": { "seconds": 30, "side": "left" },
+    "error": null
+  },
+  {
+    "exercise": {
+      "name": "Side plank",
+      "measure": "time",
+      "load": "optional",
+      "laterality": "unilateral"
+    },
+    "step": { "seconds": 30 },
+    "error": null
+  },
+  {
+    "exercise": {
+      "name": "Walking lunge",
+      "measure": "reps",
+      "load": "optional",
+      "laterality": "alternating"
+    },
+    "step": { "reps": 20, "side": "right" },
+    "error": "Walking lunge has no sides"
+  },
+  {
+    "exercise": { "name": "Mine", "measure": "reps" },
+    "step": { "reps": 5, "kg": 5 },
+    "error": null
+  },
+  {
+    "exercise": { "name": "Mine", "measure": "reps" },
+    "step": { "reps": 5, "side": "left" },
+    "error": "Mine has no sides"
+  }
+]

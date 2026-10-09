@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Long-press the launcher icon: Settings, for when the page won't load. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="settings"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/settings"
+        android:shortcutLongLabel="@string/settings_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="io.github.tupakkatapa.kaloriina"
+            android:targetClass="io.github.tupakkatapa.kaloriina.SettingsActivity" />
+    </shortcut>
+</shortcuts>

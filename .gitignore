@@ -1,0 +1,27 @@
+/target
+result
+.direnv
+.pre-commit-config.yaml
+.claude/
+*.db
+*.db-*
+*.db.pre-v*
+*.db.migrating-v*
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+
+# Personal diary export, never committed
+/import/
+result-*
+
+# Internal notes: plans, reviews, ADRs, how-tos
+/docs/
+
+# Signed APKs and keystores
+*.apk
+*.jks
+*.keystore

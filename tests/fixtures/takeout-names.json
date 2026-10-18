@@ -1,0 +1,24 @@
+{
+  "read": [
+    "Takeout/Google Health/Health Fitness Data_GoogleData/UserExercises_2026-05-31.csv",
+    "Takeout/Google Health/Health Fitness Data_GoogleData/UserSleeps_2026-05-31.csv",
+    "Takeout/Google Health/Health Fitness Data_GoogleData/UserSleepStages_2026-05-31.csv",
+    "Takeout/Google Health/Physical Activity_GoogleData/Steps/steps_2026-09-01.csv",
+    "Takeout/Google Health/Physical Activity_GoogleData/Active Energy Burned/active_energy_burned_2026-07-01.csv",
+    "Takeout/Google Health/Physical Activity_GoogleData/Daily Resting Heart Rate/daily_resting_heart_rate.csv",
+    "Takeout/Google Health/Physical Activity_GoogleData/Daily Heart Rate Variability/daily_heart_rate_variability.csv",
+    "UserSleeps_2026-05-31.csv"
+  ],
+  "heart_rate": [
+    "Takeout/Google Health/Physical Activity_GoogleData/Heart Rate/heart_rate_2026-09-01.csv",
+    "heart_rate_2026-09-01.csv"
+  ],
+  "ignored": [
+    "Takeout/Google Health/Health Fitness Data_GoogleData/UserSleepScores_2026-05-31.csv",
+    "Takeout/Google Health/Global Export Data/steps-2026-09-01.json",
+    "Takeout/Google Health/Physical Activity_GoogleData/Heart Rate Variability/heart_rate_variability_2026-07-01.csv",
+    "Takeout/Google Health/daily_resting_heart_rate_readme.txt",
+    "Takeout/Google Health/Paired Devices/Devices.csv",
+    "Takeout/Google Health/steps_2026-09-01.csv.bak"
+  ]
+}

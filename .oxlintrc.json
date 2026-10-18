@@ -1,20 +1,49 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "env": { "browser": true, "es2024": true },
-  "categories": { "correctness": "error", "suspicious": "error" },
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "pedantic": "error"
+  },
   "rules": {
     "no-shadow": "error",
     "no-undef": "error",
     "no-unused-vars": "error",
     "eqeqeq": ["error", "smart"],
     "prefer-const": "error",
-    "no-var": "error"
+    "no-var": "error",
+    "complexity": ["error", 20],
+    // Specifiers only: module lists are kept alphabetical by path by hand,
+    // which a declaration sort keyed on the first member can't express.
+    "sort-imports": [
+      "error",
+      { "ignoreCase": true, "ignoreDeclarationSort": true }
+    ],
+    // Screens are closures over their state: one function is the screen.
+    // The module cap (`max-lines`, web/**) bounds them instead.
+    "max-lines-per-function": "off",
+    // Capped for web/** only (below); a test file is a list of cases.
+    "max-lines": "off",
+    // Boot must not wait for the service worker to register before the
+    // first route renders.
+    "prefer-top-level-await": "off"
   },
   "ignorePatterns": ["web/vendor/**", "target/**", "result*/**"],
   "overrides": [
     {
       "files": ["tests/**", "*.config.js"],
       "env": { "node": true, "browser": true }
+    },
+    {
+      // Web modules stay small enough to read whole; tests are not capped.
+      "files": ["web/**"],
+      "rules": { "max-lines": ["error", { "max": 1200 }] }
+    },
+    {
+      // Closure screens, as for `max-lines-per-function` above.
+      "files": ["web/screens/**"],
+      "rules": { "complexity": "off" }
     }
   ]
 }

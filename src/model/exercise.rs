@@ -140,6 +140,35 @@ pub const MUSCLES: &[&str] = &[
     "erector spinae",
     "serratus anterior",
 ];
+/// Each muscle's group, in [`MUSCLE_GROUPS`]' order (the weekly sets
+/// per group count a set once for each group its primary muscles work).
+pub const MUSCLE_GROUP: &[(&str, &str)] = &[
+    ("pectorals", "chest"),
+    ("upper pectorals", "chest"),
+    ("serratus anterior", "chest"),
+    ("latissimus dorsi", "back"),
+    ("trapezius", "back"),
+    ("rhomboids", "back"),
+    ("erector spinae", "back"),
+    ("front deltoids", "shoulders"),
+    ("side deltoids", "shoulders"),
+    ("rear deltoids", "shoulders"),
+    ("rotator cuff", "shoulders"),
+    ("biceps", "arms"),
+    ("brachialis", "arms"),
+    ("forearms", "arms"),
+    ("triceps", "arms"),
+    ("quadriceps", "legs"),
+    ("hamstrings", "legs"),
+    ("adductors", "legs"),
+    ("abductors", "legs"),
+    ("calves", "legs"),
+    ("hip flexors", "legs"),
+    ("glutes", "glutes"),
+    ("rectus abdominis", "core"),
+    ("obliques", "core"),
+    ("transverse abdominis", "core"),
+];
 pub const MECHANICS: &[&str] = &["compound", "isolation"];
 pub const LATERALITY: &[&str] = &["bilateral", "unilateral", "alternating"];
 pub const DIFFICULTY: &[&str] = &["beginner", "intermediate", "advanced"];
@@ -147,7 +176,8 @@ pub const LOAD: &[&str] = &["none", "optional", "required"];
 
 /// One trait as clients show and edit it: its label, whether it holds
 /// several values, whether search filters by it, and its values (with
-/// labels where the value alone doesn't read well).
+/// labels where the value alone doesn't read well, and each muscle's
+/// group for the primary muscles).
 #[derive(Debug, Serialize)]
 pub struct Trait {
     pub key: &'static str,
@@ -157,6 +187,8 @@ pub struct Trait {
     pub values: &'static [&'static str],
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
     pub value_labels: &'static [(&'static str, &'static str)],
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    pub groups: &'static [(&'static str, &'static str)],
 }
 
 const fn plain(
@@ -173,6 +205,7 @@ const fn plain(
         facet,
         values,
         value_labels: &[],
+        groups: &[],
     }
 }
 
@@ -189,6 +222,7 @@ pub const TRAITS: &[Trait] = &[
             ("unilateral", "One side at a time"),
             ("alternating", "Alternating sides"),
         ],
+        groups: &[],
     },
     Trait {
         key: "load",
@@ -201,12 +235,16 @@ pub const TRAITS: &[Trait] = &[
             ("optional", "Optional"),
             ("required", "Always weighted"),
         ],
+        groups: &[],
     },
     plain("equipment", "Equipment", true, true, EQUIPMENT),
     plain("pattern", "Movement pattern", false, true, PATTERNS),
     plain("region", "Body region", false, true, REGIONS),
     plain("group", "Muscle group", false, false, MUSCLE_GROUPS),
-    plain("primary", "Primary muscles", true, false, MUSCLES),
+    Trait {
+        groups: MUSCLE_GROUP,
+        ..plain("primary", "Primary muscles", true, false, MUSCLES)
+    },
     plain("secondary", "Secondary muscles", true, false, MUSCLES),
     plain(
         "mechanics",
@@ -232,6 +270,10 @@ pub struct ExerciseInput {
     pub traits: ExerciseTraits,
     #[serde(default)]
     pub rev: Option<i64>,
+    /// A create's retry key: a create naming one saved before
+    /// answers with that record. Ignored by an update.
+    #[serde(default)]
+    pub uid: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -251,6 +293,7 @@ impl ExerciseInput {
     /// A blank or long name, or a trait outside its vocabulary.
     pub fn checked(mut self) -> Result<Self, Error> {
         self.name = text(&self.name, "name", NAME_MAX)?;
+        super::checked_opt_uid(self.uid.as_deref())?;
         self.traits.check()?;
         Ok(self)
     }
@@ -290,5 +333,26 @@ impl ExerciseTraits {
         known("difficulty", DIFFICULTY, &self.difficulty)?;
         known("load", LOAD, &self.load)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_muscle_has_one_group() {
+        assert_eq!(MUSCLE_GROUP.len(), MUSCLES.len());
+        for m in MUSCLES {
+            let groups: Vec<&str> = MUSCLE_GROUP
+                .iter()
+                .filter(|(muscle, _)| muscle == m)
+                .map(|(_, g)| *g)
+                .collect();
+            assert!(
+                groups.len() == 1 && MUSCLE_GROUPS.contains(&groups[0]),
+                "{m}: {groups:?}"
+            );
+        }
     }
 }

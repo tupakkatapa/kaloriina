@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.ContentValues;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Insets;
 import android.net.Uri;
@@ -22,13 +23,16 @@ import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.Toast;
 import android.window.OnBackInvokedDispatcher;
+
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.Arrays;
 
 /**
- * Kaloriina full screen in a WebView, locked to the configured origin. The page gets no
- * native API; a {@code kaloriina-app://settings?profile=N} link it shows opens the settings.
+ * Kaloriina full screen in a WebView, locked to the configured origin. The page gets no native API;
+ * a {@code kaloriina-app://settings?profile=N} link it shows opens the settings, and {@code
+ * kaloriina-app://sync} (its pull to refresh) runs a sync now, answered with a {@code
+ * kaloriina-sync} event when the run ends.
  */
 public final class MainActivity extends Activity {
     private static final String SCHEME = "kaloriina-app";
@@ -39,6 +43,9 @@ public final class MainActivity extends Activity {
     private String origin;
     private ValueCallback<Uri[]> files;
     private PermissionRequest camera;
+
+    /** Kept here: the store holds its listeners weakly. */
+    private final SharedPreferences.OnSharedPreferenceChangeListener syncEnded = this::onSyncEnded;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -54,24 +61,29 @@ public final class MainActivity extends Activity {
         FrameLayout root = new FrameLayout(this);
         root.addView(web);
         // targetSdk 35 is edge to edge: keep the page off the system bars and the keyboard.
-        root.setOnApplyWindowInsetsListener((v, insets) -> {
-            Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.ime());
-            v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
-            return WindowInsets.CONSUMED;
-        });
+        root.setOnApplyWindowInsetsListener(
+                (v, insets) -> {
+                    Insets bars =
+                            insets.getInsets(
+                                    WindowInsets.Type.systemBars() | WindowInsets.Type.ime());
+                    v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+                    return WindowInsets.CONSUMED;
+                });
         setContentView(root);
         configure(web.getSettings());
         web.setWebViewClient(new Lock());
         web.setWebChromeClient(new Chrome());
         web.setDownloadListener((url, agent, disposition, mime, length) -> download(url));
-        getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
-                OnBackInvokedDispatcher.PRIORITY_DEFAULT, () -> {
-                    if (web.canGoBack()) {
-                        web.goBack();
-                    } else {
-                        finish();
-                    }
-                });
+        getOnBackInvokedDispatcher()
+                .registerOnBackInvokedCallback(
+                        OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                        () -> {
+                            if (web.canGoBack()) {
+                                web.goBack();
+                            } else {
+                                finish();
+                            }
+                        });
         if (state == null || web.restoreState(state) == null) {
             web.loadUrl(origin + "/");
         }
@@ -113,6 +125,7 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        new Store(this).unlisten(syncEnded);
         if (web != null) {
             web.destroy();
         }
@@ -123,7 +136,9 @@ public final class MainActivity extends Activity {
         return origin.equals(Payload.origin(url));
     }
 
-    /** The configured origin loads here; http(s) elsewhere opens the browser; the rest is blocked. */
+    /**
+     * The configured origin loads here; http(s) elsewhere opens the browser; the rest is blocked.
+     */
     private final class Lock extends WebViewClient {
         @Override
         public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
@@ -136,8 +151,13 @@ public final class MainActivity extends Activity {
             }
             String scheme = url.getScheme() == null ? "" : url.getScheme();
             if (SCHEME.equals(scheme)) {
-                if (request.hasGesture() && "settings".equals(url.getHost()) && here(view.getUrl())) {
+                if (!here(view.getUrl())) {
+                    return true;
+                }
+                if (request.hasGesture() && "settings".equals(url.getHost())) {
                     settings(Payload.profileId(url.getQueryParameter("profile")));
+                } else if ("sync".equals(url.getHost())) {
+                    syncNow();
                 }
                 return true;
             }
@@ -149,6 +169,36 @@ public final class MainActivity extends Activity {
                 }
             }
             return true;
+        }
+    }
+
+    /**
+     * The page's pull to refresh: a sync now, as Settings' "Sync now" (it replaces one waiting to
+     * retry), answered when a run ends. No gesture needed: it comes after the page sent its outbox,
+     * and a sync starts unasked on resume anyway.
+     */
+    private void syncNow() {
+        Store store = new Store(this);
+        if (store.profile() == 0) {
+            answer(store, false);
+            return;
+        }
+        store.listen(syncEnded);
+        SyncJob.runNow(this, 0);
+    }
+
+    private void onSyncEnded(SharedPreferences prefs, String key) {
+        if (Store.RUN_ENDED.equals(key)) {
+            Store store = new Store(this);
+            store.unlisten(syncEnded);
+            answer(store, true);
+        }
+    }
+
+    /** Only to the configured origin's page: the status may name the server's errors. */
+    private void answer(Store store, boolean bound) {
+        if (web != null && here(web.getUrl())) {
+            web.evaluateJavascript(Payload.syncEvent(bound, store.lastError(), store.note()), null);
         }
     }
 
@@ -164,8 +214,9 @@ public final class MainActivity extends Activity {
     private final class Chrome extends WebChromeClient {
         @Override
         public void onPermissionRequest(PermissionRequest request) {
-            boolean video = Arrays.asList(request.getResources())
-                    .contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE);
+            boolean video =
+                    Arrays.asList(request.getResources())
+                            .contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE);
             if (!video || !here(request.getOrigin().toString())) {
                 request.deny();
             } else if (checkSelfPermission(Manifest.permission.CAMERA)
@@ -181,8 +232,8 @@ public final class MainActivity extends Activity {
         }
 
         @Override
-        public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback,
-                FileChooserParams params) {
+        public boolean onShowFileChooser(
+                WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
             if (files != null) {
                 files.onReceiveValue(null);
             }
@@ -233,32 +284,39 @@ public final class MainActivity extends Activity {
             toast("Can't save this file here");
             return;
         }
-        new Thread(() -> {
-            try {
-                Net.Reply reply = Net.get(url, Net.POST_MS);
-                if (reply.code != 200) {
-                    toast("Couldn't download: HTTP " + reply.code);
-                    return;
-                }
-                String name = URLUtil.guessFileName(url, reply.disposition, reply.type);
-                ContentValues values = new ContentValues();
-                values.put(MediaStore.Downloads.DISPLAY_NAME, name);
-                values.put(MediaStore.Downloads.MIME_TYPE, reply.type);
-                Uri saved = getContentResolver()
-                        .insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-                if (saved == null) {
-                    throw new IOException("Downloads refused the file");
-                }
-                try (OutputStream out = getContentResolver().openOutputStream(saved)) {
-                    if (out == null) {
-                        throw new IOException("Downloads refused the file");
-                    }
-                    out.write(reply.body);
-                }
-                toast("Saved to Downloads: " + name);
-            } catch (IOException e) {
-                toast("Couldn't download: " + e.getMessage());
-            }
-        }).start();
+        new Thread(
+                        () -> {
+                            try {
+                                Net.Reply reply = Net.get(url, Net.POST_MS);
+                                if (reply.code != 200) {
+                                    toast("Couldn't download: HTTP " + reply.code);
+                                    return;
+                                }
+                                String name =
+                                        URLUtil.guessFileName(url, reply.disposition, reply.type);
+                                ContentValues values = new ContentValues();
+                                values.put(MediaStore.Downloads.DISPLAY_NAME, name);
+                                values.put(MediaStore.Downloads.MIME_TYPE, reply.type);
+                                Uri saved =
+                                        getContentResolver()
+                                                .insert(
+                                                        MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                                                        values);
+                                if (saved == null) {
+                                    throw new IOException("Downloads refused the file");
+                                }
+                                try (OutputStream out =
+                                        getContentResolver().openOutputStream(saved)) {
+                                    if (out == null) {
+                                        throw new IOException("Downloads refused the file");
+                                    }
+                                    out.write(reply.body);
+                                }
+                                toast("Saved to Downloads: " + name);
+                            } catch (IOException e) {
+                                toast("Couldn't download: " + e.getMessage());
+                            }
+                        })
+                .start();
     }
 }

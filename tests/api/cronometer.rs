@@ -46,7 +46,7 @@ async fn both_files_import_and_a_rerun_replaces_them() {
 
     // A newer export of one day replaces it; own entries stay.
     let food = create_food(&app, "Apple", json!({ "energy": 52 })).await;
-    log_entry_on(&app, "2026-06-02", "Consumed", food, 100.0).await;
+    log_entry_on(&app, "2026-06-02", "Eaten", food, 100.0).await;
     let newer = "Day,Group,Food Name,Amount\n2026-06-02,Consumed,Rye Bread,1.00 g\n";
     let (status, res) = import(&app, 1, json!({ "servings": newer })).await;
     assert_eq!(status, StatusCode::OK, "{res}");
@@ -113,6 +113,33 @@ async fn a_bad_file_is_named_with_its_line_and_nothing_is_written() {
         res["error"].as_str().unwrap().contains("servings.csv"),
         "{res}"
     );
+    let (status, res) = import(&app, 1, json!({ "summary": SERVINGS })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{res}");
+    assert_eq!(res["field"], "summary");
+    let error = res["error"].as_str().unwrap();
+    assert!(
+        error.contains("\"Date\"") && error.contains("dailysummary.csv"),
+        "{res}"
+    );
+}
+
+#[tokio::test]
+async fn a_summary_without_groups_imports_as_day_totals() {
+    let app = app();
+    let summary = include_str!("../fixtures/dailysummary-nogroup.csv");
+    let (status, res) = import(&app, 1, json!({ "summary": summary })).await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    assert_eq!(
+        res,
+        json!({
+            "entries": 0,
+            "days": 3,
+            "summary": { "days": 3, "groups": 2, "mismatched_days": [] },
+        })
+    );
+    let (_, day) = call(&app, "GET", "/api/profiles/1/day/2026-06-06", None).await;
+    assert_eq!(day["total"]["energy"], 2100.0);
+    assert_eq!(day["total"]["protein"], 110.5);
 }
 
 #[tokio::test]
@@ -178,4 +205,46 @@ async fn takes_years_of_history_up_to_the_import_cap() {
     .await;
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{res}");
     assert_eq!(res["code"], "too_large");
+}
+
+/// The files are read off the database lock (only the write takes it): a
+/// read sent while a big upload is parsed answers at once. The upload's
+/// last line is bad, so it's all parse and no write.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_answers_while_an_upload_is_parsed() {
+    use std::fmt::Write;
+    let app = app();
+    let mut servings = String::from("Day,Group,Food Name,Amount\n");
+    // ~38 MB: over 300 ms to parse even in a release build (the package's
+    // check), still under the upload cap.
+    for i in 0..1_000_000 {
+        writeln!(servings, "2026-06-02,Consumed,Food {i},100.00 g").unwrap();
+    }
+    servings.push_str("not a date,Consumed,Bad,1 g\n");
+    let upload = {
+        let app = app.clone();
+        tokio::spawn(async move {
+            let started = std::time::Instant::now();
+            let (status, _) = import(&app, 1, json!({ "servings": servings })).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            started.elapsed()
+        })
+    };
+    let mut slowest = std::time::Duration::ZERO;
+    while !upload.is_finished() {
+        let started = std::time::Instant::now();
+        let (status, _) = call(&app, "GET", "/api/profiles", None).await;
+        assert_eq!(status, StatusCode::OK);
+        slowest = slowest.max(started.elapsed());
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    let took = upload.await.unwrap();
+    assert!(
+        took > std::time::Duration::from_millis(300),
+        "too small to tell: {took:?}"
+    );
+    assert!(
+        slowest * 4 < took,
+        "a read waited {slowest:?} of the upload's {took:?}"
+    );
 }

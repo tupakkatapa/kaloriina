@@ -3,8 +3,11 @@
 // Every test runs on a profile of its own (check-ins are per profile, one
 // a day), so today is free in each.
 
-import { test, expect } from "@playwright/test";
-import { ownProfile, todayInApp, unique } from "./helpers.js";
+import { expect, test } from "@playwright/test";
+import { fixedToday, ownProfile, todayInApp, unique } from "./helpers.js";
+
+// One today for the whole test, in the page and here.
+test.beforeEach(({ page }) => fixedToday(page));
 
 const card = (page) =>
   page.locator(".group", {
@@ -22,7 +25,7 @@ const prompt = (page) =>
 const toast = (page) => page.locator("#toast .toast-text");
 // Check-in writes fail as if offline.
 const fail = (route) => route.abort();
-const KEPT = "Saved on this device; it's sent when you're back online";
+const KEPT = "Saved in this browser; it's sent when you're back online";
 
 const yesterday = () =>
   new Date(Date.parse(todayInApp()) - 864e5).toISOString().slice(0, 10);
@@ -71,9 +74,9 @@ test(`today's Log card asks "How are you today?"; the dialog saves scales and ta
   await expect(toast(page)).toHaveText("Saved check-in");
   await expect(
     card(page).getByRole("button", {
-      name: "Change check-in, Mood 4 · Energy 3 · Stress 2 · travel",
+      name: "Change check-in, Mood 4/5 · Energy 3/5 · Stress 2/5 · travel",
     }),
-  ).toHaveText("Mood 4 · Energy 3 · Stress 2 · travel");
+  ).toHaveText("Mood 4/5 · Energy 3/5 · Stress 2/5 · travel");
   await expect(prompt(page)).toHaveCount(0);
   expect(await listed(request, pid)).toEqual([
     { day: today, mood: 4, energy: 3, stress: 2, tags: ["travel"] },
@@ -171,7 +174,9 @@ test("editing a day keeps a tag that isn't otherwise offered", async ({
   await put(request, pid, day, { mood: 2, tags: ["sick", "rare one"] });
   await page.goto(`/#/day/${day}`);
   await card(page)
-    .getByRole("button", { name: "Change check-in, Mood 2 · sick · rare one" })
+    .getByRole("button", {
+      name: "Change check-in, Mood 2/5 · sick · rare one",
+    })
     .click();
   const dialog = dialogOf(page);
   await expect(chip(dialog, "rare one")).toHaveAttribute(
@@ -200,8 +205,10 @@ test("a past day has no prompt; + Log → Check-in opens the same dialog", async
   await page.goto(`/#/day/${day}`);
   await expect(card(page).getByRole("heading", { name: "Log" })).toBeVisible();
   await expect(prompt(page)).toHaveCount(0);
-  await expect(card(page)).toContainText("Nothing logged yet. Use + Log.");
-  await card(page).getByRole("button", { name: "+ Log" }).click();
+  await expect(card(page)).toContainText("Nothing logged.");
+  await card(page)
+    .getByRole("button", { name: /^Log on /u })
+    .click();
   await page
     .getByRole("dialog", { name: "Log" })
     .getByRole("button", { name: "Check-in" })
@@ -210,7 +217,7 @@ test("a past day has no prompt; + Log → Check-in opens the same dialog", async
   await scale(dialog, "Energy").getByRole("button", { name: "3" }).click();
   await dialog.getByRole("button", { name: "Save" }).click();
   await expect(
-    card(page).getByRole("button", { name: "Change check-in, Energy 3" }),
+    card(page).getByRole("button", { name: "Change check-in, Energy 3/5" }),
   ).toBeVisible();
   expect((await listed(request, pid)).map((c) => c.day)).toEqual([day]);
 });
@@ -231,7 +238,7 @@ test("emptying the dialog removes it; ✕ removes it and Undo brings back its ta
   };
   await put(request, pid, today, mine);
   await page.goto(`/#/day/${today}`);
-  const row = card(page).getByRole("button", { name: /^Change check-in/ });
+  const row = card(page).getByRole("button", { name: /^Change check-in/u });
   await row.click();
   const dialog = dialogOf(page);
   await scale(dialog, "Mood").getByRole("button", { name: "4" }).click();
@@ -249,7 +256,7 @@ test("emptying the dialog removes it; ✕ removes it and Undo brings back its ta
   await expect(prompt(page)).toBeVisible();
   expect(await listed(request, pid)).toEqual([]);
   await page.getByRole("button", { name: "Undo", exact: true }).click();
-  await expect(row).toHaveText("Mood 4 · travel · my own");
+  await expect(row).toHaveText("Mood 4/5 · travel · my own");
   expect(await listed(request, pid)).toEqual([mine]);
 });
 
@@ -260,7 +267,9 @@ test("a custom tag added once is offered again on another day", async ({
   const { tag } = unique(687, testInfo);
   await ownProfile(page, request, `Custom ${tag}`);
   await page.goto(`/#/day/${yesterday()}`);
-  await card(page).getByRole("button", { name: "+ Log" }).click();
+  await card(page)
+    .getByRole("button", { name: /^Log on /u })
+    .click();
   await page
     .getByRole("dialog", { name: "Log" })
     .getByRole("button", { name: "Check-in" })
@@ -296,7 +305,7 @@ test("a queued check-in prefills the dialog and hides the prompt", async ({
   expect(await listed(request, pid)).toEqual([]);
   await expect(prompt(page)).toHaveCount(0);
   const row = card(page).getByRole("button", {
-    name: "Change check-in, Mood 5 · social",
+    name: "Change check-in, Mood 5/5 · social",
   });
   await row.click();
   dialog = dialogOf(page);
@@ -370,8 +379,14 @@ test("Summary → Body: the calendar switches Mood · Energy · Stress, with til
     section.getByRole("heading", { name: "Check-ins" }),
   ).toBeVisible();
   await expect(
-    section.getByRole("list", { name: "Check-ins" }).getByRole("listitem"),
-  ).toHaveText(["3.5 mood", "3.0 energy", "2.0 stress", "5 check-ins"]);
+    section.getByRole("list", { name: "Check-ins" }).locator(".tile"),
+    // Each scale's highest and lowest under its mean.
+  ).toHaveText([
+    "3.5 average moodhighest 5 · lowest 2",
+    "3.0 average energyhighest 4 · lowest 2",
+    "2.0 average stresshighest 3 · lowest 1",
+    "5 check-ins",
+  ]);
   const pick = section.getByRole("radiogroup", { name: "Check-in calendar" });
   await expect(pick.getByRole("radio")).toHaveText([
     "Mood",
@@ -382,13 +397,13 @@ test("Summary → Body: the calendar switches Mood · Energy · Stress, with til
   const cal = section.locator("table.check-in-cal");
   await expect(cal.locator("caption")).toHaveText("Mood by day");
   await expect(cal.locator('[data-day="2025-03-03"]')).toHaveClass(
-    /\bshade-4\b/,
+    /\bshade-4\b/u,
   );
   await expect(cal.locator('[data-day="2025-03-03"] .cal-amount')).toHaveText(
     "5",
   );
   await expect(cal.locator('[data-day="2025-03-04"]')).toHaveClass(
-    /\bshade-1\b/,
+    /\bshade-1\b/u,
   );
   // A day with a check-in but no mood: plain; without one: hatched.
   await expect(cal.locator('[data-day="2025-03-07"]')).toHaveClass(
@@ -397,27 +412,14 @@ test("Summary → Body: the calendar switches Mood · Energy · Stress, with til
   await expect(cal.locator('[data-day="2025-03-08"]')).toHaveClass(
     "cal-cell shade-0 none",
   );
-  const extremes = section.getByRole("list", {
-    name: "Mood, highest and lowest",
-  });
-  await expect(extremes.getByRole("listitem")).toHaveText([
-    "5 highest mood, on 2 days, latest Mar 5",
-    "2 lowest mood, on 2 days, latest Mar 6",
-  ]);
-  await expect(extremes.getByRole("link", { name: "Mar 5" })).toHaveAttribute(
-    "href",
-    "#/day/2025-03-05",
-  );
+  // The tags under their heading.
+  await expect(section.getByRole("heading", { name: "Tags" })).toBeVisible();
   await expect(
     section.getByRole("list", { name: "Tags" }).getByRole("listitem"),
-  ).toHaveText(["travel3", "sick2", "social1"]);
+  ).toHaveText(["travel 3", "sick 2", "social 1"]);
 
   await pick.getByRole("radio", { name: "Energy" }).click();
   await expect(cal.locator("caption")).toHaveText("Energy by day");
-  await expect(extremes).toHaveCount(0);
-  await expect(
-    section.getByRole("list", { name: "Energy, highest and lowest" }),
-  ).toContainText("4 highest energy, on 1 day, latest Mar 4");
   await page.reload();
   await expect(
     section

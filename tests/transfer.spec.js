@@ -2,15 +2,19 @@
 
 import { readFile } from "node:fs/promises";
 
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import {
-  unique,
-  starts,
   entry,
   food,
-  ownProfile,
   headline,
+  importsTakeTurns,
+  loseFirstAnswer,
+  ownProfile,
+  starts,
+  unique,
 } from "./helpers.js";
+
+test.beforeEach(({ page }) => importsTakeTurns(page));
 
 test("a profile exports to a file and imports back as a new one", async ({
   page,
@@ -25,7 +29,7 @@ test("a profile exports to a file and imports back as a new one", async ({
   });
   await entry(
     request,
-    { day, group: "Consumed", food_id: oats.id, grams: 50, time: "07:45" },
+    { day, group: "Eaten", food_id: oats.id, grams: 50, time: "07:45" },
     pid,
   );
 
@@ -36,7 +40,7 @@ test("a profile exports to a file and imports back as a new one", async ({
   ]);
   expect(download.suggestedFilename()).toMatch(
     // Browsers take the UTF-8 name (`filename*`): the profile as spelt.
-    new RegExp(`^kaloriina-Export ${tag}-\\d{4}-\\d{2}-\\d{2}\\.json$`),
+    new RegExp(`^kaloriina-Export ${tag}-\\d{4}-\\d{2}-\\d{2}\\.json$`, "u"),
   );
   const path = await download.path();
   const file = JSON.parse(await readFile(path, "utf8"));
@@ -59,7 +63,7 @@ test("a profile exports to a file and imports back as a new one", async ({
     page.getByRole("button", { name: `Use Copy ${tag}` }),
   ).toBeVisible();
   await page.getByRole("status").getByRole("button", { name: "Use" }).click();
-  await expect(page).toHaveURL(/#\/$/);
+  await expect(page).toHaveURL(/#\/$/u);
   await page.goto(`/#/day/${day}`);
   // The copy, in use: its own diary holds the entry.
   await expect(
@@ -76,7 +80,11 @@ test("energy in kJ changes the diary's headline and bars", async ({
   page,
   request,
 }, testInfo) => {
-  const { day, tag } = unique(440, testInfo);
+  const { tag } = unique(440, testInfo);
+  // The profile is its own, so its day can be a fixed one, near today:
+  // `unique()`'s day lies centuries ahead in later runs, and Summary reads
+  // from 90 days before today through the week shown.
+  const day = "2026-03-11";
   const pid = await ownProfile(page, request, `Kilojoules ${tag}`);
   const bread = await food(request, {
     name: `Bread ${tag}`,
@@ -84,7 +92,7 @@ test("energy in kJ changes the diary's headline and bars", async ({
   });
   await entry(
     request,
-    { day, group: "Consumed", food_id: bread.id, grams: 200 },
+    { day, group: "Eaten", food_id: bread.id, grams: 200 },
     pid,
   );
   const energyBar = page.locator(".target.k-energy .target-label").first();
@@ -92,44 +100,74 @@ test("energy in kJ changes the diary's headline and bars", async ({
   await page.goto(`/#/day/${day}`);
   await expect(headline(page)).toHaveText("200 kcal");
   await expect(energyBar).toContainText("200 kcal / ");
-  await expect(energyBar).toHaveText(/ kcal$/);
+  await expect(energyBar).toHaveText(/ kcal$/u);
 
   await page.goto("/#/profile");
   await expect(
-    page.getByRole("heading", { name: "This device" }),
+    page.getByRole("heading", { name: "This browser" }),
   ).toBeVisible();
   const unit = page.getByRole("radiogroup", { name: "Energy in" });
   await unit.getByRole("radio", { name: "kJ" }).click();
-  await expect(page.getByRole("link", { name: /^Targets/ })).toContainText(
+  await expect(page.getByRole("link", { name: /^Targets/u })).toContainText(
     " kJ",
   );
 
   await page.goto(`/#/day/${day}`);
   await expect(headline(page)).toHaveText("837 kJ");
-  // The aside gives the other unit, not the same one again.
-  await expect(page.locator(".headline .muted").first()).toHaveText(
-    / \(200\skcal\) eaten/,
-  );
+  // One unit only: no other unit in brackets.
+  await expect(page.locator(".headline .muted").first()).toHaveText(" eaten");
   await expect(energyBar).toContainText("837 kJ / ");
-  await expect(energyBar).toHaveText(/ kJ$/);
+  await expect(energyBar).toHaveText(/ kJ$/u);
   // Kept on this device across loads; inputs keep saying their unit.
   await page.reload();
   await expect(headline(page)).toHaveText("837 kJ");
   await page.goto(`/#/food/${bread.id}`);
-  await expect(page.getByLabel("Energy (kJ)")).toHaveValue("418.4");
-  await expect(page.getByLabel("Energy (kcal)")).toHaveValue("100");
+  // Whole kJ, as everywhere energy shows.
+  await expect(page.getByLabel("Energy (kJ)")).toHaveValue("418");
+  await expect(page.getByLabel("Energy (kcal)")).toHaveCount(0);
+  // A session's energy follows the unit too.
+  await page.goto(`/#/activity/new?day=${day}&type=run`);
+  await expect(page.getByLabel("Energy (kJ, total)")).toBeVisible();
   // The Summary's charts and list too.
   await page.goto(`/#/summary/week/${day}`);
   await expect(
-    page.getByRole("img", { name: /^Energy by day/ }),
-  ).toHaveAttribute(
-    "aria-label",
-    /average kJ per logged day, target [\d,]+ kJ/,
-  );
-  await expect(page.locator(".days li").first()).toContainText("837 kJ");
+    page.getByRole("img", { name: /^Energy by day/u }),
+  ).toHaveAttribute("aria-label", /^Energy by day, kJ: /u);
+  const list = page.locator(".chart-section").first().locator("ul.sr-only li");
+  await expect(list.first()).toContainText("eaten 837 kJ");
+  await expect(
+    list.filter({ hasText: /^Eaten target: [\d,]+\skJ(–[\d,]+\skJ)?$/u }),
+  ).not.toHaveCount(0);
 
   await page.goto("/#/profile");
   await unit.getByRole("radio", { name: "kcal" }).click();
   await page.goto(`/#/day/${day}`);
   await expect(headline(page)).toHaveText("200 kcal");
+});
+
+// An import whose answer was lost, sent again, makes one profile.
+test("a profile import retried after a lost answer makes one profile", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { tag } = unique(442, testInfo);
+  const name = `Lost import ${tag}`;
+  await ownProfile(page, request, `Source ${tag}`);
+  await page.goto("/#/profile");
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.getByRole("link", { name: starts(`Export Source ${tag}`) }).click(),
+  ]);
+  await loseFirstAnswer(page, "POST", "**/api/profiles/import*");
+  await page.getByRole("button", { name: starts("Import a profile") }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Export file").setInputFiles(await download.path());
+  await dialog.getByLabel("Name").fill(name);
+  await dialog.getByRole("button", { name: "Import" }).click();
+  await expect(dialog.getByRole("alert")).not.toBeEmpty();
+  await dialog.getByRole("button", { name: "Import" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole("status")).toContainText(`Imported ${name}`);
+  const all = await (await request.get("/api/profiles")).json();
+  expect(all.filter((p) => p.name === name)).toHaveLength(1);
 });

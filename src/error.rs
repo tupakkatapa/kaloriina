@@ -7,7 +7,8 @@
 pub enum Conflict {
     /// Another food already has this barcode.
     BarcodeTaken,
-    /// Another profile already has this name.
+    /// The name is taken (ignoring case): by another profile, exercise, or
+    /// habit of the same profile.
     NameTaken,
     /// The only profile can't be deleted.
     LastProfile,
@@ -15,18 +16,29 @@ pub enum Conflict {
     ImportedReadOnly,
     /// A workout uses the exercise, so it can't go or change how it's done.
     ExerciseInUse,
+    /// A session or plan used the workout, so it can't go: archive it.
+    WorkoutInUse,
+    /// Something uses the food (an entry, recipe, meal, daily item or a
+    /// profile's water), so it can't go: archive it.
+    FoodInUse,
     /// Base-set exercises are reference data: make your own to change one.
     BaseReadOnly,
     /// The row changed since the client read it (its `rev` moved on).
     Stale,
     /// The day's weight is the scale's: it goes with its reading.
     ScaleWeight,
-    /// Watch-measured fields of a synced session are the watch's.
-    WatchReadOnly,
-    /// A session holds the watch workout: delete the session, not dismiss.
-    HeldBySession,
-    /// The watch workout was dismissed or deleted: it is never added.
+    /// Device-measured fields of a synced session are the device's.
+    DeviceReadOnly,
+    /// A session holds the device workout: delete the session, not dismiss.
+    HeldByActivity,
+    /// The device workout was dismissed or deleted: it is never added.
     Dismissed,
+    /// The entry already repeats daily.
+    AlreadyDaily,
+    /// The profile's photos fill their space.
+    PhotoStorageFull,
+    /// The instance keeps no more feedback until some is pulled.
+    FeedbackFull,
 }
 
 impl Conflict {
@@ -38,12 +50,17 @@ impl Conflict {
             Self::LastProfile => "last_profile",
             Self::ImportedReadOnly => "imported_read_only",
             Self::ExerciseInUse => "exercise_in_use",
+            Self::WorkoutInUse => "workout_in_use",
+            Self::FoodInUse => "food_in_use",
             Self::BaseReadOnly => "base_read_only",
             Self::Stale => "stale",
             Self::ScaleWeight => "scale_weight",
-            Self::WatchReadOnly => "watch_read_only",
-            Self::HeldBySession => "held_by_session",
+            Self::DeviceReadOnly => "device_read_only",
+            Self::HeldByActivity => "held_by_activity",
             Self::Dismissed => "dismissed",
+            Self::AlreadyDaily => "already_daily",
+            Self::PhotoStorageFull => "photo_storage_full",
+            Self::FeedbackFull => "feedback_full",
         }
     }
 
@@ -73,6 +90,10 @@ pub enum Error {
     NotFound { resource: &'static str, id: String },
     #[error("{message}")]
     Conflict { kind: Conflict, message: String },
+    /// A body of a type the route doesn't take (415); the message names
+    /// the ones it does.
+    #[error("{0}")]
+    UnsupportedMedia(String),
     /// An outside service (Open Food Facts) failed.
     #[error("{0}")]
     Upstream(String),

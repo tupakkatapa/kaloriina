@@ -1,5 +1,6 @@
 //! Profiles, their body measurements and targets.
 
+use super::metric::{CLOCK_WINDOW_MIN, DAY_MIN, ESSENTIAL_FAT, is_clock};
 use super::prelude::*;
 use super::{Gone, METRICS, Per, find_metric, refuse_gone, target_key};
 
@@ -29,6 +30,16 @@ pub struct Body {
     #[serde(deserialize_with = "present")]
     pub activity: Option<f64>,
     pub goal_kg_per_week: f64,
+    /// The day to reach the goal weight or body fat by: the other way to say
+    /// how fast. Past or `null`, `goal_kg_per_week` says it. Set only after the
+    /// client's today (one stored before stays readable). Optional (absent is
+    /// `null`): files exported before it lack it (ADR 0031).
+    #[serde(default)]
+    pub goal_date: Option<String>,
+    /// Degrees north (south negative), to one decimal: whether winter
+    /// sun makes vitamin D in the skin. Optional, as `goal_date`.
+    #[serde(default)]
+    pub latitude: Option<f64>,
 }
 
 /// A person whose diary, weight log, sessions and targets are kept apart
@@ -64,6 +75,10 @@ pub struct ProfileInput {
     /// The revision this update was made from (required on update).
     #[serde(default)]
     pub rev: Option<i64>,
+    /// A create's retry key: a create naming one saved before
+    /// answers with that record. Ignored by an update.
+    #[serde(default)]
+    pub uid: Option<String>,
 }
 
 /// A nullable field that must still be present. A `deserialize_with` field
@@ -95,10 +110,12 @@ impl ProfileInput {
     }
 
     /// `server_today` stands in for a `day` the client didn't give.
+    /// `stored_goal` is the profile's goal date as saved: echoed back
+    /// unchanged it may have passed; a new one must be after today.
     ///
     /// # Errors
     /// The first field out of bounds, named.
-    pub fn checked(mut self, server_today: &str) -> Result<Self, Error> {
+    pub fn checked(mut self, server_today: &str, stored_goal: Option<&str>) -> Result<Self, Error> {
         refuse_gone(&[
             (
                 self.weight_kg,
@@ -117,6 +134,7 @@ impl ProfileInput {
             ),
         ])?;
         self.name = text(&self.name, "name", LABEL_MAX)?;
+        super::checked_opt_uid(self.uid.as_deref())?;
         match &self.day {
             Some(day) => {
                 checked_day_so_far(day)?;
@@ -136,6 +154,22 @@ impl ProfileInput {
                     ));
                 }
             }
+        }
+        if b.goal_date.as_deref().is_some_and(|d| !is_date(d)) {
+            return Err(Error::invalid_field(
+                "goal_date",
+                "goal date must be a real date (YYYY-MM-DD)",
+            ));
+        }
+        // Both are YYYY-MM-DD: text order is date order.
+        if b.goal_date
+            .as_deref()
+            .is_some_and(|d| Some(d) != stored_goal && d <= today.as_str())
+        {
+            return Err(Error::invalid_field(
+                "goal_date",
+                "goal date must be after today",
+            ));
         }
         in_range(
             b.height_cm,
@@ -158,6 +192,21 @@ impl ProfileInput {
             GOAL_KG_PER_WEEK_MIN,
             GOAL_KG_PER_WEEK_MAX,
         )?;
+        in_range(
+            b.latitude,
+            "latitude",
+            "latitude",
+            LATITUDE_MIN,
+            LATITUDE_MAX,
+        )?;
+        if b.latitude
+            .is_some_and(|v| ((v * 10.0).round() - v * 10.0).abs() > 1e-6)
+        {
+            return Err(Error::invalid_field(
+                "latitude",
+                "latitude takes at most one decimal",
+            ));
+        }
         Ok(self)
     }
 }
@@ -170,16 +219,13 @@ impl Body {
     pub fn person(&self, weight_kg: Option<f64>, today: &str) -> Result<Person, Error> {
         let age = self.birth_date.as_deref().and_then(|b| age_on(b, today));
         match (self.sex, age, self.height_cm, weight_kg, self.activity) {
-            (Some(sex), Some(age), Some(height_cm), Some(weight_kg), Some(activity)) => {
-                Ok(Person {
-                    sex,
-                    age,
-                    height_cm,
-                    weight_kg,
-                    activity,
-                    goal_kg_per_week: self.goal_kg_per_week,
-                })
-            }
+            // Height and activity aren't the server's to use: the client's
+            // energy model needs them for the energy the targets scale with.
+            (Some(sex), Some(age), Some(_), Some(weight_kg), Some(_)) => Ok(Person {
+                sex,
+                age,
+                weight_kg,
+            }),
             _ => Err(bad(
                 "sex, birth date, height, a logged weight and activity level are needed to recommend targets",
             )),
@@ -203,7 +249,9 @@ pub struct Target {
 
 impl Target {
     /// A target of `value` for `metric`, bounded by its direction; a
-    /// point to reach (goal weight) has no bounds.
+    /// point to reach (goal weight) has no bounds; a clock time is kept
+    /// within [`CLOCK_WINDOW_MIN`] either way, mod 1440 (past midnight
+    /// `min > max`).
     ///
     /// # Panics
     /// If `metric` isn't a target key; callers validate keys first.
@@ -213,6 +261,9 @@ impl Target {
             target_key(metric).expect("target metrics are validated against the registry");
         let (min, max) = if find_metric(metric).is_some_and(|m| m.per == Per::Once) {
             (None, None)
+        } else if is_clock(metric) {
+            let at = |m: f64| Some(m.rem_euclid(DAY_MIN));
+            (at(value - CLOCK_WINDOW_MIN), at(value + CLOCK_WINDOW_MIN))
         } else {
             goal.bounds(value)
         };
@@ -255,12 +306,86 @@ pub struct TargetsInput {
     pub rev: Option<i64>,
 }
 
+/// Body mass index a goal weight may give, kg/m²: under 15 is starvation
+/// (WHO: < 16 severe thinness), over 40 no goal anyone sets.
+pub const GOAL_BMI: (f64, f64) = (15.0, 40.0);
+/// Body fat + muscle may be at most this % of weight: bone, organs and
+/// water are the rest.
+pub const FAT_MUSCLE_MAX: f64 = 85.0;
+/// Skeletal muscle may be at most this share of fat-free mass (elite
+/// bodybuilders reach about 0.6).
+pub const MUSCLE_OF_LEAN_MAX: f64 = 0.62;
+
+fn invalid(key: &str, message: String) -> Error {
+    Error::invalid_field(key, message)
+}
+
 impl TargetsInput {
-    /// Known metrics, each once, each value in its range.
+    /// [`TargetsInput::checked`], then each value in its range and the
+    /// body goals possible for `body`: body fat over essential fat for its
+    /// sex, body fat and muscle leaving room for the rest of a body, a goal
+    /// weight a healthy BMI for its height. Errors name the metric as the
+    /// field.
+    ///
+    /// # Errors
+    /// The first target that fails.
+    pub fn checked_for(&self, body: &Body) -> Result<Vec<Target>, Error> {
+        let list = self.parsed(true)?;
+        let value = |key: &str| list.iter().find(|t| t.metric == key).map(|t| t.value);
+        if let Some(bf) = value("goal_body_fat") {
+            let (floor, who) = match body.sex {
+                Some(Sex::Female) => (ESSENTIAL_FAT.1, "women"),
+                Some(Sex::Male) => (ESSENTIAL_FAT.0, "men"),
+                None => (ESSENTIAL_FAT.0, "anyone"),
+            };
+            if bf < floor {
+                return Err(invalid(
+                    "goal_body_fat",
+                    format!("Goal body fat: at least {floor} %, essential fat for {who}"),
+                ));
+            }
+        }
+        if let (Some(muscle), Some(bf)) = (value("goal_muscle"), value("goal_body_fat")) {
+            let most = (MUSCLE_OF_LEAN_MAX * (100.0 - bf)).min(FAT_MUSCLE_MAX - bf);
+            if muscle > most {
+                let most = (most * 10.0).floor() / 10.0;
+                return Err(invalid(
+                    "goal_muscle",
+                    format!(
+                        "Goal muscle: at most {most} % with {bf} % body fat (bone, organs and water are the rest)"
+                    ),
+                ));
+            }
+        }
+        if let (Some(kg), Some(cm)) = (value("goal_weight"), body.height_cm) {
+            let m2 = (cm / 100.0).powi(2);
+            let (lo, hi) = (GOAL_BMI.0 * m2, GOAL_BMI.1 * m2);
+            if !(lo..=hi).contains(&kg) {
+                return Err(invalid(
+                    "goal_weight",
+                    format!(
+                        "Goal weight: {lo:.1}–{hi:.1} kg for your height (BMI {}–{})",
+                        GOAL_BMI.0, GOAL_BMI.1
+                    ),
+                ));
+            }
+        }
+        Ok(list)
+    }
+
+    /// Known metrics, each once, each value finite and at least 0: what an
+    /// import takes (a value stored before a range tightened stays
+    /// restorable). New targets go through [`TargetsInput::checked_for`].
     ///
     /// # Errors
     /// The first target that fails, named by its metric.
     pub fn checked(&self) -> Result<Vec<Target>, Error> {
+        self.parsed(false)
+    }
+
+    /// Known metrics, each once, each value finite: within its range when
+    /// `ranged`, else at least 0 (a clock time under a day).
+    fn parsed(&self, ranged: bool) -> Result<Vec<Target>, Error> {
         let mut list: Vec<Target> = Vec::new();
         for t in &self.targets {
             refuse_gone(&[(t.nutrient, "nutrient", "name it as metric")])?;
@@ -273,12 +398,13 @@ impl TargetsInput {
             if list.iter().any(|x| x.metric == key) {
                 return Err(bad(format!("{label}: listed twice")));
             }
-            if !(t.value.is_finite() && (lo..=hi).contains(&t.value)) {
-                return Err(bad(if hi.is_finite() {
-                    format!("{label}: target must be {lo}–{hi}")
-                } else {
-                    format!("{label}: target must be {lo} or more")
-                }));
+            let ok = if ranged {
+                (lo..=hi).contains(&t.value)
+            } else {
+                t.value >= 0.0 && (!is_clock(key) || t.value < DAY_MIN)
+            };
+            if !(t.value.is_finite() && ok) {
+                return Err(invalid(key, format!("{label}: target must be {lo}–{hi}")));
             }
             list.push(Target::single(key, t.value));
         }

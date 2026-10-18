@@ -3,14 +3,18 @@
 // `node --test` covers all of it.
 //
 // A step is `{kind: "exercise", exercise_id, reps | seconds, kg?, side?}`,
-// `{kind: "rest", seconds}` or `{kind: "repeat", times, every?, name?,
-// steps}`; with `every` (EMOM) each round takes that many seconds. A
-// path is the list of indices down to a step: [1, 0] is the first step of
-// the repeat that is the second step. A list path is the path of the repeat
-// holding a list ([] for the workout itself).
+// `{kind: "rest", seconds}`, `{kind: "repeat", times, every?, name?,
+// steps}` or `{kind: "note", name?, text?}` (a name, words to read, or
+// both: never run or counted); with `every` (EMOM) each round
+// takes that many seconds. A path is the list of indices down to a step:
+// [1, 0] is the first step of the repeat that is the second step. A list
+// path is the path of the repeat holding a list ([] for the workout itself).
 
-import { shift, weekStart } from "./dates.mjs";
-import { NBSP, fmt, isNil, plural } from "./nutrients.mjs";
+import { kcalFor, metOf, runMetres } from "./activities.mjs";
+import { activeEnergyText } from "./energy-text.mjs";
+import { activeEnergy } from "./expenditure.mjs";
+import { capitalized, fmt, isNil, NBSP, plural, whole } from "./format.mjs";
+import { unitQty } from "./units.mjs";
 
 // ------------------------------------------------------------ the tree
 
@@ -66,9 +70,12 @@ export function move(steps, from, toList, index, depth) {
   // Taking the step out shifts what comes after it in its own list.
   if (startsWith(target, parent) && target.length > parent.length) {
     if (target[parent.length] > from.at(-1)) target[parent.length] -= 1;
-  } else if (target.length === parent.length && startsWith(target, parent)) {
-    if (i > from.at(-1)) i -= 1;
-  }
+  } else if (
+    target.length === parent.length &&
+    startsWith(target, parent) &&
+    i > from.at(-1)
+  )
+    i -= 1;
   const next = remove(steps, from);
   listAt(next, target).splice(i, 0, step);
   return { steps: next, path: [...target, i] };
@@ -96,13 +103,61 @@ export function unwrap(steps, path) {
   return next;
 }
 
-// ------------------------------------------------------- step rules
+// A step's path as text ("1.0"), back, and as people count it ("2.1").
+export const pathKey = (path) => path.join(".");
+export const pathOf = (k) => (k === "" ? [] : k.split(".").map(Number));
+export const pathLabel = (path) => path.map((i) => i + 1).join(".");
+
+// Every place a step could go in `list`, in reading order.
+export function slots(list, listPath = []) {
+  return [
+    ...list.flatMap((s, i) => [
+      { list: listPath, index: i },
+      ...(s.kind === "repeat" ? slots(s.steps, [...listPath, i]) : []),
+    ]),
+    { list: listPath, index: list.length },
+  ];
+}
+
+// The step at `path` moved one place `dir` (1 down, -1 up) through every
+// slot, into and out of repeats, past those it can't take (too deep): the
+// move, or null at an end.
+export function stepOver(steps, path, dir, depth) {
+  const all = slots(steps);
+  const parent = pathKey(path.slice(0, -1));
+  const i = path.at(-1);
+  const from = all.findIndex(
+    (s) => pathKey(s.list) === parent && s.index === i + (dir > 0 ? 1 : 0),
+  );
+  for (let j = from + dir; j >= 0 && j < all.length; j += dir) {
+    const result = move(steps, path, all[j].list, all[j].index, depth);
+    if (result && pathKey(result.path) !== pathKey(path)) return result;
+  }
+  return null;
+}
+
+// The step at `path` replaced by `step` (a variant or exercise switch).
+export const replaceAt = (steps, path, step) =>
+  update(steps, path, (s) => {
+    for (const k of Object.keys(s)) delete s[k];
+    Object.assign(s, step);
+  });
+
+// ---------------------------------------------------------- step rules
 
 const unilateral = (e) => e.laterality === "unilateral";
 
+// Whether a step not given a side is done on each side: a one-sided
+// exercise, or an alternating one counted in reps (8 means 8 a side). An
+// alternating hold (high knees, bear crawl) is one block of time.
+const eachSide = (s, e) =>
+  !s.side &&
+  !!e &&
+  (unilateral(e) || (e.laterality === "alternating" && !s.seconds));
+
 // What's wrong with a step for its exercise, or null. The server applies the
-// same rules (`step_fits` in src/model/workout.rs); tests/step-rules.json
-// holds the cases both must agree on.
+// same rules (`step_fits` in src/model/workout.rs);
+// tests/fixtures/step-cases.json holds the cases both must agree on.
 export function stepError(exercise, step) {
   const { name, measure, load = "optional" } = exercise;
   if (measure === "reps" && step.reps === undefined)
@@ -137,7 +192,7 @@ export function fit(exercise, step = {}) {
   return { step: next, dropped };
 }
 
-// ------------------------------------------------------------ reading
+// ------------------------------------------------------------- reading
 
 // A duration in a list or summary: "45 s", "1 min", "1 min 30 s".
 export function clock(seconds) {
@@ -147,12 +202,8 @@ export function clock(seconds) {
   return `${m}${NBSP}min${s ? ` ${s}${NBSP}s` : ""}`;
 }
 
-// A countdown, only while running: "0:45", "1:30".
-export const countdown = (seconds) =>
-  `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-
-// "20 kg", "12.5 kg".
-export const weightText = (weight) => `${weight}${NBSP}kg`;
+// "20 kg", "12.5 kg" (lb in US units).
+const loadText = (weight) => unitQty(weight, "kg", 2);
 
 // "1 round", "3 rounds".
 export const rounds = (n) => plural(n, "round");
@@ -167,48 +218,131 @@ export const repeatText = (step) =>
 export const amount = (step) =>
   step.seconds ? clock(step.seconds) : `× ${step.reps}`;
 
-// What a step adds to its exercise: "left · 20 kg", or "each side" for a
-// one-sided exercise done on both.
+// What a step adds to its exercise: "left · 20 kg", "each side" for a
+// one-sided exercise done on both, "each side, alternating" for reps
+// that switch sides as they go.
 export function details(step, exercise) {
   const side =
-    step.side ?? (exercise && unilateral(exercise) ? "each side" : null);
-  return [side, step.kg ? weightText(step.kg) : null]
-    .filter(Boolean)
-    .join(" · ");
+    step.side ??
+    (eachSide(step, exercise)
+      ? unilateral(exercise)
+        ? "each side"
+        : "each side, alternating"
+      : null);
+  return [side, step.kg ? loadText(step.kg) : null].filter(Boolean).join(" · ");
 }
 
-// A step as one line; `exercises` maps id → exercise.
+// Seconds per rep, for the time estimate.
+const SECONDS_PER_REP = 3;
+
+const joined = (parts) => parts.filter(Boolean).join(" · ");
+
+// The kinds of step a workout holds, each said once: its `title` and
+// `line` (the editor's row), how a run `describe`s it in one line, the
+// `sets` and `seconds` it adds to an estimate (a repeat: its rounds of its
+// steps), and the `problem` that keeps it from saving (null: none). `e`
+// is the step's exercise, if it has one. A new kind is one more entry here
+// and its panel in the editor.
+export const STEP_KINDS = {
+  exercise: {
+    title: (s, e) => e?.name ?? `Exercise ${s.exercise_id}`,
+    line: (s, e) =>
+      joined([s.reps || s.seconds ? amount(s) : "", details(s, e)]),
+    describe: (s, e) =>
+      joined([
+        `${e?.name ?? `exercise ${s.exercise_id}`} ${amount(s)}`,
+        details(s, e),
+      ]),
+    sets: 1,
+    seconds: (s, e) =>
+      (eachSide(s, e) ? 2 : 1) * (s.seconds || (s.reps || 0) * SECONDS_PER_REP),
+    problem: (s, e) => {
+      if (!e) return `unknown exercise ${s.exercise_id}`;
+      if (s.reps === 0 || s.seconds === 0) return `${e.name} needs more than 0`;
+      return stepError(e, s);
+    },
+  },
+  rest: {
+    title: () => "Rest",
+    line: (s) => clock(s.seconds || 0),
+    describe: (s) => s.label ?? `Rest ${clock(s.seconds)}`,
+    sets: 0,
+    seconds: (s) => s.seconds || 0,
+    problem: (s) => (s.seconds >= 1 ? null : "set how long"),
+  },
+  // Closed, a note reads one line: its name, else its text's first line.
+  note: {
+    title: (s) =>
+      s.name ??
+      (s.text ?? "")
+        .split("\n")
+        .map((l) => l.trim())
+        .find(Boolean) ??
+      "Note",
+    line: () => "",
+    describe: (s) => s.name ?? s.text,
+    sets: 0,
+    seconds: () => 0,
+    problem: (s) => (s.name || s.text?.trim() ? null : "write the note"),
+  },
+  repeat: {
+    title: (s) => s.name ?? "Repeat",
+    line: (s) => repeatText(s),
+    describe: (s) => joined([s.name, repeatText(s)]),
+    problem: (s) => (s.times >= 1 ? null : "set how many rounds"),
+  },
+};
+
+// A step as one line; `exercises` maps id → exercise. A run's EMOM pad
+// (`unroll`) is its own.
 export function describe(step, exercises) {
-  if (step.kind === "rest") return `Rest ${clock(step.seconds)}`;
   if (step.kind === "pad") return "Next round";
-  if (step.kind === "repeat")
-    return [step.name, repeatText(step)].filter(Boolean).join(" · ");
-  const e = exercises.get(step.exercise_id);
-  const name = e?.name ?? `exercise ${step.exercise_id}`;
-  return [`${name} ${amount(step)}`, details(step, e)]
-    .filter(Boolean)
-    .join(" · ");
+  return STEP_KINDS[step.kind].describe(step, exercises?.get(step.exercise_id));
 }
+
+// Seconds to switch sides between the two halves of a hold done on each
+// side.
+export const SWITCH_SECONDS = 15;
 
 // The steps in the order they're done, repeats unrolled. Each carries
 // `round`: the repeats it's in and which round, "main · round 1 of 2". A
-// timed one-sided step done on each side becomes left, then right. A round of an
+// timed one-sided step done on each side becomes left, a rest to switch
+// sides (a rest: no work, no records), then right. A round of an
 // EMOM repeat ends in a pad `{kind: "pad", every, steps}`: wait out the
-// `every` seconds counted from the round's first step, `steps` back.
-export function unroll(steps, exercises = new Map(), within = []) {
+// `every` seconds counted from the round's first step, `steps` back. Notes
+// are no step: each rides on the step after it (`notes`, [{name, text}],
+// read above it), the last ones on the last step (`notesAfter`).
+export function unroll(steps, exercises = new Map()) {
+  const run = [];
+  let notes = [];
+  for (const s of inOrder(steps, exercises)) {
+    if (s.kind === "note") notes.push({ name: s.name, text: s.text });
+    else {
+      run.push(notes.length > 0 ? { ...s, notes } : s);
+      notes = [];
+    }
+  }
+  if (notes.length > 0 && run.length > 0)
+    run.push({ ...run.pop(), notesAfter: notes });
+  return run;
+}
+
+// unroll's steps with the notes where they stand.
+function inOrder(steps, exercises, within = []) {
   return steps.flatMap((s) => {
+    if (s.kind === "note") return [s];
     if (s.kind === "repeat")
       return Array.from({ length: s.times }, (_, i) => {
         const where = [
           ...within,
           `${s.name ? `${s.name} · ` : ""}round ${i + 1} of ${s.times}`,
         ];
-        const round = unroll(s.steps, exercises, where);
+        const round = inOrder(s.steps, exercises, where);
         if (!s.every) return round;
         const pad = {
           kind: "pad",
           every: s.every,
-          steps: round.length,
+          steps: round.filter((x) => x.kind !== "note").length,
           round: where.join(" · "),
         };
         return [...round, pad];
@@ -216,7 +350,11 @@ export function unroll(steps, exercises = new Map(), within = []) {
     const round = within.join(" · ");
     const e = exercises.get(s.exercise_id);
     if (s.kind === "exercise" && s.seconds && !s.side && e && unilateral(e))
-      return ["left", "right"].map((side) => ({ ...s, side, round }));
+      return [
+        { ...s, side: "left", round },
+        { kind: "rest", seconds: SWITCH_SECONDS, label: "Switch sides", round },
+        { ...s, side: "right", round },
+      ];
     return [{ ...s, round }];
   });
 }
@@ -237,7 +375,9 @@ export function exerciseIds(steps) {
 // progress saved for other steps (the workout was edited meanwhile) is
 // never applied to these.
 export function fingerprint(run) {
-  let hash = 0;
+  // 32-bit wrapping arithmetic: the Int32Array slot truncates each step,
+  // read back unsigned for the text.
+  const hash = new Int32Array(1);
   for (const c of JSON.stringify(
     run.map(({ kind, exercise_id, reps, seconds, kg, side }) => [
       kind,
@@ -248,16 +388,9 @@ export function fingerprint(run) {
       side,
     ]),
   ))
-    hash = (Math.imul(hash, 31) + c.charCodeAt(0)) | 0;
-  return `${run.length}:${(hash >>> 0).toString(36)}`;
+    hash[0] = Math.imul(hash[0], 31) + c.codePointAt(0);
+  return `${run.length}:${new Uint32Array(hash.buffer)[0].toString(36)}`;
 }
-
-// Seconds per rep, for the time estimate.
-const SECONDS_PER_REP = 3;
-// A moderate workout's metabolic equivalent: kcal ≈ MET × kg × hours.
-// ponytail: one MET for everything; per-exercise METs if estimates need to
-// be closer.
-export const MET = 5;
 
 // How many sets and about how long. Counted without unrolling; a field
 // being edited (empty) counts as 0.
@@ -275,12 +408,11 @@ export function estimate(steps, exercises) {
             seconds: t.seconds + times * round,
           };
         }
-        if (s.kind === "rest")
-          return { ...t, seconds: t.seconds + (s.seconds || 0) };
-        const e = exercises.get(s.exercise_id);
-        const sides = e && unilateral(e) && !s.side ? 2 : 1;
-        const work = s.seconds || (s.reps || 0) * SECONDS_PER_REP;
-        return { sets: t.sets + 1, seconds: t.seconds + sides * work };
+        const kind = STEP_KINDS[s.kind];
+        return {
+          sets: t.sets + kind.sets,
+          seconds: t.seconds + kind.seconds(s, exercises.get(s.exercise_id)),
+        };
       },
       { sets: 0, seconds: 0 },
     );
@@ -288,13 +420,17 @@ export function estimate(steps, exercises) {
   return { sets, minutes: Math.max(1, Math.round(seconds / 60)) };
 }
 
-// A workout's (or session's) time and energy: as set on it, else
+// A workout's (or activity's) time and energy: as set on it, else
 // estimated (`estimated` says which). Energy needs the person's weight
 // (`kg`) unless it was set; `null` without.
 export function effort(w, exercises, kg = null) {
   const est = w.steps ? estimate(w.steps, exercises) : null;
   const minutes = w.minutes ?? est?.minutes ?? null;
-  const kcal = w.kcal ?? (minutes ? kcalFor(minutes, kg) : null);
+  const kcal =
+    w.kcal ??
+    (minutes
+      ? kcalFor(minutes, kg, metOf(w.type ?? "workout"), runMetres(w))
+      : null);
   return {
     sets: est?.sets ?? w.sets?.length ?? 0,
     minutes,
@@ -304,7 +440,51 @@ export function effort(w, exercises, kg = null) {
   };
 }
 
-// ------------------------------------------------------------ search
+// "6 sets · ≈ 24 min · active ≈ 210 kcal": estimates say ≈, values set
+// on the workout don't. Its energy reads as its activities' will
+// (energy-text.mjs activeEnergyText): an estimate from the time and `kg`,
+// or the total set on it netted of resting (`bmr` kcal a day, today's).
+// Each part whole: a line wraps between parts only.
+export function workoutLine(w, lib, { kg = null, bmr = null } = {}) {
+  const e = effort(w, lib.byId, kg);
+  const energy =
+    e.minutes &&
+    activeEnergy(
+      {
+        kcal: w.kcal ?? null,
+        minutes: e.minutes,
+        type: w.type ?? "workout",
+        distance_m: w.distance_m,
+        weight_kg: kg,
+      },
+      bmr,
+    );
+  return [
+    whole(plural(e.sets, "set")),
+    whole(`${e.minutesEstimated ? "≈ " : ""}${clock(e.minutes * 60)}`),
+    energy && activeEnergyText(energy),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+// "Diamond" for "Diamond push-up" under "Push-up": a variant's name without
+// its root's.
+export function variantLabel(v, root) {
+  const short = v.name
+    .replace(
+      new RegExp(root.name.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "iu"),
+      "",
+    )
+    .replaceAll(/\s+/gu, " ")
+    .trim();
+  return short && short !== v.name ? capitalized(short) : v.name;
+}
+
+// -------------------------------------------------------------- search
+
+// How an exercise is measured, as its rows name it.
+export const MEASURE_LABEL = { reps: "Reps", time: "Timed" };
 
 // Everything an exercise is, as lowercase text to search.
 export const exerciseText = (e) =>
@@ -338,7 +518,7 @@ const ALIASES = new Map([
 ]);
 
 // Without spaces and hyphens: "pull-apart", "pull apart", "pullapart" alike.
-const squash = (s) => s.replace(/[\s-]+/g, "");
+const squash = (s) => s.replaceAll(/[\s-]+/gu, "");
 
 // Whether every word of `query` (or what its shorthand stands for) appears
 // somewhere in lowercase `text`, spaces and hyphens aside.
@@ -347,16 +527,65 @@ export const matches = (text, query) => {
   const has = (w) => text.includes(w) || flat.includes(squash(w));
   return query
     .toLowerCase()
-    .split(/\s+/)
+    .split(/\s+/u)
     .filter(Boolean)
-    .every((w) => has(w) || (ALIASES.get(w)?.split(" ").every(has) ?? false));
+    .every(
+      (w) =>
+        has(w) ||
+        (ALIASES.get(w)
+          ?.split(" ")
+          .every((x) => has(x)) ??
+          false),
+    );
 };
 
-// ------------------------------------------------------------ sessions
+// The exercise library: lookups, variants under their root move, and search
+// that finds a root by any of its variants.
+export function library(exercises) {
+  const byId = new Map(exercises.map((e) => [e.id, e]));
+  const variants = new Map();
+  for (const e of exercises)
+    if (e.variant_of)
+      variants.set(e.variant_of, [...(variants.get(e.variant_of) ?? []), e]);
+  const roots = exercises.filter((e) => !e.variant_of);
+  const text = new Map(exercises.map((e) => [e.id, exerciseText(e)]));
+  const rootOf = (e) => (e.variant_of ? (byId.get(e.variant_of) ?? e) : e);
+  // Roots matching `q` themselves or through a variant ({root, hit}).
+  const search = (q, keep = () => true) =>
+    roots.flatMap((root) => {
+      const family = [root, ...(variants.get(root.id) ?? [])].filter((x) =>
+        keep(x),
+      );
+      const hit = family.find((e) => matches(text.get(e.id), q));
+      return hit ? [{ root, hit }] : [];
+    });
+  return { byId, variants, roots, rootOf, search };
+}
 
-// Energy for `minutes` of training by someone weighing `kg` (null without).
-export const kcalFor = (minutes, kg) =>
-  kg ? Math.round((MET * kg * minutes) / 60) : null;
+// Exercise for a muscle goal: 10–20 hard sets per muscle group a week
+// (Schoenfeld, Ogborn & Krieger, J Sports Sci 2017: gains rise with weekly
+// sets, 10 or more beating fewer; past about 20 little is added).
+export const SETS_PER_WEEK = [10, 20];
+export const SETS_WEEKS = 4;
+
+// Sets a week per muscle group over `activities` (the last SETS_WEEKS
+// weeks'), each logged set counted once for each group its exercise's
+// primary muscles (`exercises` by id) work, by each muscle's group in
+// `traits` (meta `exercise_traits`: the primary muscles' `groups`):
+// [[group, sets a week]] in the server's order, every group (0 when
+// untrained).
+export function setsPerGroup(activities, exercises, traits) {
+  const group = new Map(traits.find((t) => t.key === "primary")?.groups);
+  const byId = new Map(exercises.map((e) => [e.id, e]));
+  const sets = new Map([...group.values()].map((g) => [g, 0]));
+  for (const s of activities)
+    for (const set of s.sets ?? []) {
+      const primary = byId.get(set.exercise_id)?.primary ?? [];
+      for (const g of new Set(primary.map((m) => group.get(m))))
+        if (g) sets.set(g, sets.get(g) + 1);
+    }
+  return [...sets].map(([g, n]) => [g, n / SETS_WEEKS]);
+}
 
 // A set's weight, reps or seconds, for comparing sets.
 const of = (set, key) => set[key] ?? 0;
@@ -369,17 +598,21 @@ const better = (a, b) =>
     ? b
     : a;
 
-// Your bests at an exercise over `sessions` (oldest first, as listed), each
+// Your bests at an exercise over `activities` (oldest first, as listed), each
 // a set you actually did, with its day: the most reps (`reps`), the longest
-// (`seconds`), the heaviest (`kg`); and each session's best set, newest
-// first. Later sessions win ties: a record is when you last reached it.
-export function records(sessions, exerciseId) {
+// (`seconds`), the heaviest (`kg`); and each activity's best set, newest
+// first. Later activities win ties: a record is when you last reached it.
+export function records(activities, exerciseId) {
   const best = { reps: null, seconds: null, kg: null };
   const history = [];
-  for (const s of sessions) {
+  for (const s of activities) {
     const sets = s.sets.filter((set) => set.exercise_id === exerciseId);
-    if (!sets.length) continue;
-    history.push({ day: s.day, session: s.id, set: sets.reduce(better) });
+    if (sets.length === 0) continue;
+    history.push({
+      day: s.day,
+      activity: s.id,
+      set: sets.reduce((a, b) => better(a, b)),
+    });
     for (const set of sets)
       for (const key of ["reps", "seconds", "kg"])
         if (
@@ -391,17 +624,22 @@ export function records(sessions, exerciseId) {
   return { ...best, history: history.toReversed() };
 }
 
-// A set as one line: "Pull-up × 8 · left · 20 kg".
-export const describeSet = (set) =>
-  [`${set.name} ${amount(set)}`, set.side, set.kg ? weightText(set.kg) : null]
+// A set done, without its exercise: "8 reps · 20 kg", "45 s · left". One
+// notation wherever a done set shows (Records, an exercise's history, the
+// run's last time).
+export const setText = (set) =>
+  [
+    set.seconds ? clock(set.seconds) : plural(set.reps, "rep"),
+    set.side,
+    set.kg ? loadText(set.kg) : null,
+  ]
     .filter(Boolean)
     .join(" · ");
 
-// Where a run keeps its progress (sessionStorage), so a reload or a detour
-// resumes it.
-export const runKey = (workoutId) => `run:${workoutId}`;
+// A set as one line: "Pull-up · 8 reps · left · 20 kg".
+export const describeSet = (set) => `${set.name} · ${setText(set)}`;
 
-// ------------------------------------------------------- progression
+// --------------------------------------------------------- progression
 
 const RANK = { beginner: 0, intermediate: 1, advanced: 2 };
 
@@ -430,24 +668,27 @@ export function harder(exercise, exercises) {
     .slice(0, 3);
 }
 
-// The sets of `exerciseId` in the newest of `sessions` (oldest first, as
+// The sets of `exerciseId` in the newest of `activities` (oldest first, as
 // listed) that did it, with its day; null if none did.
-export function lastTime(sessions, exerciseId) {
-  const last = records(sessions, exerciseId).history[0];
+export function lastTime(activities, exerciseId) {
+  const last = records(activities, exerciseId).history[0];
   if (!last) return null;
-  const session = sessions.find((s) => s.id === last.session);
+  const activity = activities.find((s) => s.id === last.activity);
   return {
     day: last.day,
-    sets: session.sets.filter((set) => set.exercise_id === exerciseId),
+    sets: activity.sets.filter((set) => set.exercise_id === exerciseId),
   };
 }
 
-// "× 8, × 8, × 7 · 20 kg": a last time's sets, with the heaviest weight.
+// "8, 8, 7 reps · 20 kg" (setText's words): a last time's sets, with the
+// heaviest weight.
 export function lastTimeText({ sets }) {
   const kg = Math.max(0, ...sets.map((set) => set.kg ?? 0));
-  return [sets.map(amount).join(", "), kg ? weightText(kg) : null]
-    .filter(Boolean)
-    .join(" · ");
+  const timed = sets.some((set) => set.seconds);
+  const done = timed
+    ? sets.map((set) => clock(set.seconds || 0)).join(", ")
+    : `${sets.map((set) => fmt(set.reps)).join(", ")} ${sets.length === 1 && sets[0].reps === 1 ? "rep" : "reps"}`;
+  return [done, kg ? loadText(kg) : null].filter(Boolean).join(" · ");
 }
 
 // `steps` with every step of exercise `fromId` done as `to` instead, made
@@ -462,80 +703,31 @@ export function swapExercise(steps, fromId, to) {
   return swap(steps);
 }
 
-// The sets of `session` that beat a best of `before` (the sessions done
+// The sets of `activity` that beat a best of `before` (the activities done
 // before it): more reps, longer or heavier than ever. One per exercise (its
 // best such set); an exercise never done before has nothing to beat.
-export function newRecords(before, session) {
+export function newRecords(before, activity) {
   const out = [];
-  for (const id of new Set(session.sets.map((set) => set.exercise_id))) {
+  for (const id of new Set(activity.sets.map((set) => set.exercise_id))) {
     const old = records(before, id);
-    const now = records([...before, session], id);
+    const now = records([...before, activity], id);
     const beat = ["reps", "seconds", "kg"].filter(
       (key) => old[key] && of(now[key].set, key) > of(old[key].set, key),
     );
-    if (beat.length)
+    if (beat.length > 0)
       out.push(beat.map((key) => now[key].set).reduce((a, b) => better(a, b)));
   }
   return out;
 }
 
-// The indices of the sets of `session` that were records when done, from
-// `sessions` (oldest first, including it and any others).
-export function recordSets(sessions, session) {
-  const before = sessions.filter(
-    (s) => s.day < session.day || (s.day === session.day && s.id < session.id),
+// The indices of the sets of `activity` that were records when done, from
+// `activities` (oldest first, including it and any others).
+export function recordSets(activities, activity) {
+  const before = activities.filter(
+    (s) =>
+      s.day < activity.day || (s.day === activity.day && s.id < activity.id),
   );
   return new Set(
-    newRecords(before, session).map((set) => session.sets.indexOf(set)),
+    newRecords(before, activity).map((set) => activity.sets.indexOf(set)),
   );
-}
-
-// How many weeks of [from, to] met `perWeek` workouts, of how many judged:
-// Monday-first weeks wholly inside the period and over before `today` (a
-// week still going shows as the Summary's bar instead). `perWeek` is today's
-// target applied to every past week; null without one.
-export function targetWeeks(sessions, from, to, perWeek, today) {
-  if (!(perWeek > 0)) return null;
-  const first = weekStart(from) < from ? shift(weekStart(from), 7) : from;
-  let met = 0;
-  let total = 0;
-  for (
-    let monday = first;
-    shift(monday, 6) <= to && shift(monday, 6) < today;
-    monday = shift(monday, 7)
-  ) {
-    const sunday = shift(monday, 6);
-    total += 1;
-    if (
-      sessions.filter((s) => s.day >= monday && s.day <= sunday).length >=
-      perWeek
-    )
-      met += 1;
-  }
-  return { met, total };
-}
-
-// ------------------------------------------------- whole sessions
-
-// Which session types take a distance is the server's rule (meta
-// `session_types[].distance`); these only read one.
-
-// "8.2 km", "5 km", "1.25 km"; null without a distance.
-export const distanceText = (metres) =>
-  isNil(metres) ? null : `${fmt(metres / 1000, 2)}${NBSP}km`;
-
-// Types whose pace reads per kilometre.
-const ON_FOOT = ["run", "walk", "hike"];
-
-// "5:37 /km" on foot, "24.3 km/h" on a bike, "2:05 /100 m" swimming; null
-// without a distance or a time, or for a type with no one way to read it
-// ("other": rowing, skiing…).
-export function pace(type, metres, minutes) {
-  if (!metres || !minutes) return null;
-  const seconds = minutes * 60;
-  const per = (m) => countdown(Math.round((seconds * m) / metres));
-  if (type === "cycling")
-    return `${fmt(metres / 1000 / (minutes / 60), 1)}${NBSP}km/h`;
-  if (type === "swim") return `${per(100)}${NBSP}/100${NBSP}m`;
-  return ON_FOOT.includes(type) ? `${per(1000)}${NBSP}/km` : null;
 }

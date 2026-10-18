@@ -16,12 +16,13 @@ use rusqlite::Connection;
 
 use crate::db;
 use crate::error::Error;
+use crate::model::FoodCategory::{FruitVeg, ProcessedMeat, SugaryDrinks, SweetsSnacks};
 use crate::model::{FoodCategory, FoodInput, Serving};
 use crate::nutrients::{IU_PER_UG, KJ_PER_KCAL, Nutrients};
 
 /// Fineli component code, registry key, and the factor from Fineli's unit to
 /// the registry's.
-const COMPONENTS: [(&str, &str, f64); 43] = [
+const COMPONENTS: [(&str, &str, f64); 44] = [
     ("ENERC", "energy", 1.0 / KJ_PER_KCAL),
     ("FAT", "fat", 1.0),
     ("FASAT", "saturated", 1.0),
@@ -56,7 +57,8 @@ const COMPONENTS: [(&str, &str, f64); 43] = [
     ("CU", "copper", 1.0),
     ("MN", "manganese", 1.0),
     ("SE", "selenium", 1.0),
-    // Retinol activity equivalents.
+    // Retinol activity equivalents (RAE), made retinol equivalents (RE) in
+    // `parse` with `RETOL`.
     ("VITA", "vitamin_a", 1.0),
     // Stored in IU; 1 µg = 40 IU.
     ("VITD", "vitamin_d", IU_PER_UG),
@@ -69,25 +71,155 @@ const COMPONENTS: [(&str, &str, f64); 43] = [
     ("VITPYRID", "b6", 1.0),
     ("FOL", "folate", 1.0),
     ("VITB12", "b12", 1.0),
+    ("VITC", "vitamin_c", 1.0),
 ];
 
 /// Fineli food class → food category, looked up by `FUCLASS` (the
-/// food-use class) first, then `IGCLASS` (the ingredient class). No Fineli
-/// class is fast food: that comes from Open Food Facts or your own choice.
+/// food-use class) first, then `IGCLASS` (the ingredient class). Codes are
+/// one namespace: a code in both lists means the same in both. A class
+/// listed as `None` has no category and ends the lookup, so a mixed dish or
+/// a diet drink never takes one from its ingredient class. No Fineli class
+/// is fast food: that comes from Open Food Facts or your own choice.
 ///
-/// Empty until filled from a real package's class files:
-/// `kaloriina fineli --classes <dir>` lists every code with its name and
-/// food count. Codes are never guessed; a wrong one would mislabel foods.
-const CLASSES: &[(&str, FoodCategory)] = &[];
+/// Filled from the release's class list (`kaloriina fineli --classes <dir>`):
+///
+/// | Category        | Classes                                                      |
+/// |-----------------|--------------------------------------------------------------|
+/// | sweets & snacks | sweet bakery, buns, sweet biscuits, cereal bars, chocolate,  |
+/// |                 | confectionery, ice cream, milk desserts, dessert sauces,     |
+/// |                 | jams, sugar and syrups, savoury snacks                       |
+/// | sugary drinks   | soft drinks with sugar or caffeine, juice drinks, juices,    |
+/// |                 | sport drinks                                                 |
+/// | fruit & veg     | fresh, cooked and canned vegetables, fruits, berries, canned |
+/// |                 | fruit, vegetable and fruit salads, pulses, edible fungi,     |
+/// |                 | dried herbs, baby fruit and vegetable products               |
+/// | processed meat  | sausages, cold cuts (sausage and meat), meat products        |
+/// | none (stops)    | alcohol, artificially sweetened drinks, water, vegetable     |
+/// |                 | juices; every dish, soup and sauce class                     |
+///
+/// Unlisted, so only the ingredient class can give one: bread, breakfast
+/// cereals, porridge, pancakes, yoghurt, quark, potatoes and fries, nuts,
+/// seeds and dried fruit (`SNACKVEG`: dried fruit counts by its ingredient
+/// class), fresh meat, fish, dairy, fats, spices, other drinks.
+const CLASSES: &[(&str, Option<FoodCategory>)] = &[
+    // Sweets and snacks: confectionery, sweet bakery, desserts, crisps, sugar.
+    ("BAKSWEET", Some(SweetsSnacks)),
+    ("BISCUSWE", Some(SweetsSnacks)),
+    ("BUN", Some(SweetsSnacks)),
+    ("CERBAR", Some(SweetsSnacks)),
+    ("CHOCOL", Some(SweetsSnacks)),
+    ("CHOCOLAT", Some(SweetsSnacks)),
+    ("DESSAUCE", Some(SweetsSnacks)),
+    ("ICECREAM", Some(SweetsSnacks)),
+    ("JAM", Some(SweetsSnacks)),
+    ("MILKPUDD", Some(SweetsSnacks)),
+    ("SNACKSAV", Some(SweetsSnacks)),
+    ("SUGADD", Some(SweetsSnacks)),
+    ("SUGARSYR", Some(SweetsSnacks)),
+    ("SWEET", Some(SweetsSnacks)),
+    // Sugary drinks: sugared soft, juice and sport drinks; juices.
+    ("DRINKCO", Some(SugaryDrinks)),
+    ("DRINKSO", Some(SugaryDrinks)),
+    ("DRJUICE", Some(SugaryDrinks)),
+    ("DRSPORT", Some(SugaryDrinks)),
+    ("FBDRINK", Some(SugaryDrinks)),
+    ("FRUBJUIC", Some(SugaryDrinks)),
+    ("JUICE", Some(SugaryDrinks)),
+    ("SDRINK", Some(SugaryDrinks)),
+    // Fruit and vegetables (WHO 5-a-day): pulses yes; potatoes, nuts, juices
+    // no.
+    ("APPLE", Some(FruitVeg)),
+    ("BABFRUB", Some(FruitVeg)),
+    ("BABVEGE", Some(FruitVeg)),
+    ("BERFRESH", Some(FruitVeg)),
+    ("BERRY", Some(FruitVeg)),
+    ("CABBAGE", Some(FruitVeg)),
+    ("CITRUS", Some(FruitVeg)),
+    ("FRUBSAL", Some(FruitVeg)),
+    ("FRUFRESH", Some(FruitVeg)),
+    ("FRUITCAN", Some(FruitVeg)),
+    ("FRUITOTH", Some(FruitVeg)),
+    ("HERB", Some(FruitVeg)),
+    ("LEGUMES", Some(FruitVeg)),
+    ("MUSHRO", Some(FruitVeg)),
+    ("PEABEAN", Some(FruitVeg)),
+    ("ROOT", Some(FruitVeg)),
+    ("SALADVEG", Some(FruitVeg)),
+    ("VEGCANN", Some(FruitVeg)),
+    ("VEGFRESH", Some(FruitVeg)),
+    ("VEGFRU", Some(FruitVeg)),
+    ("VEGLEAF", Some(FruitVeg)),
+    ("VEGONI", Some(FruitVeg)),
+    ("VEGPOT", Some(FruitVeg)),
+    // Processed meat (IARC: salted, cured, smoked): sausages, cold cuts, meat
+    // products.
+    ("MEATCUTS", Some(ProcessedMeat)),
+    ("MEATPROD", Some(ProcessedMeat)),
+    ("SAUSAGE", Some(ProcessedMeat)),
+    ("SAUSCUTS", Some(ProcessedMeat)),
+    // None, so the ingredient class can't make a diet cola, flavoured water,
+    // vegetable juice or long drink a sugary drink or fruit & veg.
+    ("ALCOTH", None),
+    ("BEER", None),
+    ("CIDER", None),
+    ("DRINKART", None),
+    ("DRWATER", None),
+    ("SPIRIT", None),
+    ("VEGJUICE", None),
+    ("WINE", None),
+    // None: mixed dishes, soups and sauces, whatever their ingredient class.
+    ("BABFISHD", None),
+    ("BABMEATD", None),
+    ("BAKSALT", None),
+    ("EGGMIX", None),
+    ("FISHDISH", None),
+    ("FISHSAUC", None),
+    ("FISHSOUP", None),
+    ("FRUBDISH", None),
+    ("FRUBSOUP", None),
+    ("LEGUDISH", None),
+    ("LEGUSAUC", None),
+    ("LEGUSOUP", None),
+    ("MEATDISH", None),
+    ("MEATSAUC", None),
+    ("MEATSOUP", None),
+    ("MUSHRDI", None),
+    ("OFFALDI", None),
+    ("PIZZA", None),
+    ("POTADISH", None),
+    ("POULSAUC", None),
+    ("POULTDIS", None),
+    ("POULTSOU", None),
+    ("SALADMAY", None),
+    ("SALADMIX", None),
+    ("SANDWICH", None),
+    ("SEAFDISH", None),
+    ("SEAFSAUC", None),
+    ("SEAFSOUP", None),
+    ("VEGDISH", None),
+    ("VEGSAUC", None),
+    ("VEGSOUP", None),
+];
+
+/// The food-use classes (`FUCLASS`) whose foods are drunk: coffee, tea,
+/// water, soft, juice and sport drinks, juices, alcohol, milks and soured
+/// milks, and plant drinks (`VEGJUICE` holds soy, oat and nut drinks).
+/// From the release's `fuclass_EN.csv`. Spoonable cultured milk (`viili`),
+/// ice cream and cream substitutes have other use classes.
+const DRINK_CLASSES: [&str; 19] = [
+    "ALCOTH", "BEER", "CIDER", "COFFEE", "DRINKART", "DRINKOTH", "DRINKSO", "DRJUICE", "DRSPORT",
+    "DRWATER", "FRUBJUIC", "MILKFF", "MILKHF", "MILKLF", "SMILK", "SPIRIT", "TEA", "VEGJUICE",
+    "WINE",
+];
 
 /// The category of a food in classes `fuclass` and `igclass`, by `table`.
 fn category_of(
-    table: &[(&str, FoodCategory)],
+    table: &[(&str, Option<FoodCategory>)],
     fuclass: &str,
     igclass: &str,
 ) -> Option<FoodCategory> {
     let find = |code: &str| table.iter().find(|(c, _)| *c == code).map(|&(_, cat)| cat);
-    find(fuclass).or_else(|| find(igclass))
+    find(fuclass).or_else(|| find(igclass)).flatten()
 }
 
 /// Fineli household units worth offering as servings, with their label.
@@ -110,11 +242,16 @@ const UNITS: [(&str, &str); 10] = [
 pub fn serving_labels() -> Vec<&'static str> {
     UNITS.iter().map(|(_, label)| *label).collect()
 }
-/// Add or update foods read with [`read`]; returns how many were new.
+/// Add or update foods read with [`read`], with their
+/// [`ingredient_classes`], in one transaction; returns how many were new.
 ///
 /// # Errors
 /// Fails on a database error; nothing is written then.
-pub fn store(conn: &mut Connection, foods: &[(i64, FoodInput)]) -> Result<usize, Error> {
+pub fn store(
+    conn: &mut Connection,
+    foods: &[(i64, FoodInput)],
+    classes: &[(i64, String)],
+) -> Result<usize, Error> {
     let checked = foods
         .iter()
         .map(|(id, food)| {
@@ -125,7 +262,57 @@ pub fn store(conn: &mut Connection, foods: &[(i64, FoodInput)]) -> Result<usize,
             Ok((*id, food))
         })
         .collect::<Result<Vec<_>, Error>>()?;
-    db::food_upsert_fineli(conn, &checked, &serving_labels())
+    db::food_upsert_fineli(conn, &checked, &serving_labels(), classes)
+}
+
+/// Each food's ingredient class (`IGCLASS`: `BEEF`, `POTATO`) in the
+/// package in `dir`, by `FOODID`: what All time counts beef and potatoes by.
+/// A cooked food is `DISH` whatever it is, so one that is plainly its
+/// ingredient takes that ingredient's class (see [`dish_class`]).
+///
+/// # Errors
+/// `food.csv` is missing or malformed.
+pub fn ingredient_classes(dir: &Path) -> Result<Vec<(i64, String)>, Error> {
+    let path = dir.join("food.csv");
+    let food = File::open(&path).map_err(|e| {
+        Error::invalid(format!(
+            "{}: {e}; is this a Fineli package?",
+            path.display()
+        ))
+    })?;
+    table(food, &["FOODID", "FOODNAME", "IGCLASS", "FUCLASS"])?
+        .into_iter()
+        .map(|row| {
+            let class = match row[2].as_str() {
+                "DISH" => dish_class(&row[1], &row[3]).unwrap_or("DISH"),
+                other => other,
+            };
+            Ok((id(&row[0])?, class.to_owned()))
+        })
+        .collect()
+}
+
+/// The ingredient class a cooked Fineli food (`IGCLASS` `DISH`) counts as
+/// by its use class `fuclass` and `name`: cooked plain potato (`POTACOOK`:
+/// boiled, baked) is `POTATO`; a steak or chop (`MSTEAK`) of beef alone is
+/// `BEEF`. Other dishes count as neither.
+// ponytail: whole-weight by class; decompose dishes through contribfood.csv
+// if mixed dishes (stews, casseroles) should count their share.
+fn dish_class(name: &str, fuclass: &str) -> Option<&'static str> {
+    let name = name.to_uppercase();
+    match fuclass {
+        "POTACOOK" => Some("POTATO"),
+        "MSTEAK"
+            if ["NAUDAN", "NAUTA", "HÄRÄN", "VASIKAN"]
+                .iter()
+                .any(|n| name.contains(n))
+                && !name.contains("SIKA")
+                && !name.contains("SIAN") =>
+        {
+            Some("BEEF")
+        }
+        _ => None,
+    }
 }
 
 /// Read the foods of an unzipped Fineli package in `dir`, each with its
@@ -160,14 +347,21 @@ fn parse(
     food: impl Read,
     values: impl Read,
     units: impl Read,
-    classes: &[(&str, FoodCategory)],
+    classes: &[(&str, Option<FoodCategory>)],
 ) -> Result<Vec<(i64, FoodInput)>, Error> {
     let mut per100: HashMap<i64, Nutrients> = HashMap::new();
     let factors: HashMap<&str, (&str, f64)> = COMPONENTS
         .iter()
         .map(|&(code, key, factor)| (code, (key, factor)))
         .collect();
+    let mut retinol: HashMap<i64, f64> = HashMap::new();
     for row in table(values, &["FOODID", "EUFDNAME", "BESTLOC"])? {
+        if row[1] == "RETOL" {
+            if let Some(value) = number(&row[2])? {
+                retinol.insert(id(&row[0])?, value);
+            }
+            continue;
+        }
         let Some(&(key, factor)) = factors.get(row[1].as_str()) else {
             continue;
         };
@@ -197,7 +391,18 @@ fn parse(
         .into_iter()
         .map(|row| {
             let id = id(&row[0])?;
-            let per100 = per100.remove(&id).unwrap_or_default();
+            let mut per100 = per100.remove(&id).unwrap_or_default();
+            // Vitamin A as EFSA's targets and the EU NRV count it, retinol
+            // equivalents (RE: β-carotene 6:1, other provitamin A
+            // carotenoids 12:1; EFSA NDA, EFSA Journal 2015;13(3):4028),
+            // not Fineli's RAE (12:1, 24:1): RE = 2 × RAE − retinol. No
+            // retinol given (4 foods), it can't be told: unknown.
+            if let Some(rae) = per100.get("vitamin_a") {
+                match retinol.get(&id) {
+                    Some(r) => per100.insert("vitamin_a", 2.0 * rae - r),
+                    None => per100 = per100.without("vitamin_a"),
+                }
+            }
             // Fineli keeps withdrawn foods, marked `(ARC)`; they stay archived.
             let (name, archived) = match row[1].strip_prefix("(ARC)") {
                 Some(name) => (name, true),
@@ -211,7 +416,10 @@ fn parse(
                 servings: servings.remove(&id).unwrap_or_default(),
                 archived,
                 category: category_of(classes, &row[2], &row[3]).map(|c| c.as_str().to_owned()),
+                basis: None,
                 rev: None,
+                uid: None,
+                drink: Some(DRINK_CLASSES.contains(&row[2].as_str())),
             };
             Ok((id, food))
         })
@@ -262,7 +470,7 @@ pub fn classes(dir: &Path) -> Result<Vec<Class>, Error> {
                 category: CLASSES
                     .iter()
                     .find(|(c, _)| *c == code)
-                    .map(|&(_, cat)| cat),
+                    .and_then(|&(_, cat)| cat),
             }
         }));
     }
@@ -369,6 +577,56 @@ mod tests {
     }
 
     #[test]
+    fn a_plain_cooked_food_takes_its_ingredient_class() {
+        let class = dish_class;
+        assert_eq!(
+            class("PERUNA, KUORINEEN, KEITETTY, SUOLAA", "POTACOOK"),
+            Some("POTATO")
+        );
+        assert_eq!(class("NAUDANLIHAPIHVI, PAISTETTU", "MSTEAK"), Some("BEEF"));
+        assert_eq!(class("JAUHELIHA, SIKA-NAUTA, PAISTETTU", "MSTEAK"), None);
+        assert_eq!(class("KERMAPERUNA", "POTADISH"), None);
+    }
+
+    /// A package's dishes take their ingredient's class where plain; other
+    /// classes are kept as they are.
+    #[test]
+    fn a_packages_dishes_are_classed_by_ingredient() {
+        let dir = std::env::temp_dir().join(format!("kaloriina-classes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("food.csv"),
+            latin1_bytes(
+                "FOODID;FOODNAME;FOODTYPE;IGCLASS;FUCLASS\n\
+                 1;PERUNA, KUORINEEN, KEITETTY;FOOD;DISH;POTACOOK\n\
+                 2;NAUDANLIHAPIHVI, PAISTETTU;FOOD;DISH;MSTEAK\n\
+                 3;JAUHELIHA, SIKA-NAUTA, PAISTETTU;FOOD;DISH;MSTEAK\n\
+                 4;KERMAPERUNA;FOOD;DISH;POTADISH\n\
+                 5;JAUHELIHA, NAUTA, 10 %;FOOD;BEEF;MEATRAW\n",
+            ),
+        )
+        .unwrap();
+        let classes = ingredient_classes(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let classes: Vec<(i64, &str)> = classes
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|(id, c)| (*id, c.as_str()))
+            .collect();
+        assert_eq!(
+            classes,
+            [
+                (1, "POTATO"),
+                (2, "BEEF"),
+                (3, "DISH"),
+                (4, "DISH"),
+                (5, "BEEF")
+            ]
+        );
+    }
+
+    #[test]
     fn every_key_is_in_the_registry() {
         for (_, key, _) in COMPONENTS {
             assert!(crate::nutrients::find(key).is_some(), "{key}");
@@ -378,7 +636,7 @@ mod tests {
     #[test]
     fn reads_names_values_and_servings() {
         let food = latin1_bytes(
-            "FOODID;FOODNAME;FOODTYPE;IGCLASS;FUCLASS\n2;FRUKTOOSI, HEDELMÄSOKERI;FOOD;SUGAR;SUGADD\n7;VESI;FOOD;WATER;DRINK\n9;(ARC)VANHA LEIPÄ;FOOD;BREAD;BREAD\n",
+            "FOODID;FOODNAME;FOODTYPE;IGCLASS;FUCLASS\n2;FRUKTOOSI, HEDELMÄSOKERI;FOOD;SUGAR;SUGADD\n7;VESI;FOOD;WATER;DRWATER\n9;(ARC)VANHA LEIPÄ;FOOD;BREAD;BREAD\n",
         );
         let values = latin1_bytes(
             "FOODID;EUFDNAME;BESTLOC;ACQTYPE\n\
@@ -386,6 +644,10 @@ mod tests {
              2;CHOAVL;99,9;S\n\
              2;FIBC;0,5;S\n\
              2;VITD;1,5;S\n\
+             2;VITC;5,50;S\n\
+             2;VITA;243,81;S\n\
+             2;RETOL;0,5;S\n\
+             7;VITA;10;S\n\
              2;F18D3N3;250;S\n\
              2;NA;3;S\n\
              2;CHOCDF;99,88;S\n\
@@ -409,6 +671,9 @@ mod tests {
         assert_close!(get("energy"), 1698.3 / 4.184);
         assert_close!(get("net_carbs"), 99.9);
         assert_close!(get("vitamin_d"), 60.0, "µg to IU");
+        assert_close!(get("vitamin_c"), 5.5, "vitamin C, mg");
+        // 2 × RAE − retinol: β-carotene 6:1, other carotenoids 12:1 (EFSA RE).
+        assert_close!(get("vitamin_a"), 487.12, "RAE to RE");
         assert_close!(get("ala"), 0.25, "mg to g");
         assert_close!(get("sodium"), 3.0);
         assert_eq!(f.per100.get("fat"), None, "unknown stays unknown");
@@ -420,8 +685,16 @@ mod tests {
             }],
             "only household units with a weight"
         );
-        assert!(foods[1].1.per100.is_empty());
+        assert!(
+            foods[1].1.per100.is_empty(),
+            "no retinol: RE unknown, so no vitamin A"
+        );
         assert!(!foods[1].1.archived);
+        // Drunk by its use class, whatever its ingredient class.
+        assert_eq!(
+            foods.iter().map(|(_, f)| f.drink).collect::<Vec<_>>(),
+            [Some(false), Some(true), Some(false)]
+        );
         let (_, withdrawn) = &foods[2];
         assert_eq!(withdrawn.name, "Vanha leipä", "withdrawn marker stripped");
         assert!(withdrawn.archived, "withdrawn foods stay out of search");
@@ -438,11 +711,23 @@ mod tests {
         assert!(err.to_string().contains("lots"), "{err}");
     }
 
+    #[test]
+    fn a_dish_rounded_over_100_g_imports() {
+        // Fineli_Rel20 publishes calculated dishes at 101.28 g water per 100 g.
+        let mut conn = crate::open(Path::new(":memory:")).unwrap();
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fineli");
+        let foods = read(&dir).unwrap();
+        let (_, dish) = foods.iter().find(|(id, _)| *id == 6026).unwrap();
+        assert_close!(dish.per100.get("water").unwrap(), 101.28);
+        assert_eq!(store(&mut conn, &foods, &[]).unwrap(), 4);
+    }
+
     /// Synthetic codes: the real ones come from a package (see [`CLASSES`]).
-    const TABLE: &[(&str, FoodCategory)] = &[
-        ("FU_SWEET", FoodCategory::SweetsSnacks),
-        ("IG_FRUIT", FoodCategory::FruitVeg),
-        ("IG_MEAT", FoodCategory::ProcessedMeat),
+    const TABLE: &[(&str, Option<FoodCategory>)] = &[
+        ("FU_SWEET", Some(SweetsSnacks)),
+        ("FU_DISH", None),
+        ("IG_FRUIT", Some(FruitVeg)),
+        ("IG_MEAT", Some(ProcessedMeat)),
     ];
 
     fn package(rows: &str) -> Vec<(i64, FoodInput)> {
@@ -464,17 +749,43 @@ mod tests {
             "1;OMENA;FOOD;IG_FRUIT;FU_OTHER\n\
              2;HILLOMUNKKI;FOOD;IG_FRUIT;FU_SWEET\n\
              3;MAKKARA;FOOD;IG_MEAT;FU_OTHER\n\
-             4;LEIPÄ;FOOD;IG_BREAD;FU_BREAD\n",
+             4;LEIPÄ;FOOD;IG_BREAD;FU_BREAD\n\
+             5;MAKKARAKEITTO;FOOD;IG_MEAT;FU_DISH\n",
         );
         let category = |i: usize| foods[i].1.category.as_deref();
         assert_eq!(category(0), Some("fruit_veg"), "by IGCLASS");
         assert_eq!(category(1), Some("sweets_snacks"), "FUCLASS first");
         assert_eq!(category(2), Some("processed_meat"));
         assert_eq!(category(3), None, "unlisted classes have none");
-        // The real table: known categories, never fast food.
+        assert_eq!(category(4), None, "a FUCLASS listed as none stops");
+    }
+
+    #[test]
+    fn the_class_table_is_one_entry_per_code_and_never_fast_food() {
+        let mut codes: Vec<_> = CLASSES.iter().map(|(code, _)| *code).collect();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), CLASSES.len(), "a code listed twice");
         for (code, c) in CLASSES {
-            assert_ne!(*c, FoodCategory::FastFood, "{code}");
+            assert_ne!(*c, Some(FoodCategory::FastFood), "{code}");
         }
+    }
+
+    #[test]
+    fn real_classes_categorise_a_package() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fineli");
+        let foods = read(&dir).unwrap();
+        let category = |id: i64| {
+            let (_, food) = foods.iter().find(|(i, _)| *i == id).unwrap();
+            food.category.clone()
+        };
+        assert_eq!(category(101).as_deref(), Some("processed_meat"), "sausage");
+        assert_eq!(
+            category(102).as_deref(),
+            Some("sugary_drinks"),
+            "soft drink"
+        );
+        assert_eq!(category(6026), None, "a meat dish");
     }
 
     #[test]
@@ -485,7 +796,7 @@ mod tests {
              2;MAKKARA;FOOD;IG_MEAT;FU_OTHER\n\
              3;LEIPÄ;FOOD;IG_BREAD;FU_BREAD\n",
         );
-        store(&mut conn, &first).unwrap();
+        store(&mut conn, &first, &[]).unwrap();
         let id = |name: &str| -> i64 {
             conn.query_row("SELECT id FROM food WHERE name = ?", [name], |r| r.get(0))
                 .unwrap()
@@ -508,7 +819,7 @@ mod tests {
              2;MAKKARA;FOOD;IG_FRUIT;FU_OTHER\n\
              3;LEIPÄ;FOOD;IG_BREAD;FU_SWEET\n",
         );
-        store(&mut conn, &second).unwrap();
+        store(&mut conn, &second, &[]).unwrap();
         let now = |id| -> (Option<String>, bool) {
             conn.query_row(
                 "SELECT category, category_auto FROM food WHERE id = ?",
@@ -537,7 +848,7 @@ mod tests {
     #[test]
     fn reimport_keeps_a_category_you_cleared() {
         let mut conn = crate::open(Path::new(":memory:")).unwrap();
-        store(&mut conn, &package("1;SUKLAA;FOOD;IG_X;FU_SWEET\n")).unwrap();
+        store(&mut conn, &package("1;SUKLAA;FOOD;IG_X;FU_SWEET\n"), &[]).unwrap();
         let id: i64 = conn
             .query_row("SELECT id FROM food WHERE name = 'Suklaa'", [], |r| {
                 r.get(0)
@@ -554,7 +865,7 @@ mod tests {
             ..FoodInput::default()
         };
         db::food_update(&mut conn, id, &mine).unwrap();
-        store(&mut conn, &package("1;SUKLAA;FOOD;IG_X;FU_SWEET\n")).unwrap();
+        store(&mut conn, &package("1;SUKLAA;FOOD;IG_X;FU_SWEET\n"), &[]).unwrap();
         let after = db::food_get(&conn, id).unwrap().unwrap();
         assert_eq!(after.category, None, "you said none: kept");
     }

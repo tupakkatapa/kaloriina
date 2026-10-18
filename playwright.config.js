@@ -6,6 +6,8 @@ const port = process.env.PORT ?? "8091";
 // offline spec plays a login proxy behind the worker. Without a worker
 // (every other spec) it changes nothing.
 process.env.PW_EXPERIMENTAL_SERVICE_WORKER_NETWORK_EVENTS = "1";
+// The perf spec (KALORIINA_PERF=1) times a release server, as deployed.
+const profile = process.env.KALORIINA_PERF ? " --release" : "";
 
 export default defineConfig({
   testDir: "./tests",
@@ -43,10 +45,11 @@ export default defineConfig({
   ],
   webServer: {
     // Fresh in-memory database per run; Open Food Facts unreachable on purpose.
-    command: `RUST_LOG=warn cargo run -q -- serve --db :memory: --port ${port} --off-url http://127.0.0.1:9`,
+    command: `RUST_LOG=warn cargo run -q${profile} -- serve --db :memory: --port ${port} --off-url http://127.0.0.1:9`,
     url: `http://localhost:${port}`,
     // Never reuse: tests write data, and a stale server makes reruns fail.
     reuseExistingServer: false,
-    timeout: 120000,
+    // A release build from scratch takes minutes.
+    timeout: profile ? 900_000 : 120_000,
   },
 });

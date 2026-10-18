@@ -11,12 +11,13 @@ text_enum! {
     }
 }
 
-/// One step of a workout: an exercise done for reps or for seconds
-/// (optionally with a weight, and on one side if it's one-sided), a rest, or
-/// a repeat doing its steps a number of times (with `every`, a round takes
-/// that many seconds: the run pads each round out, EMOM style). Stored as
-/// JSON as is, so a
-/// renamed variant or field needs a migration rewriting the stored steps.
+/// One step of a workout: an exercise done for reps or for seconds (optionally
+/// with a weight, and on one side if it's one-sided), a rest, or a repeat doing
+/// its steps a number of times (with `every`, a round takes that many seconds:
+/// the run pads each round out, EMOM style), or a note (a name, words to read
+/// where it stands, or both: never run, timed or counted). Stored as JSON as
+/// is, so a renamed variant or field needs a migration rewriting the stored
+/// steps.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Step {
@@ -42,6 +43,12 @@ pub enum Step {
         every: Option<u32>,
         steps: Vec<Step>,
     },
+    Note {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+    },
 }
 
 /// A workout. Its time is estimated from its steps and its energy from
@@ -55,8 +62,28 @@ pub struct WorkoutInput {
     pub minutes: Option<u32>,
     #[serde(default)]
     pub kcal: Option<u32>,
+    /// Notes (how it's done, or anything): up to [`NOTES_MAX`] characters,
+    /// line breaks kept; blank or absent is none.
+    #[serde(default)]
+    pub notes: Option<String>,
+    /// Hidden from the lists to start or plan; past sessions and plans
+    /// keep it.
+    #[serde(default)]
+    pub archived: bool,
     #[serde(default)]
     pub rev: Option<i64>,
+    /// A create's retry key: a create naming one saved before
+    /// answers with that record. Ignored by an update.
+    #[serde(default)]
+    pub uid: Option<String>,
+}
+
+/// What names a workout, across every profile: once used it is archived,
+/// not deleted.
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkoutUsage {
+    pub activities: i64,
+    pub plans: i64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -66,7 +93,38 @@ pub struct Workout {
     pub steps: Vec<Step>,
     pub minutes: Option<u32>,
     pub kcal: Option<u32>,
+    pub notes: Option<String>,
+    pub archived: bool,
     pub rev: i64,
+}
+
+impl Workout {
+    /// Whether `w` is this workout as written: every field a person sees or
+    /// set (name, steps, time, energy, notes, archived). An import binds a
+    /// file's workout only to such a one, so nothing of the file is dropped.
+    /// A field added to [`WorkoutInput`] doesn't compile here until it's
+    /// decided.
+    #[must_use]
+    pub fn same_definition(&self, w: &WorkoutInput) -> bool {
+        let WorkoutInput {
+            name,
+            steps,
+            minutes,
+            kcal,
+            notes,
+            archived,
+            rev: _,
+            uid: _,
+        } = w;
+        (
+            &self.name,
+            &self.steps,
+            self.minutes,
+            self.kcal,
+            &self.notes,
+            self.archived,
+        ) == (name, steps, *minutes, *kcal, notes, *archived)
+    }
 }
 
 impl WorkoutInput {
@@ -79,8 +137,12 @@ impl WorkoutInput {
     /// repeats nested too deep, too many steps unrolled.
     pub fn checked(mut self) -> Result<Self, Error> {
         self.name = text(&self.name, "name", NAME_MAX)?;
+        super::checked_opt_uid(self.uid.as_deref())?;
         if self.steps.is_empty() {
             return Err(bad("a workout needs at least one step"));
+        }
+        if only_notes(&self.steps) {
+            return Err(bad("a workout needs at least one step besides notes"));
         }
         if self
             .minutes
@@ -97,6 +159,7 @@ impl WorkoutInput {
                 format!("kcal must be 1–{KCAL_MAX}"),
             ));
         }
+        self.notes = opt_multiline(self.notes.as_deref(), "notes", NOTES_MAX)?;
         check_steps(&mut self.steps, "", 1)?;
         if run_length(&self.steps) > RUN_STEPS_MAX {
             return Err(bad(format!(
@@ -167,15 +230,32 @@ pub(super) fn check_steps(steps: &mut [Step], parent: &str, depth: usize) -> Res
                 if steps.is_empty() {
                     return Err(here("a repeat needs at least one step"));
                 }
+                if only_notes(steps) {
+                    return Err(here("a repeat needs at least one step besides notes"));
+                }
                 check_steps(steps, &at, depth + 1)?;
+            }
+            Step::Note { name, text } => {
+                *name = opt_text(name.as_deref(), "note name", LABEL_MAX)
+                    .map_err(|e| here(&e.to_string()))?;
+                *text = opt_multiline(text.as_deref(), "note", NOTES_MAX)
+                    .map_err(|e| here(&e.to_string()))?;
+                if name.is_none() && text.is_none() {
+                    return Err(here("a note needs a name or text"));
+                }
             }
         }
     }
     Ok(())
 }
 
-/// Steps taken once repeats are unrolled, counting the pad that ends each
-/// round of a repeat done `every` so many seconds.
+/// Whether nothing in `steps` is done: every one a note.
+fn only_notes(steps: &[Step]) -> bool {
+    steps.iter().all(|s| matches!(s, Step::Note { .. }))
+}
+
+/// Steps taken once repeats are unrolled (notes take none), counting the pad
+/// that ends each round of a repeat done `every` so many seconds.
 pub(super) fn run_length(steps: &[Step]) -> u64 {
     steps
         .iter()
@@ -186,6 +266,7 @@ pub(super) fn run_length(steps: &[Step]) -> u64 {
                 steps,
                 ..
             } => u64::from(*times) * (run_length(steps) + u64::from(every.is_some())),
+            Step::Note { .. } => 0,
             _ => 1,
         })
         .sum()
@@ -221,7 +302,7 @@ pub fn exercise_steps(steps: &[Step]) -> Vec<ExerciseStep> {
                     sided: side.is_some(),
                 }),
                 Step::Repeat { steps, .. } => walk(steps, &position(parent, i), out),
-                Step::Rest { .. } => {}
+                Step::Rest { .. } | Step::Note { .. } => {}
             }
         }
     }
@@ -233,8 +314,8 @@ pub fn exercise_steps(steps: &[Step]) -> Vec<ExerciseStep> {
 /// Whether a step fits its exercise: reps or seconds as the exercise is
 /// measured, a weight only if it takes one (always, if it needs one), a side
 /// only if it's one-sided. The web editor applies the same rules (`stepError`
-/// in web/workouts.mjs); tests/step-rules.json holds the cases both must
-/// agree on.
+/// in web/workouts.mjs); tests/fixtures/step-cases.json holds the cases both
+/// must agree on.
 ///
 /// # Errors
 /// The first rule the step breaks, in the user's words.
@@ -289,7 +370,7 @@ mod step_rule_tests {
     #[test]
     fn step_rules_match_the_shared_cases() {
         let cases: Vec<Case> =
-            serde_json::from_str(include_str!("../../tests/step-rules.json")).unwrap();
+            serde_json::from_str(include_str!("../../tests/fixtures/step-cases.json")).unwrap();
         for case in cases {
             let exercise = Exercise {
                 id: 1,
@@ -318,5 +399,30 @@ mod step_rule_tests {
                 exercise.name
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod note_tests {
+    use super::*;
+
+    #[test]
+    fn notes_take_no_place_in_a_run() {
+        let note = || Step::Note {
+            name: None,
+            text: Some("Breathe.".into()),
+        };
+        let steps = [
+            note(),
+            Step::Rest { seconds: 5 },
+            Step::Repeat {
+                name: None,
+                times: 3,
+                every: None,
+                steps: vec![note(), Step::Rest { seconds: 5 }],
+            },
+        ];
+        assert_eq!(run_length(&steps), 4);
+        assert!(exercise_steps(&steps).is_empty());
     }
 }

@@ -111,6 +111,11 @@ pub fn exercise_save(
     input: &ExerciseInput,
 ) -> Result<Exercise, Error> {
     let tx = write(conn)?;
+    if id.is_none()
+        && let Some(earlier) = super::foods::created_before(&tx, "exercise", input.uid.as_deref())?
+    {
+        return Ok(written(exercise_get(&tx, earlier)?));
+    }
     let taken: bool = tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM exercise WHERE name = ?1 AND id IS NOT ?2)",
         params![input.name, id],
@@ -137,6 +142,19 @@ pub fn exercise_save(
                 id
             ],
         )?;
+        // A rename is yours: sets recorded under the old name read the new
+        // one (ADR 0006), their activities a revision on.
+        if old.name != input.name {
+            tx.execute(
+                "UPDATE activity SET rev = rev + 1 WHERE id IN (
+                     SELECT activity_id FROM activity_set WHERE exercise_id = ?1 AND name = ?2)",
+                params![id, old.name],
+            )?;
+            tx.execute(
+                "UPDATE activity_set SET name = ?3 WHERE exercise_id = ?1 AND name = ?2",
+                params![id, old.name, input.name],
+            )?;
+        }
         // Re-check what uses it against the new definition.
         for w in workouts_using(&tx, id)? {
             match check_exercises(&tx, &w.steps) {
@@ -153,12 +171,13 @@ pub fn exercise_save(
         id
     } else {
         tx.execute(
-            "INSERT INTO exercise (name, measure, variant_of, traits) VALUES (?, ?, ?, ?)",
+            "INSERT INTO exercise (name, measure, variant_of, traits, uid) VALUES (?, ?, ?, ?, ?)",
             params![
                 input.name,
                 input.measure,
                 input.variant_of,
-                json(&input.traits)
+                json(&input.traits),
+                input.uid
             ],
         )?;
         tx.last_insert_rowid()

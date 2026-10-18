@@ -1,286 +1,220 @@
-// Summary → Food: averages of eaten food against targets, where each
-// nutrient came from, a calendar of the days against a key target, energy
-// and macros by bucket, and the energy balance behind an adaptive energy
-// target.
+// Summary → Food: one chart, its tabs energy (eaten against burned and the
+// target) and each macro, the period's daily averages as the Diary's
+// nutrient card, a calendar of the days against a key target, and the
+// energy balance: what was eaten, burned and the gap a day, burned in its
+// parts.
 
-import { api, currentProfile, get, loadProfiles, scoped } from "../api.mjs";
+import { currentProfile, get, scoped } from "../api.mjs";
+import { bar, nutrientCard } from "../bars.mjs";
 import { calendarView } from "../calendar.mjs";
-import { quartiles } from "../calendar-grid.mjs";
-import { pretty, shift, today } from "../dates.mjs";
+import { cellAmount, quartiles } from "../calendar-grid.mjs";
+import { touching } from "../correlate.mjs";
+import { coverage } from "../coverage.mjs";
+import { daysIn, pretty, shift, tileThrough, today } from "../dates.mjs";
 import {
-  MIN_FOOD_DAYS,
-  MIN_WEIGH_SPAN,
-  balance,
-  balanceText,
-  balanceRange,
-  withEnergy,
-} from "../energy.mjs";
-import { judge, shade, tally } from "../food-calendar.mjs";
-import { compare, highlights, prepare, tileThrough } from "../insights.mjs";
-import { href, route } from "../nav.mjs";
+  BURNED_FROM,
+  maintenanceFrom,
+  maintenanceText,
+} from "../energy-text.mjs";
+import { shade, standing, tally, verdictWords } from "../food-calendar.mjs";
+import { fmt, isNil, lower, NBSP, noun, plural, whole } from "../format.mjs";
+import { compare, periodWords, prepare, seriesOf } from "../insights.mjs";
+import { href } from "../nav.mjs";
+import { goodSourceMin, nutrientWarnings } from "../nutrient-warnings.mjs";
 import {
-  KCAL_PER_G,
-  KEY_TARGETS,
-  byCategory,
-  fmt,
+  carbsFloor,
+  dailyMean,
   fmtUnit,
-  isNil,
+  foodDay,
   kcal,
+  kcalParts,
+  KEY_TARGETS,
+  KNOWN,
   nutrient,
-  ordered,
-  noun,
-  plural,
-  qty,
-  rangeOf,
 } from "../nutrients.mjs";
 import {
-  busy,
-  categoryRow,
-  choice,
-  confirmDialog,
-  fill,
-  h,
-  highlightList,
-  notify,
-  tiles,
-} from "../ui.mjs";
-import {
-  BY,
-  bucketed,
-  chart,
-  chartBy,
-  chartByPicker,
-  chartHead,
-  drawCharts,
-  pointLinks,
-} from "./summary-charts.mjs";
+  appOf,
+  bucketOf,
+  energyPartly,
+  energySeries,
+  estimateKcal,
+  gapOf,
+  gapText,
+  macroSeries,
+  maintenance as maintenanceOver,
+  periodNumbers,
+} from "../series.mjs";
+import { choice, fill, h } from "../ui.mjs";
+import { tiles } from "../tiles.mjs";
+import { seriesChart } from "./summary-charts.mjs";
+import { highlightStack } from "./summary-highlights.mjs";
 
 export const KEY = "food";
 export const LABEL = "Food";
 
-// A bucket's mean per logged day.
-const avg = (b, n = "energy") => b[n] / b.days;
+// ", and your target dashed" when series `s` draws its target as a line,
+// ", and your target range shaded" as a field (an "about" target's min to
+// max), nothing without one.
+const dashed = (s, what) => {
+  const target = s.marks.filter((m) => m.target);
+  if (target.length === 0) return "";
+  return target.some((m) => m.kind === "line")
+    ? `, and your ${what} dashed`
+    : `, and your ${what} range shaded`;
+};
 
-// A dashed line across the plot at `value`.
-const targetLine = (value, color) => ({
-  id: "target",
-  afterDatasetsDraw(c) {
-    const y = c.scales.y.getPixelForValue(value);
-    const { left, right } = c.chartArea;
-    const g = c.ctx;
-    g.save();
-    g.strokeStyle = color;
-    g.lineWidth = 2;
-    g.setLineDash([6, 4]);
-    g.beginPath();
-    g.moveTo(left, y);
-    g.lineTo(right, y);
-    g.stroke();
-    g.restore();
-  },
-});
-
-// Average energy and macros per logged day in each bucket of the period
-// (its days, weeks or months, as picked): line charts, then the numbers as
-// a list linking to the finer view. A new pick re-draws the section.
-function energyBreakdown(p, days, target) {
-  const node = h("section", { class: "energy-breakdown" });
-  const pick = chartByPicker(p.kind, (by) => paint(by));
-  const energyHead = h("h2");
-  const macrosHead = h("h2");
-  const energyBox = h("div", { class: "chart-box" });
-  const macrosBox = h("div", { class: "chart-box" });
-  const list = h("ul", { class: "days" });
-  const card = (head, name, box) =>
-    h(
-      "div",
-      { class: "stack" },
-      chartHead(head, pick(name)),
-      h("div", { class: "chart-card card" }, box),
-    );
-  fill(
-    node,
-    h(
-      "div",
-      { class: "split" },
-      card(energyHead, "Energy", energyBox),
-      card(macrosHead, "Macros", macrosBox),
-    ),
-    list,
-  );
-  // In this device's energy unit (kcal or kJ), as the list below.
-  const e = nutrient("energy");
-  const goal = target?.value && e.show(target.value);
-  const paint = (by) => {
-    const k = BY[by];
-    const buckets = new Map(
-      [...bucketed(by, days)].map(([key, rows]) => [
-        key,
-        {
-          days: rows.length,
-          ...Object.fromEntries(
-            KEY_TARGETS.map((n) => [
-              n,
-              rows.reduce((sum, d) => sum + (d.total[n] ?? 0), 0),
-            ]),
-          ),
-        },
-      ]),
-    );
-    const labels = [...buckets.keys()].map((key) => k.short(key, p.kind));
-    const links = [...buckets.keys()].map((key) => k.link(key, p.tab));
-    const values = [...buckets.values()];
-    energyHead.textContent = `Energy by ${by}`;
-    macrosHead.textContent = `Macros by ${by}`;
-    const energy = h("canvas", {
-      role: "img",
-      "aria-label": `Energy by ${by}: average ${e.unit} per logged day${goal ? `, target ${fmt(goal)} ${e.unit}` : ""}. The list below has the numbers.`,
-    });
-    const macros = h("canvas", {
-      role: "img",
-      "aria-label": `Macros by ${by}: average ${e.unit} from protein, carbohydrate and fat.`,
-    });
-    fill(energyBox, energy);
-    fill(macrosBox, macros);
-    fill(
-      list,
-      [...buckets].map(([key, b], i) =>
-        h(
-          "li",
-          {},
-          h("a", { href: links[i] }, k.label(key)),
-          h(
-            "span",
-            {},
-            kcal(b.energy / b.days),
-            by === "day"
-              ? null
-              : h(
-                  "span",
-                  { class: "muted" },
-                  ` · avg of ${plural(b.days, "day")}`,
-                ),
-          ),
-        ),
-      ),
-    );
-    drawCharts(() => {
-      const css = getComputedStyle(document.documentElement);
-      const color = (name) => css.getPropertyValue(name).trim();
-      const over = (b) => !isNil(target?.max) && avg(b) > target.max;
-      const line = (label, data, c) => ({
-        label,
-        data,
-        borderColor: color(c),
-        backgroundColor: color(c),
-        borderWidth: 2,
-        pointRadius: 3,
+// The period's chart, its days by the period's buckets (a week's and a
+// month's by day, a year's by week), one card showing the key target the
+// page's one switch picks: Energy (what was eaten on the food days and
+// what each day burned, each its points and trend) or a macro (its grams
+// a food day), and the target dashed in what it is a target for:
+// eaten's colour, the macro's.
+// `burned` [{day, kcal}] (web/series.mjs). {node, show(key)}.
+function foodCharts(p, days, targets, burned) {
+  const by = bucketOf(p.kind);
+  const each = by === "day" ? "each day's" : "each week's mean";
+  const chartOf = (key) => {
+    const n = nutrient(key);
+    if (key === "energy") {
+      const s = energySeries({
+        days,
+        burned,
+        target: targets.energy,
+        by,
+        show: n.show,
+        say: kcal,
       });
-      chart(energy, {
-        type: "line",
-        data: {
-          labels,
-          datasets: [
-            {
-              ...line(
-                `Energy (${e.unit})`,
-                values.map((b) => Math.round(e.show(avg(b)))),
-                "--energy",
-              ),
-              // Days, weeks or months over the target's max show red.
-              pointBackgroundColor: values.map((b) =>
-                color(over(b) ? "--danger" : "--energy"),
-              ),
-              pointBorderColor: values.map((b) =>
-                color(over(b) ? "--danger" : "--energy"),
-              ),
-            },
-            // In the legend only: the line itself is drawn across the
-            // whole plot (below), so even one point has its target.
-            ...(goal
-              ? [
-                  {
-                    label: "Target",
-                    data: [],
-                    borderColor: color("--muted"),
-                    borderDash: [6, 4],
-                    borderWidth: 2,
-                    pointRadius: 0,
-                  },
-                ]
-              : []),
-          ],
+      return {
+        s,
+        label: `Energy by ${by}, ${n.unit}: what you ate and an estimate of what you burned, ${each}, faint, and each one's trend${dashed(s, "eaten target")}. The list below has the numbers.`,
+        colors: {
+          eaten: ["--energy"],
+          burned: ["--fg"],
+          target: ["--energy"],
         },
-        // From zero, so day-to-day noise isn't magnified, and with room for
-        // the target even when every point is under it.
-        options: {
-          ...pointLinks(links),
-          scales: {
-            y: { beginAtZero: true, suggestedMax: goal && goal * 1.1 },
-          },
-        },
-        plugins: goal ? [targetLine(goal, color("--muted"))] : [],
-      });
-      chart(macros, {
-        type: "line",
-        data: {
-          labels,
-          datasets: [
-            ["protein", "Protein", "--protein"],
-            ["net_carbs", "Carbohydrate", "--carbs"],
-            ["fat", "Fat", "--fat"],
-          ].map(([n, label, c]) =>
-            line(
-              `${label} (${e.unit})`,
-              values.map((b) => Math.round(e.show(avg(b, n) * KCAL_PER_G[n]))),
-              c,
-            ),
-          ),
-        },
-        options: { ...pointLinks(links), scales: { y: { beginAtZero: true } } },
-      });
+      };
+    }
+    const s = macroSeries({
+      days,
+      key,
+      label: n.short,
+      target: targets[key],
+      by,
+      say: (v) => fmtUnit(key, v),
     });
+    const c = `--${key === "net_carbs" ? "carbs" : key}`;
+    return {
+      s,
+      label: `${n.short} by ${by}, ${n.unit}: ${each}, faint, and the trend${dashed(s, "target")}. The list below has the numbers.`,
+      colors: { [key]: [c], target: [c] },
+    };
   };
-  paint(chartBy(p.kind));
-  return node;
+  const node = h("section", { class: "chart-section" });
+  const show = (key) => {
+    const n = nutrient(key);
+    const { s, label, colors } = chartOf(key);
+    const [head, card, list] = seriesChart({
+      p,
+      by,
+      heading: `${n.short} by ${by}`,
+      label,
+      ...s,
+      unit: n.unit,
+      colors,
+    });
+    fill(node, head, card, list);
+  };
+  return { node, show };
 }
 
-// The period's food (`/summary`), the 4 weeks before today the energy
-// balance reads, and the period before for the Highlights; the targets and
-// Health Connect come shared (web/series.mjs).
-export async function load(p) {
-  const b = balanceRange(shift(today(), -1));
-  const [data, recent, recentWeights, before] = await Promise.all([
-    get(scoped(`/summary?from=${p.from}&to=${p.to}`)),
-    get(scoped(`/summary?from=${b.from}&to=${b.to}`)),
-    get(scoped(`/weights?from=${b.from}&to=${b.to}`)),
-    get(scoped(`/summary?from=${p.before.from}&to=${p.before.to}`)),
+// The period's food and the period before's (for the Highlights), read
+// from the shared rows (web/series.mjs: one union fetch), maintenance at
+// the period's last day over (the balance's note), and the nutrient
+// warnings, which start as soon as the period's food is in.
+export async function load(p, sharing) {
+  const shared = await sharing;
+  const summarised = (from, to) =>
+    shared.rows("days", from, to).then((days) => ({ days }));
+  const data = await summarised(p.from, p.to);
+  const [before, warnings, maintenance] = await Promise.all([
+    summarised(p.before.from, p.before.to),
+    foodWarnings(p, data, shared.targets),
+    maintenanceOver({ from: p.through, to: p.through }, shared),
   ]);
-  return { data, recent, recentWeights, before };
+  return { data, before, warnings, maintenance: maintenance.at(-1) ?? null };
 }
 
-// `/summary`'s numbers through `end`: its logged days up to then and their
-// mean, as the server takes it over the days that have any.
-function through(data, end) {
-  const days = data.days.filter((d) => d.day <= end);
-  const average = {};
-  for (const d of days)
-    for (const [k, v] of Object.entries(d.total))
-      average[k] = (average[k] ?? 0) + v / days.length;
-  return { days_logged: days.length, average, days };
+// The warnings shown at most: those that may reach the Highlights.
+const WARNINGS_SOURCED = 3;
+
+// The period's nutrient warnings and tips (web/nutrient-warnings.mjs)
+// through `p.through`, the strongest few with foods named: a high nutrient's
+// top sources in the period, a low one's good sources (eaten before
+// first, `/foods/rich`).
+async function foodWarnings(p, all, targets) {
+  const data = through(all, p.through);
+  const input = {
+    days: data.days,
+    elapsed: daysIn(p.from, p.through),
+    targets,
+    through: p.through,
+    period: periodWords(p),
+    latitude: currentProfile()?.latitude ?? null,
+  };
+  const first = nutrientWarnings(input);
+  const named = first
+    .filter((w) => w.tone === "warning")
+    .toSorted((a, b) => b.margin - a.margin)
+    .slice(0, WARNINGS_SOURCED);
+  if (named.length === 0) return first;
+  const found = await Promise.all(
+    named.map(({ id }) => {
+      const [kind, key] = id.split(":");
+      return kind === "high"
+        ? get(
+            scoped(
+              `/summary/foods?from=${p.from}&to=${p.through}&nutrient=${key}`,
+            ),
+          ).then((r) => [key, r.foods.map((f) => f.name)])
+        : get(
+            scoped(
+              `/foods/rich?nutrient=${key}&min=${goodSourceMin(key, targets)}`,
+            ),
+          ).then((r) => [key, r.map((f) => f.name)]);
+    }),
+  );
+  return nutrientWarnings({ ...input, sources: Object.fromEntries(found) });
 }
+
+// `/summary`'s food days through `end` and their mean of each key
+// (dailyMean: the warnings' too): a water-only day is no food day.
+function through(data, end) {
+  const days = data.days.filter((d) => d.day <= end && foodDay(d));
+  const keys = new Set(days.flatMap((d) => Object.keys(d.total)));
+  const average = carbsFloor(
+    Object.fromEntries([...keys].map((k) => [k, dailyMean(days, k)])),
+  );
+  return { average, days };
+}
+
+// Whether food day `d`'s total of `key` leaves some out (a floor, "≥"):
+// energy by the day's one rule (energyPartly), any key by its coverage.
+const partlyOf = (d, key) =>
+  (key === "energy" && energyPartly(d)) || coverage([d], key) < 1;
 
 // Food days as web/insights.mjs reads them: each key target a series over
-// the days with energy eaten (a water-only day is no food day).
+// the food days, with the days that are floors (`partly`).
 const foodSeries = (days) => {
-  const eaten = days.filter((d) => (d.total.energy ?? 0) > 0);
+  const eaten = days.filter((x) => foodDay(x));
   return Object.fromEntries(
-    METRICS.map(([key, label]) => [
+    calendarMetrics().map(([key, label]) => [
       key,
       {
-        values: new Map(eaten.map((d) => [d.day, d.total[key] ?? 0])),
-        samples: eaten.map((d) => d.day),
+        ...seriesOf(eaten, (d) => d.total[key] ?? 0),
         label,
+        partly: new Set(
+          eaten.filter((d) => partlyOf(d, key)).map((d) => d.day),
+        ),
       },
     ]),
   );
@@ -289,7 +223,7 @@ const foodSeries = (days) => {
 // What the Highlights and the calendar's tiles read: the period's food,
 // the shared series (steps, sleep, check-ins), the period before, the
 // targets. Today is still being logged, so the window ends yesterday.
-const insightsContext = (p, data, before, shared) => ({
+const insightsContext = (p, data, before, shared, warnings) => ({
   kind: p.kind,
   from: p.from,
   to: p.to,
@@ -298,237 +232,212 @@ const insightsContext = (p, data, before, shared) => ({
   series: { ...foodSeries(data.days), ...shared.series },
   prev: foodSeries(before.days),
   targets: shared.targets,
-  say: { energy: kcal },
+  // How each food series' value reads: energy in this device's unit, the
+  // rest in their nutrient's.
+  say: Object.fromEntries(
+    calendarMetrics().map(([key]) => [
+      key,
+      key === "energy" ? kcal : (v) => fmtUnit(key, v),
+    ]),
+  ),
+  warnings,
+  correlations: touching(shared.correlations, KEY),
 });
 
 export function render(
   p,
-  { data: all, recent, recentWeights, before },
+  { data: all, before, warnings, maintenance },
   shared,
 ) {
+  // The averages' days: through yesterday in a running period.
   const sourcesOf = (key) =>
-    href.sources(key, p.from, p.to, href.summary(p.kind, p.day, p.tab));
-  const data = through(all, p.end);
+    href.sources(key, p.from, p.through, href.summary(p.kind, p.day, p.tab));
+  const data = through(all, p.through);
   const byMetric = shared.targets;
-  const known = ordered().filter(
-    (n) => data.average[n.key] !== undefined || byMetric[n.key],
-  );
-  const primary = KEY_TARGETS.map(nutrient);
-  const rest = known.filter((n) => !KEY_TARGETS.includes(n.key));
-  const pct = (n) => {
-    const t = byMetric[n.key];
-    const goal = t?.value;
-    if (!goal) return "";
-    const mean = data.average[n.key] ?? 0;
-    const over = !isNil(t.max) && mean > t.max;
-    const share = (mean / goal) * 100;
-    return h("span", { class: over ? "over" : null }, `${fmt(share)} %`);
-  };
-  const row = (n) =>
-    h(
-      "tr",
-      {},
-      h(
-        "th",
-        { scope: "row" },
-        data.average[n.key]
-          ? h("a", { href: sourcesOf(n.key) }, n.label)
-          : n.label,
-      ),
-      h("td", {}, fmtUnit(n.key, data.average[n.key] ?? 0)),
-      // The number alone: the per-day cell beside it carries the unit, so
-      // four columns fit one line at 320 px.
-      h(
-        "td",
-        { class: "range" },
-        byMetric[n.key] ? rangeOf(n.key, byMetric[n.key]) : "",
-      ),
-      h("td", {}, pct(n)),
-    );
-  const ctx = insightsContext(p, all, before, shared);
+  // What each day of the period burned, through yesterday (web/series.mjs).
+  const { days: burned, bmr } = shared.burned;
+  const numbers = periodNumbers({ days: data.days, burned, bmr });
+  const ctx = insightsContext(p, all, before, shared, warnings);
   // The picked metric's comparison is its calendar tile, not a Highlight.
-  const slot = h("div", { class: "insights" });
-  const showHighlights = (metric) => {
-    const list = highlightList(
-      highlights("food", ctx, { omit: [`change:${metric}`] }),
-    );
-    fill(slot, list);
-    slot.hidden = !list;
+  const slot = highlightStack(KEY, ctx, p, shared);
+  const eaten = all.days.some(foodDay);
+  // One switch picks the key target the chart, the calendar and its
+  // tiles, and the Highlights' comparison all show; kept on this device.
+  const charts =
+    data.days.length > 0 ? foodCharts(p, data.days, byMetric, burned) : null;
+  const calendar = eaten ? foodCalendar(p, all.days, byMetric, ctx) : null;
+  const pick = (key) => {
+    charts?.show(key);
+    calendar?.paint(key);
+    slot.paint([`change:${key}`]);
   };
-  showHighlights(pickedMetric());
+  pick(picked());
   return [
     slot,
-    h(
-      "p",
-      { class: "muted" },
-      `${plural(data.days_logged, "day")} logged${p.end < p.to ? " through yesterday" : ""}`,
-    ),
-    data.days_logged
-      ? [
-          h(
-            "table",
-            { class: "grid" },
-            h(
-              "thead",
-              {},
-              h(
-                "tr",
-                {},
-                h("th", {}, "Nutrient"),
-                h("th", {}, "Per day"),
-                h("th", {}, "Target"),
-                h("th", {}, "%"),
-              ),
-            ),
-            h("tbody", {}, primary.map(row)),
-          ),
-          rest.length
-            ? h(
-                "details",
-                { class: "fold" },
-                h("summary", {}, "Other nutrients"),
-                h(
-                  "table",
-                  { class: "grid" },
-                  h(
-                    "tbody",
-                    {},
-                    byCategory(rest).map(([name, list]) => [
-                      categoryRow(name, 4),
-                      list.map(row),
-                    ]),
-                  ),
-                ),
-              )
-            : null,
-        ]
+    charts || calendar
+      ? choice({
+          name: METRIC_KEY,
+          label: "Chart and calendar",
+          look: "switch",
+          options: calendarMetrics(),
+          value: picked(),
+          onChange: (k) => {
+            localStorage.setItem(METRIC_KEY, k);
+            pick(k);
+          },
+        })
+      : null,
+    charts?.node,
+    data.days.length > 0
+      ? dailyAverages(p, data, byMetric, sourcesOf)
       : h(
           "p",
-          { class: "muted" },
-          p.end < p.to
+          { class: "muted food-nothing" },
+          p.through < p.to
             ? "Nothing logged through yesterday."
             : "Nothing logged in this period.",
         ),
-    all.days_logged
-      ? foodCalendar(p, all.days, byMetric, ctx, showHighlights)
-      : null,
-    data.days_logged ? energyBreakdown(p, data.days, byMetric.energy) : null,
-    energyBalance(recent.days, recentWeights, byMetric.energy),
+    calendar?.node,
+    energyBalance(numbers, maintenance),
   ];
 }
 
-// "Energy balance (last 4 weeks)": what you ate against how your weight
-// moved, and the energy target that meets your goal, set with a confirm and
-// undone from the toast.
-function energyBalance(days, weights, current) {
-  const b = balance({
-    days,
-    weights,
-    yesterday: shift(today(), -1),
-    goal: currentProfile()?.goal_kg_per_week ?? 0,
-    current: current?.value ?? null,
-  });
+// "Daily averages" (through yesterday in a running period): the
+// Diary's nutrient card with each nutrient's mean a food day (bar()'s
+// average: one verdict path; "≥" where foods without it made up some of
+// the food, energy's where a day's leaves some out, "–" when none carried
+// it), each opening where it came from.
+function dailyAverages(p, data, byMetric, sourcesOf) {
+  const carried = (key) => data.days.some((d) => !isNil(d.total[key]));
+  const barOf = (key, compact) => {
+    const m = carried(key) ? (data.average[key] ?? 0) : null;
+    return bar(key, byMetric[key], m, m, {
+      average: true,
+      compact,
+      href: m ? sourcesOf(key) : null,
+      share: coverage(data.days, key),
+      // A mean over a day whose energy leaves some out is a floor, by the
+      // day's one rule (energyPartly: the Diary's and the balance line's).
+      lower: key === "energy" ? data.days.some(energyPartly) : null,
+    });
+  };
+  return h(
+    "div",
+    { class: "stack daily-averages" },
+    nutrientCard(barOf, {
+      headline: h(
+        "h2",
+        {},
+        `Daily averages${p.through < p.to ? " through yesterday" : ""}`,
+      ),
+      tracked: (key) => carried(key) || Boolean(byMetric[key]),
+    }),
+  );
+}
+
+// Burned and maintenance this far apart (a share of maintenance) are
+// both named.
+const APART = 0.15;
+
+// A number of kcal (or kJ) without its unit.
+const v = (x) => kcalParts(x).value;
+
+// "Energy balance" over the period's food days with a burned estimate
+// (`numbers`, periodNumbers'). Its line leads with the gap a day against
+// what most says what keeps your weight: a `maintenance` (at the period's
+// end) measured from the weight trend when there is one ("Eaten
+// 1,874 · Maintenance ≈ 2,100 · Deficit ≈ 230 kcal a day, from your
+// weight trend"), the energy model's burned then second, named, with its
+// own gap; else burned's ("Eaten 1,297 · Burned ≈ 2,520 · Deficit ≈ 1,220
+// kcal a day", web/series.mjs gapText), and where burned and maintenance
+// are more than APART apart, a line naming both. "Eaten ≥ …" and a bound
+// when a day's energy leaves some out. Estimates to 10 kcal or 50 kJ.
+// Burned in its parts. Without such a day, nothing (no heading on
+// its own).
+function energyBalance(numbers, maintenance) {
+  const n = numbers;
+  if (!n) return null;
+  // Each part whole: a phone's line wraps between parts only.
+  const eaten = whole(`Eaten ${n.partly ? "≥ " : ""}${v(n.eaten)}`);
+  const burned = `≈ ${kcal(estimateKcal(n.burned))} a day`;
+  const measured = maintenance?.source === "balance";
+  const gap = measured ? gapOf(n.eaten - maintenance.kcal, n.partly) : n;
   return h(
     "section",
     { class: "finder-section energy-balance" },
-    h("h2", {}, "Energy balance (last 4 weeks)"),
-    b.enough
-      ? [
-          h("p", {}, balanceText(b)),
-          b.offer
-            ? h(
-                "button",
-                {
-                  type: "button",
-                  onclick: busy(() => setEnergyTarget(b.target)),
-                },
-                `Energy target → ${kcal(b.target)}`,
-              )
-            : null,
-        ]
-      : h(
-          "p",
-          { class: "muted" },
-          `Not enough data yet: needs ${MIN_FOOD_DAYS} days with food logged and two weigh-ins ${MIN_WEIGH_SPAN} or more days apart. So far: ${plural(b.foodDays, "day")} with food; weigh-ins span ${plural(b.span, "day")}.`,
-        ),
-  );
-}
-
-// A target's value in `list`.
-const valueOf = (list, key) => list.find((t) => t.metric === key)?.value;
-
-// The targets as a PUT takes them: the profile's own (a registry default
-// stays one, not a row).
-const targetInput = (list) =>
-  list
-    .filter((t) => !t.default)
-    .map(({ metric, value }) => ({ metric, value }));
-
-// PUT `targets` made from profile revision `rev` (409 `stale` if it moved
-// on since), then re-read the profile for the next change.
-async function putTargets(rev, targets) {
-  await api("PUT", scoped("/targets"), { rev, targets });
-  await loadProfiles();
-}
-
-async function setEnergyTarget(energy) {
-  // The rev first: targets changed after it make the PUT stale, never lost.
-  await loadProfiles();
-  const rev = currentProfile().rev;
-  const before = targetInput(await get(scoped("/targets")));
-  const after = withEnergy(before, energy);
-  const [p, c, f] = ["protein", "net_carbs", "fat"].map((k) =>
-    valueOf(after, k),
-  );
-  const ok = await confirmDialog(`Set energy target to ${kcal(energy)}?`, {
-    detail: [
-      isNil(p) || isNil(c) || isNil(f)
-        ? null
-        : `Protein stays ${qty(p, "g", 0)}; carbohydrate ${qty(c, "g", 0)} and fat ${qty(f, "g", 0)} scale with the energy.`,
-      "Recalculate on Targets replaces this.",
-    ]
-      .filter(Boolean)
-      .join(" "),
-    confirm: "Set target",
-    danger: false,
-  });
-  if (!ok) return;
-  await putTargets(rev, after);
-  const old = valueOf(before, "energy");
-  notify(`Energy target ${isNil(old) ? "none" : kcal(old)} → ${kcal(energy)}`, {
-    action: {
-      label: "Undo",
-      run: async () => {
-        await loadProfiles();
-        await putTargets(currentProfile().rev, before);
-        route();
+    h("h2", {}, "Energy balance"),
+    h(
+      "p",
+      { class: `balance-line balance-${gap.word}` },
+      measured
+        ? `${eaten} · ${whole(`Maintenance ≈ ${v(estimateKcal(maintenance.kcal))}`)} · ${gapText(gap)}, ${whole("from your weight trend")}`
+        : `${eaten} · ${whole(`Burned ≈ ${v(estimateKcal(n.burned))}`)} · ${gapText(n)}`,
+    ),
+    tiles(`Energy balance over ${plural(n.n, "food-logged day")}`, [
+      {
+        value: `≈ ${kcal(n.resting)}`,
+        short: "resting (BMR) a day",
+        long: `What your body burns at complete rest (BMR, basal metabolic rate), a day: ${restingWords(n)}.`,
       },
-    },
-  });
-  route();
+      {
+        value: `≈ ${kcal(n.tef)}`,
+        short: "digesting (TEF) a day",
+        long: "Energy spent digesting what you ate (TEF, thermic effect of food): about a tenth of it.",
+      },
+      {
+        value: `≈ ${kcal(n.everyday)}`,
+        short: "everyday movement a day",
+        long: "Ordinary moving about, not workouts: estimated as a tenth of your resting energy, every day.",
+      },
+      {
+        value: `≈ ${kcal(n.active)}`,
+        short: "more active a day",
+        long: "Movement beyond everyday: your device's active energy or your activities, whichever is larger, less everyday movement.",
+      },
+    ]),
+    measured
+      ? h(
+          "p",
+          { class: "muted energy-sources" },
+          `Burned by the energy model ${burned} (from ${BURNED_FROM[n.source]}): ${lower(gapText(n))}.`,
+        )
+      : maintenance &&
+          Math.abs(n.burned - maintenance.kcal) > APART * maintenance.kcal
+        ? h(
+            "p",
+            { class: "muted energy-sources" },
+            `Burned ${burned} (from ${BURNED_FROM[n.source]}) against maintenance of ${maintenanceText(maintenance)} (from ${maintenanceFrom(maintenance)}).`,
+          )
+        : null,
+  );
 }
 
-// The calendar's metrics: the key targets, as the choice names them.
-const METRICS = [
-  ["energy", "Energy"],
-  ["protein", "Protein"],
-  ["net_carbs", "Carbohydrate"],
-  ["fat", "Fat"],
-];
-const METRIC_KEY = "food-calendar-metric";
-const pickedMetric = () => {
+// Where the balance's resting energy came from (periodNumbers'
+// `restingFrom`): Health Connect's app on every day, on some ("Health
+// Connect on 20 of 30 days, else Mifflin–St Jeor"), or none (by
+// Mifflin–St Jeor from your weight, height, age and sex).
+function restingWords(n) {
+  const { health_connect: hc, origin } = n.restingFrom;
+  if (!hc) return "by Mifflin–St Jeor, from your weight, height, age and sex";
+  return hc === n.n
+    ? `from Health Connect (${appOf(origin)})`
+    : `from Health Connect on ${hc} of ${plural(n.n, "day")}, else Mifflin–St Jeor`;
+}
+
+// The chart's and calendar's metrics: the key targets, as the switch
+// names them; the pick kept on this device.
+const calendarMetrics = () => KEY_TARGETS.map((k) => [k, nutrient(k).short]);
+const METRIC_KEY = "food-metric";
+const picked = () => {
   const saved = localStorage.getItem(METRIC_KEY);
-  return METRICS.some(([k]) => k === saved) ? saved : "energy";
+  return calendarMetrics().some(([k]) => k === saved) ? saved : "energy";
 };
 
 // "+6 %", "−12 %", "±0 %".
 const signedPct = (change) => {
   const r = Math.round(change * 100);
-  return `${r > 0 ? "+" : r < 0 ? "−" : "±"}${Math.abs(r)} %`;
+  return `${r > 0 ? "+" : r < 0 ? "−" : "±"}${Math.abs(r)}${NBSP}%`;
 };
-
-// A calendar cell's number, built once.
-const UNGROUPED = new Intl.NumberFormat(undefined, { useGrouping: false });
 
 // A legend row: a cell's look and its words.
 const swatch = (cls, words) =>
@@ -540,73 +449,116 @@ const swatch = (cls, words) =>
   );
 
 // Each day of the period against the picked key target (Energy · Protein ·
-// Carbohydrate · Fat, kept on this device): its tiles (the food days
-// through yesterday, as the Highlights count them), its amount, shaded on
-// target, under (lighter the further) or over (outlined); without a
-// target, by amount. A new pick re-paints in place and tells `onPick`.
-function foodCalendar(p, days, byMetric, ctx, onPick) {
-  let key = pickedMetric();
+// Carbs · Fat): its tiles (the food days through yesterday, as the
+// Highlights count them), its amount, shaded on target, under (lighter the
+// further) or over (outlined); without a target, by amount. {node,
+// paint(key)}: a new pick re-paints in place.
+function foodCalendar(p, days, byMetric, ctx) {
   const end = tileThrough(p.from, p.to, ctx.last);
-  const counted = days.filter((d) => (d.total.energy ?? 0) > 0 && d.day <= end);
+  // A water-only day is no food day: nothing logged here.
+  const eaten = days.filter((x) => foodDay(x));
+  const counted = eaten.filter((d) => d.day <= end);
+  // Today's still being logged: its amount shows, unjudged.
+  const done = (day) => day <= end;
   const prepared = prepare(ctx);
-  const node = h("section", { class: "finder-section food-calendar" });
-  const body = h("div", { class: "stack" });
-  const paint = () => {
+  const node = h("section", { class: "finder-section food-calendar stack" });
+  const paint = (key) => {
     const n = nutrient(key);
     const target = byMetric[key];
     const judged = !isNil(target?.value);
-    const amounts = new Map(days.map((d) => [d.day, d.total[key] ?? 0]));
-    const bounds = quartiles([...amounts.values()]);
+    const amounts = new Map(eaten.map((d) => [d.day, d.total[key] ?? 0]));
+    // A day leaving some of `key` out is a floor, "≥" as the Diary's
+    // (partlyOf), judged only as far as it proves.
+    const byDay = new Map(eaten.map((d) => [d.day, d]));
+    const partly = new Set(
+      eaten.filter((d) => partlyOf(d, key)).map((d) => d.day),
+    );
+    const atLeast = (day) => (partly.has(day) ? `≥${NBSP}` : "");
+    const bounds = quartiles(counted.map((d) => d.total[key] ?? 0));
     const of = (day) => amounts.get(day) ?? 0;
     const t = tally(
       counted.map((d) => d.total[key] ?? 0),
       target,
+      counted.map((d) => partly.has(d.day)),
     );
+    // The period's mean and total are floors when any day is.
+    const floorOf = t.partly ? `≥${NBSP}` : "";
     const change = compare(prepared, key);
     const series = {
-      // Ungrouped, so 5 digits fit a phone's cell; the label groups them.
       amount: (day) =>
-        amounts.has(day) ? UNGROUPED.format(Math.round(n.show(of(day)))) : "",
-      step: (day) => (amounts.has(day) ? shade(of(day), target, bounds) : 0),
+        amounts.has(day) ? `${atLeast(day)}${cellAmount(n.show(of(day)))}` : "",
+      step: (day) =>
+        amounts.has(day) && done(day)
+          ? shade(of(day), target, bounds, partly.has(day))
+          : 0,
       unlogged: (day) => !amounts.has(day),
-      over: (day) => amounts.has(day) && judge(of(day), target) === "over",
+      over: (day) =>
+        amounts.has(day) &&
+        done(day) &&
+        standing(of(day), target, partly.has(day)) === "over",
       marks: () => null,
       // "Tue, Oct 6: 2,140 kcal, on target", "…: 1,760 kcal, 380 kcal
-      // under", "…: 2,500 kcal, over", "…: nothing logged".
+      // under", "…: ≥ 1,848 kcal, at most 52 kcal under", "…: 2,500
+      // kcal, over", "…: nothing logged", today's "…: ≥ 667 kcal so far".
       label: (day) => {
         if (!amounts.has(day)) return `${pretty(day)}: nothing logged`;
         const amount = of(day);
-        const verdict = {
-          on: ", on target",
-          over: ", over",
-          under: `, ${fmtUnit(key, target?.min - amount)} under`,
-        }[judge(amount, target)];
-        return `${pretty(day)}: ${fmtUnit(key, amount)}${verdict ?? ""}`;
+        const shown = `${atLeast(day)}${fmtUnit(key, amount)}`;
+        if (!done(day)) return `${pretty(day)}: ${shown} so far`;
+        const verdict = verdictWords(amount, target, {
+          floor: partly.has(day),
+          known: coverage([byDay.get(day)], key) >= KNOWN,
+          say: (x) => fmtUnit(key, x),
+        });
+        return `${pretty(day)}: ${shown}${verdict}`;
       },
     };
-    const vs = change && [signedPct(change.change), `vs ${prepared.noun}`];
+    const what = lower(n.label);
+    const floorWords = t.partly
+      ? ` At least: some food logged without ${what}.`
+      : "";
+    const vs = change && {
+      value: signedPct(change.change),
+      short: `vs ${prepared.noun}`,
+      long: `Your ${what} a day this period against ${prepared.noun}, food-logged days only.`,
+    };
     const stats = judged
       ? [
-          [`${fmt(t.on)} of ${fmt(t.days)}`, "days on target"],
-          [fmtUnit(key, t.mean), "a day"],
+          {
+            value: `${fmt(t.on)} of ${fmt(t.days)}`,
+            short: "days on target",
+            long: `Days whose ${what} landed in your target, of the days with food logged.`,
+          },
           isNil(target.max)
             ? null
-            : [fmt(t.over), noun(t.over, "day over", "days over")],
+            : {
+                value: fmt(t.over),
+                short: noun(t.over, "day over", "days over"),
+                long: `Days whose ${what} went over your target's upper limit.`,
+              },
           vs,
         ]
       : [
-          [fmt(t.days), noun(t.days, "logged day")],
-          [fmtUnit(key, t.mean), "a day"],
-          [fmtUnit(key, t.total), "in total"],
+          {
+            value: fmt(t.days),
+            short: noun(t.days, "logged day"),
+            long: "Days with food logged.",
+          },
+          {
+            value: `${floorOf}${fmtUnit(key, t.total)}`,
+            short: "in total",
+            long: `All the ${what} you logged this period, added up.${floorWords}`,
+          },
           vs,
         ];
     fill(
-      body,
-      tiles(METRICS.find(([k]) => k === key)[1], stats),
+      node,
+      tiles(n.short, stats),
       calendarView({
         kind: p.kind,
         from: p.from,
-        caption: `${n.label} by day`,
+        // Not the chart's heading again.
+        caption: `${n.short}: days ${judged ? "against the target" : "by amount"}`,
         series,
         monthLink: (month) => href.summary("month", `${month}-01`, KEY),
         className: "food-cal",
@@ -620,41 +572,23 @@ function foodCalendar(p, days, byMetric, ctx, onPick) {
           judged
             ? [
                 swatch("shade-4", "on target"),
-                swatch("shade-3", "under, ≥ 75 %"),
-                swatch("shade-2", "≥ 50 %"),
+                swatch("shade-3", `under, ≥ 75${NBSP}%`),
+                swatch("shade-2", `≥ 50${NBSP}%`),
                 swatch("shade-1", "less"),
               ]
-            : ["None", "less", "", "", "most this period"].map((w, i) =>
+            : ["0", "less", "", "", "most this period"].map((w, i) =>
                 swatch(`shade-${i}`, w),
               ),
         ),
         h(
           "ul",
           { "aria-label": "Marks" },
-          swatch("none", "nothing logged"),
+          swatch("none", "Nothing logged"),
           judged && !isNil(target.max) ? swatch("shade-0 over", "over") : null,
         ),
         judged ? null : h("p", {}, "No target: shaded by amount"),
       ),
     );
   };
-  fill(
-    node,
-    choice({
-      name: "food-calendar-metric",
-      label: "Calendar",
-      look: "switch",
-      options: METRICS,
-      value: key,
-      onChange: (k) => {
-        key = k;
-        localStorage.setItem(METRIC_KEY, k);
-        paint();
-        onPick(k);
-      },
-    }),
-    body,
-  );
-  paint();
-  return node;
+  return { node, paint };
 }

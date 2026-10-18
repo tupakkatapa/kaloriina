@@ -61,28 +61,47 @@ macro_rules! text_enum {
 
 mod activity;
 mod clock;
+mod coverage;
+mod device;
 mod diary;
 mod exercise;
+mod feedback;
 mod food;
 mod habit;
+mod health_record;
+mod hook;
+pub mod import;
+mod labels;
 mod limits;
 mod metric;
+mod photo;
 mod profile;
+mod reports;
 mod scale;
-mod session;
+mod score;
+pub(crate) mod sleep;
 mod transfer;
 mod workout;
 pub use activity::*;
 pub use clock::*;
+pub use coverage::*;
+pub use device::*;
 pub use diary::*;
 pub use exercise::*;
+pub use feedback::*;
 pub use food::*;
 pub use habit::*;
+pub use health_record::*;
+pub use hook::*;
+pub use labels::*;
 pub use limits::*;
 pub use metric::*;
+pub use photo::*;
 pub use profile::*;
+pub use reports::*;
 pub use scale::*;
-pub use session::*;
+pub use score::{REASONS, Reason, Scoring, sweetened};
+pub use sleep::{HealthConnectSleeps, health_connect_sleeps};
 pub use transfer::*;
 pub use workout::*;
 
@@ -96,6 +115,77 @@ pub struct ProfileId(pub i64);
 
 pub fn bad(msg: impl Into<String>) -> Error {
     Error::invalid(msg.into())
+}
+
+text_enum! {
+    /// Who said it (ADR 0019, D10), in the order a source wins where two
+    /// describe the same thing: what you typed, then a device by name (your
+    /// scale, then the phone), then an import. `Ord` is that precedence:
+    /// the one that wins sorts first. Every entity's own source vocabulary
+    /// maps into it (`From`), so one rule ranks them all.
+    pub enum Provenance {
+        Hand = "hand",
+        OpenScale = "openscale",
+        HealthConnect = "health_connect",
+        Import = "import",
+    }
+}
+
+impl From<WeightSource> for Provenance {
+    fn from(s: WeightSource) -> Self {
+        match s {
+            WeightSource::Hand => Self::Hand,
+            WeightSource::OpenScale => Self::OpenScale,
+            WeightSource::HealthConnect => Self::HealthConnect,
+        }
+    }
+}
+
+impl From<ActivitySource> for Provenance {
+    fn from(s: ActivitySource) -> Self {
+        match s {
+            ActivitySource::Hand => Self::Hand,
+            ActivitySource::HealthConnect => Self::HealthConnect,
+            ActivitySource::Import => Self::Import,
+        }
+    }
+}
+
+impl From<KcalSource> for Provenance {
+    fn from(s: KcalSource) -> Self {
+        match s {
+            KcalSource::Hand => Self::Hand,
+            // The device's total is the device's word all the same.
+            KcalSource::HealthConnect | KcalSource::HealthConnectTotal => Self::HealthConnect,
+            KcalSource::Import => Self::Import,
+        }
+    }
+}
+
+impl From<NapSource> for Provenance {
+    fn from(s: NapSource) -> Self {
+        match s {
+            NapSource::Hand => Self::Hand,
+            NapSource::HealthConnect => Self::HealthConnect,
+            NapSource::Import => Self::Import,
+        }
+    }
+}
+
+impl From<StageSource> for Provenance {
+    fn from(s: StageSource) -> Self {
+        match s {
+            StageSource::HealthConnect => Self::HealthConnect,
+            StageSource::Import => Self::Import,
+        }
+    }
+}
+
+/// `sum / n` rounded half up, `None` when `n` isn't above 0: a mean of
+/// whole numbers as a whole number, as the phone's `Math.round` gives.
+#[must_use]
+pub fn mean_rounded(sum: i64, n: i64) -> Option<i64> {
+    (n > 0).then(|| (2 * sum + n).div_euclid(2 * n))
 }
 
 /// "a, b or c".
@@ -152,7 +242,7 @@ pub fn opt_text(s: Option<&str>, what: &str, max: usize) -> Result<Option<String
         .transpose()
 }
 
-/// Like [`opt_text`] for text of several lines (recipe instructions): line
+/// Like [`opt_text`] for text of several lines (recipe notes): line
 /// breaks (`\r\n` read as `\n`) and tabs are kept, any other control or
 /// bidi character is refused.
 ///
@@ -271,6 +361,63 @@ pub fn is_date(s: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// One order ranks every source; each entity's vocabulary
+    /// maps word for word into it, the device's total named apart.
+    #[test]
+    fn every_provenance_variant_is_ranked() {
+        assert_eq!(
+            Provenance::ALL
+                .iter()
+                .map(|p| p.as_str())
+                .collect::<Vec<_>>(),
+            ["hand", "openscale", "health_connect", "import"]
+        );
+        assert!(Provenance::ALL.is_sorted());
+        let words = |all: Vec<(&'static str, Provenance)>| {
+            for (word, p) in all {
+                let expected = match word {
+                    "health_connect_total" => Provenance::HealthConnect,
+                    w => Provenance::parse(w).unwrap_or_else(|| panic!("{w} is unranked")),
+                };
+                assert_eq!(p, expected, "{word}");
+            }
+        };
+        words(
+            WeightSource::ALL
+                .iter()
+                .map(|&s| (s.as_str(), s.into()))
+                .collect(),
+        );
+        words(
+            ActivitySource::ALL
+                .iter()
+                .map(|&s| (s.as_str(), s.into()))
+                .collect(),
+        );
+        words(
+            KcalSource::ALL
+                .iter()
+                .map(|&s| (s.as_str(), s.into()))
+                .collect(),
+        );
+        words(
+            NapSource::ALL
+                .iter()
+                .map(|&s| (s.as_str(), s.into()))
+                .collect(),
+        );
+        words(
+            StageSource::ALL
+                .iter()
+                .map(|&s| (s.as_str(), s.into()))
+                .collect(),
+        );
+        assert_eq!(
+            Provenance::from(KcalSource::HealthConnectTotal),
+            Provenance::HealthConnect
+        );
+    }
+
     #[test]
     fn civil_dates_and_ages() {
         assert_eq!(civil_from_days(0), (1970, 1, 1));
@@ -284,22 +431,16 @@ mod tests {
 
     #[test]
     fn multiline_text_keeps_lines_and_refuses_the_rest() {
-        let ok = opt_multiline(Some("  1. Boil\r\n\t2. Eat \n"), "instructions", 20).unwrap();
+        let ok = opt_multiline(Some("  1. Boil\r\n\t2. Eat \n"), "notes", 20).unwrap();
         assert_eq!(ok.as_deref(), Some("1. Boil\n\t2. Eat"));
-        assert_eq!(
-            opt_multiline(Some(" \n "), "instructions", 20).unwrap(),
-            None
-        );
-        assert_eq!(opt_multiline(None, "instructions", 20).unwrap(), None);
+        assert_eq!(opt_multiline(Some(" \n "), "notes", 20).unwrap(), None);
+        assert_eq!(opt_multiline(None, "notes", 20).unwrap(), None);
         for bad in ["a\u{1b}[2J", "a\u{202e}b", "a\rb", "a\0"] {
-            assert!(
-                opt_multiline(Some(bad), "instructions", 20).is_err(),
-                "{bad:?}"
-            );
+            assert!(opt_multiline(Some(bad), "notes", 20).is_err(), "{bad:?}");
         }
         let long = "é".repeat(21);
-        assert!(opt_multiline(Some(&long), "instructions", 20).is_err());
-        assert!(opt_multiline(Some(&long[..40]), "instructions", 20).is_ok());
+        assert!(opt_multiline(Some(&long), "notes", 20).is_err());
+        assert!(opt_multiline(Some(&long[..40]), "notes", 20).is_ok());
     }
 
     #[test]

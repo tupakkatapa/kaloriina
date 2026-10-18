@@ -56,7 +56,7 @@ async fn import_is_idempotent_and_matches_totals() {
         "re-import must not duplicate; true duplicates kept"
     );
     assert!(entries.contains(&("Planned".into(), "Rye Bread, Sliced".into(), Value::Null)));
-    assert!(entries.contains(&("Consumed".into(), "Coffee (Oat Milk)".into(), Value::Null)));
+    assert!(entries.contains(&("Eaten".into(), "Coffee (Oat Milk)".into(), Value::Null)));
     assert_eq!(day["total"]["energy"], 1800.5);
     assert_eq!(day["total"]["protein"], 120.0);
 
@@ -67,7 +67,7 @@ async fn import_is_idempotent_and_matches_totals() {
         .iter()
         .map(|g| g["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["Planned", "Consumed", "Other"]);
+    assert_eq!(names, ["Planned", "Eaten", "Other"]);
 
     let (_, sum) = call(
         &app,
@@ -76,7 +76,11 @@ async fn import_is_idempotent_and_matches_totals() {
         None,
     )
     .await;
-    assert_eq!(sum["days_logged"], 2, "empty filler day excluded");
+    assert_eq!(
+        sum["days"].as_array().unwrap().len(),
+        2,
+        "empty filler day excluded"
+    );
 }
 
 #[tokio::test]
@@ -92,7 +96,7 @@ async fn newer_export_replaces_changed_day_but_keeps_manual_entries() {
         "/api/profiles/1/entries",
         Some(json!({
             "day": "2026-06-02",
-            "group": "Consumed",
+            "group": "Eaten",
             "food_id": food["id"],
             "grams": 100.0,
         })),
@@ -114,7 +118,7 @@ async fn newer_export_replaces_changed_day_but_keeps_manual_entries() {
         .map(|e| {
             (
                 e["name"].as_str().unwrap().to_owned(),
-                e["imported"].as_bool().unwrap(),
+                !e["src_group"].is_null(),
             )
         })
         .collect();
@@ -128,6 +132,31 @@ async fn newer_export_replaces_changed_day_but_keeps_manual_entries() {
         day_entries(&other).len(),
         1,
         "days absent from the newer file untouched"
+    );
+}
+
+#[tokio::test]
+async fn a_summary_without_groups_is_each_days_total() {
+    // Cronometer leaves `Group` out when the diary isn't split by meal.
+    let mut conn = open(Path::new(":memory:")).unwrap();
+    let r = import_summary(&mut conn, ME, fixture("dailysummary-nogroup.csv")).unwrap();
+    assert_eq!((r.days, r.groups), (3, 2));
+    assert!(r.mismatched_days.is_empty());
+    let app = app_from(conn, "");
+    let (_, day) = call(&app, "GET", "/api/profiles/1/day/2026-06-04", None).await;
+    assert_eq!(day["total"]["energy"], 1650.25);
+    assert_eq!(day["total"]["protein"], 95.0);
+    let (_, sum) = call(
+        &app,
+        "GET",
+        "/api/profiles/1/summary?from=2026-06-01&to=2026-06-30",
+        None,
+    )
+    .await;
+    assert_eq!(
+        sum["days"].as_array().unwrap().len(),
+        2,
+        "the blank day isn't logged"
     );
 }
 

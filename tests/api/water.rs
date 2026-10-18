@@ -52,7 +52,7 @@ async fn water_food_defaults_and_can_be_chosen() {
     // The ml limits are served.
     let (_, meta) = call(&app, "GET", "/api/meta", None).await;
     assert_eq!(meta["limits"]["water_ml"], json!([1.0, 5000.0]));
-    assert_eq!(meta["limits"]["instructions"], 10_000);
+    assert_eq!(meta["limits"]["notes"], 10_000);
 }
 
 #[tokio::test]

@@ -1,6 +1,17 @@
 //! Foods, servings, recipes and meals, and their checks.
 
+use std::collections::BTreeMap;
+
 use super::prelude::*;
+use super::{Amount, checked_opt_uid};
+use crate::nutrients::{KCAL_PER_G_CARBS, KCAL_PER_G_FAT, KCAL_PER_G_PROTEIN};
+
+/// How far a total is known (ADR 0030, [`super::coverage`]): by key, the
+/// share (0 to 1) of the food behind it that carries the key, listed only
+/// where short of all, and [`super::DRY`], the dry matter behind the total
+/// (per 100 g for a food). A key of the total not listed is known in full;
+/// one the total lacks, not at all.
+pub type Known = BTreeMap<String, f64>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Serving {
@@ -8,12 +19,44 @@ pub struct Serving {
     pub grams: f64,
 }
 
+/// The serving a food's values were typed for (they're kept per 100 g),
+/// and whether its weight is a guess: then every gram figure of the food is
+/// approximate, while its values per that serving stay exact.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Basis {
+    pub serving: String,
+    #[serde(default)]
+    pub estimated: bool,
+}
+
 text_enum! {
-    /// Where a food's values come from.
+    /// Where a food's values come from: your own (foods and recipes), or
+    /// a database.
     pub enum Source {
         Custom = "custom",
         Off = "off",
+        Fineli = "fineli",
+    }
+}
+
+text_enum! {
+    /// What a food is: one with values of its own, or a recipe whose values
+    /// are its ingredients'.
+    #[derive(Default)]
+    pub enum FoodKind {
+        #[default]
+        Food = "food",
         Recipe = "recipe",
+    }
+}
+
+text_enum! {
+    /// What a food search covers: your foods, your recipes, or a
+    /// database's (`Source` for the rest).
+    pub enum FoodScope {
+        Custom = "custom",
+        Recipe = "recipe",
+        Off = "off",
         Fineli = "fineli",
     }
 }
@@ -94,21 +137,44 @@ pub struct Food {
     pub brand: Option<String>,
     pub barcode: Option<String>,
     pub source: Source,
+    pub kind: FoodKind,
     pub per100: Nutrients,
     pub cooked_g: Option<f64>,
     /// Portions a recipe makes; `null` on other foods.
     pub makes: Option<u32>,
-    /// How a recipe is made, free text of several lines; `null` on other
-    /// foods.
-    pub instructions: Option<String>,
+    /// A recipe's notes (how it's made, or anything), free text of several
+    /// lines; `null` on other foods.
+    pub notes: Option<String>,
     pub archived: bool,
     /// A [`FoodCategory`] key, or `null`.
     pub category: Option<String>,
     /// In order; the first is the default (logging and ingredients start
     /// from it).
     pub servings: Vec<Serving>,
+    /// The serving its values were typed for; `null` is per 100 g.
+    pub basis: Option<Basis>,
     /// Bumped by every change; an update must name the one it read.
     pub rev: i64,
+    /// A drink: its values are per 100 ml, judged by the drink thresholds,
+    /// and its water estimated where it has no value (ADR 0020).
+    pub drink: bool,
+    /// What 100 g of it adds to hydration; `null` where it says nothing
+    /// (no water value, not a drink).
+    pub hydration: Option<Hydration>,
+    /// Its weight for the keys only drinks and supplements hold
+    /// ([`super::Borne`], ADR 0030): left out when none.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub borne: super::Borne,
+    /// Its labels ([`super::labels`]), from its values.
+    pub labels: super::Labels,
+    /// A recipe's [`Known`] per 100 g (ADR 0030); left out for other
+    /// foods.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub known: Known,
+    /// How many diary entries a save's new values rewrote (its own, and
+    /// those of recipes holding it); only in a save's or a merge's answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entries_updated: Option<usize>,
 }
 
 /// Editable food fields, shared by create and update.
@@ -126,27 +192,178 @@ pub struct FoodInput {
     /// A [`FoodCategory`] key; absent or `null` is none.
     #[serde(default)]
     pub category: Option<String>,
+    /// The serving its values were typed for; absent or `null` is none
+    /// (per 100 g). Must name one of `servings`.
+    #[serde(default)]
+    pub basis: Option<Basis>,
     /// The revision this update was made from (required on update).
     #[serde(default)]
     pub rev: Option<i64>,
+    /// Drink (values per 100 ml). Absent or as the food has it, the server
+    /// derives it (from the importers, the category, the servings and the
+    /// values); sent changed, it is yours from then on. An importer's is
+    /// its word, never yours.
+    #[serde(default)]
+    pub drink: Option<bool>,
+    /// A create's retry key: a create naming one saved before
+    /// answers with that record. Ignored by an update.
+    #[serde(default)]
+    pub uid: Option<String>,
 }
 
-/// An ingredient or meal item as written by the client.
+/// What 100 g of a food adds to hydration (ADR 0020), in ml: its `water`
+/// (a drink's estimated, [`super::water_of`]), and `alcohol`, the urine
+/// its alcohol costs ([`super::ALCOHOL_ML_PER_G`] a gram, never more than
+/// the water). It hydrates `water − alcohol`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct Hydration {
+    pub water: f64,
+    pub alcohol: f64,
+}
+
+impl Hydration {
+    /// A food's, from its values per 100 g: `None` where it says nothing.
+    #[must_use]
+    pub fn of(per100: &Nutrients, drink: bool) -> Option<Self> {
+        let water = super::water_of(per100, 100.0, drink)?;
+        Some(Self::from_parts(
+            water,
+            per100.get("alcohol").unwrap_or(0.0),
+        ))
+    }
+
+    /// From its water and alcohol (g).
+    #[must_use]
+    pub fn from_parts(water: f64, alcohol: f64) -> Self {
+        Self {
+            water,
+            alcohol: (alcohol * super::ALCOHOL_ML_PER_G).min(water),
+        }
+    }
+}
+
+/// What makes a food a drink of itself: the sugary drinks' category, a
+/// Water of your own, or a serving poured: a volume ("250 ml", "0,33 l
+/// bottle", "Can 0,33 l", "33 cl", "1 dl") or a drink's measure ("shot",
+/// "cocktail", "pint"). A bare "dl" (Fineli's, for flour and rice too) is
+/// no volume of a drink, and neither is a decilitre of something
+/// energy-dense or named a sauce or soup without alcohol (`per100`: a
+/// gravy served "1 dl").
+#[must_use]
+pub fn drink_by_kind(
+    name: &str,
+    category: Option<&str>,
+    servings: &[Serving],
+    per100: &Nutrients,
+) -> bool {
+    let spooned = per100.get("alcohol").is_none_or(|a| a <= 0.0)
+        && (per100.get("energy").is_some_and(|e| e > SPOONED_KCAL) || {
+            let name = name.to_lowercase();
+            SPOONED.iter().any(|w| name.contains(w))
+        });
+    category == Some(FoodCategory::SugaryDrinks.as_str())
+        || name.eq_ignore_ascii_case("water")
+        || servings
+            .iter()
+            .any(|s| poured(&s.label).is_some_and(|unit| unit != "dl" || !spooned))
+}
+
+/// Over this many kcal a 100 g, a decilitre is a cook's measure (a sauce,
+/// cream, flour), not a drink; alcohol aside.
+const SPOONED_KCAL: f64 = 70.0;
+
+/// Words naming what is measured in decilitres but eaten (lower case).
+const SPOONED: [&str; 8] = [
+    "kastike", "sauce", "sås", "keitto", "soup", "dressing", "öljy", "oil",
+];
+
+/// Words of a serving label that pour a drink (lower case).
+const MEASURES: [&str; 7] = [
+    "shot", "cocktail", "drink", "pint", "tuoppi", "glass", "lasi",
+];
+
+/// The unit of the volume in a serving label (a number, then ml, cl, dl
+/// or l, as words of it: "0,33 l bottle", "Can 0,33 l", "500ml"), or
+/// `Some("")` for a drink's measure ([`MEASURES`]). Migration 63 read
+/// whole labels by the volume rule.
+fn poured(label: &str) -> Option<&'static str> {
+    let label = label.trim().to_lowercase();
+    let words: Vec<&str> = label.split_whitespace().collect();
+    let number = |n: &str| {
+        n.starts_with(|c: char| c.is_ascii_digit())
+            && n.chars()
+                .all(|c| c.is_ascii_digit() || c == '.' || c == ',')
+    };
+    for (i, word) in words.iter().enumerate() {
+        if MEASURES.contains(word) {
+            return Some("");
+        }
+        for unit in ["ml", "cl", "dl", "l"] {
+            let joined = word.strip_suffix(unit).is_some_and(number);
+            let apart = *word == unit && i > 0 && number(words[i - 1]);
+            if joined || apart {
+                return Some(unit);
+            }
+        }
+    }
+    None
+}
+
+/// An ingredient or meal item as written by the client: grams, or a
+/// quantity of one of its food's servings (checked against the food when
+/// saved, by [`Amount::of`]).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ItemInput {
     pub food_id: i64,
-    pub grams: f64,
+    #[serde(flatten)]
+    pub amount: Amount,
+}
+
+impl ItemInput {
+    /// `grams` of food `food_id`.
+    #[must_use]
+    pub fn grams(food_id: i64, grams: f64) -> Self {
+        Self {
+            food_id,
+            amount: Amount {
+                grams: Some(grams),
+                ..Amount::default()
+            },
+        }
+    }
 }
 
 /// An ingredient or meal item as read back, with what the editor shows
-/// of its food: name, source and values.
+/// of its food: name, source, values and servings.
 #[derive(Debug, Clone, Serialize)]
 pub struct Item {
     pub food_id: i64,
     pub grams: f64,
+    /// How it was measured: `quantity` of the food's serving `serving`, or
+    /// grams when both are `None` (also once that serving is gone).
+    pub serving: Option<String>,
+    pub quantity: Option<f64>,
     pub name: String,
     pub source: Source,
+    pub kind: FoodKind,
     pub per100: Nutrients,
+    pub servings: Vec<Serving>,
+    /// Its food's weight is a guess ([`Basis::estimated`]).
+    pub weight_estimated: bool,
+    /// A recipe's [`Known`] per 100 g; empty (left out) for other foods.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub known: Known,
+    /// Its food's labels ([`Food::labels`]).
+    pub labels: super::Labels,
+    /// Its food is a drink ([`Food::drink`]).
+    pub drink: bool,
+    /// Its food's [`Food::borne`].
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub borne: super::Borne,
+    /// Its food's share of fruit, vegetables and legumes (0 to 1): a
+    /// food's by its category, a recipe's by its parts (ADR 0033).
+    #[serde(skip)]
+    pub fruit_veg: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -161,10 +378,10 @@ pub struct RecipeInput {
     pub servings: Vec<Serving>,
     #[serde(default)]
     pub archived: bool,
-    /// How it's made: up to [`INSTRUCTIONS_MAX`] characters, line breaks
-    /// kept; blank or absent is none.
+    /// Notes (how it's made, or anything): up to [`NOTES_MAX`] characters,
+    /// line breaks kept; blank or absent is none.
     #[serde(default)]
-    pub instructions: Option<String>,
+    pub notes: Option<String>,
     /// A [`FoodCategory`] key: the recipe counts whole under it. None
     /// counts its ingredients' categories instead.
     #[serde(default)]
@@ -172,12 +389,17 @@ pub struct RecipeInput {
     /// The recipe's (food's) revision this update was made from.
     #[serde(default)]
     pub rev: Option<i64>,
+    /// A create's retry key: a create naming one saved before
+    /// answers with that record. Ignored by an update.
+    #[serde(default)]
+    pub uid: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct Recipe {
     #[serde(flatten)]
     pub food: Food,
+    /// Its `per100`'s [`Known`] is its food's (`known`).
     pub items: Vec<Item>,
 }
 
@@ -187,6 +409,10 @@ pub struct MealInput {
     pub items: Vec<ItemInput>,
     #[serde(default)]
     pub rev: Option<i64>,
+    /// A create's retry key: a create naming one saved before
+    /// answers with that record. Ignored by an update.
+    #[serde(default)]
+    pub uid: Option<String>,
 }
 
 /// Merge food `from` into the one addressed; `rev` is that one's.
@@ -198,13 +424,44 @@ pub struct MergeInput {
 }
 
 /// What uses a food, counted: diary entries (all profiles), recipes and
-/// meals holding it, and profiles starring it.
+/// meals holding it, profiles starring it, daily items of it and profiles
+/// whose water it is.
 #[derive(Debug, Serialize)]
 pub struct Usage {
     pub entries: i64,
     pub recipes: i64,
     pub meals: i64,
     pub favorites: i64,
+    pub daily_items: i64,
+    pub water: i64,
+    /// `DELETE` takes it: nothing but favourites uses it, and it isn't
+    /// Fineli's (which `kaloriina fineli` would add again).
+    pub deletable: bool,
+}
+
+/// A copy of a saved food, recipe, meal or workout: its retry key only.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CopyInput {
+    /// See [`FoodInput::uid`]; each Copy press makes its own.
+    #[serde(default)]
+    pub uid: Option<String>,
+}
+
+impl CopyInput {
+    /// # Errors
+    /// A malformed uid.
+    pub fn checked(self) -> Result<Self, Error> {
+        checked_opt_uid(self.uid.as_deref())?;
+        Ok(self)
+    }
+}
+
+/// What a copy is called: "`name` (copy)", `name` cut to fit [`NAME_MAX`].
+#[must_use]
+pub fn copied(name: &str) -> String {
+    const SUFFIX: &str = " (copy)";
+    let kept: String = name.chars().take(NAME_MAX - SUFFIX.len()).collect();
+    format!("{}{SUFFIX}", kept.trim_end())
 }
 
 /// Energy (kcal) and the energy-giving macros (g): per 100 g of a food, or
@@ -218,10 +475,14 @@ pub struct Macros {
 }
 
 impl Macros {
-    /// The macros' energy (4 kcal/g protein and carbohydrate, 9 fat), none
-    /// below zero.
+    /// The macros' energy by Atwater's factors, none below zero.
     fn split(&self) -> [f64; 3] {
-        [4.0 * self.protein, 4.0 * self.net_carbs, 9.0 * self.fat].map(|x| x.max(0.0))
+        [
+            KCAL_PER_G_PROTEIN * self.protein,
+            KCAL_PER_G_CARBS * self.net_carbs,
+            KCAL_PER_G_FAT * self.fat,
+        ]
+        .map(|x| x.max(0.0))
     }
 }
 
@@ -253,6 +514,9 @@ pub struct Meal {
     pub name: String,
     pub items: Vec<Item>,
     pub rev: i64,
+    /// Its labels ([`super::labels`]) from its items' values per 100 g,
+    /// as a food (never a drink).
+    pub labels: super::Labels,
 }
 
 /// # Errors
@@ -324,37 +588,70 @@ pub fn check_items(list: &mut [ItemInput]) -> Result<(), Error> {
         return Err(bad(format!("at most {ITEMS_MAX} items")));
     }
     for (i, item) in list.iter_mut().enumerate() {
-        item.grams = grams(item.grams).map_err(|e| bad(format!("item {}: {e}", i + 1)))?;
+        if let Some(g) = item.amount.grams {
+            item.amount.grams = Some(grams(g).map_err(|e| bad(format!("item {}: {e}", i + 1)))?);
+        }
     }
     Ok(())
 }
 
+/// Grams per 100 g a sent total carbohydrate may differ from carbohydrate
+/// plus fibre: labels round each to the gram.
+pub const CARBS_SLACK_G: f64 = 0.5;
+
 impl FoodInput {
-    /// A new or changed food: [`FoodInput::checked_kept`], and per-100
-    /// values within [`nutrients::per100_max`].
+    /// A new or changed food: [`FoodInput::checked_kept`], per-100 values
+    /// within [`nutrients::per100_max`], and a total carbohydrate that, when
+    /// sent beside carbohydrate, is it plus fibre (to [`CARBS_SLACK_G`]),
+    /// or at least it with fibre unsaid.
     ///
     /// # Errors
     /// The first field that fails, named in the user's words.
     pub fn checked(self) -> Result<Self, Error> {
+        if let (Some(total), Some(available)) =
+            (self.per100.get("carbs"), self.per100.get("net_carbs"))
+        {
+            let off = match self.per100.get("fiber") {
+                Some(fibre) => (total - available - fibre).abs(),
+                // Fibre unsaid is the difference, which can't be negative.
+                None => available - total,
+            };
+            if off > CARBS_SLACK_G {
+                return Err(Error::invalid_field(
+                    "carbs",
+                    "total carbohydrate must be carbohydrate plus fibre",
+                ));
+            }
+        }
         let food = self.checked_kept()?;
         food.per100.validate_per100().map_err(|(n, max)| {
+            // Typed per a serving, the likely cause is its weight.
+            let check = food.basis.as_ref().map_or_else(String::new, |b| {
+                format!("; check the weight of “{}”", b.serving)
+            });
             Error::invalid_field(
                 "per100",
-                format!("{} must be at most {max} {} per 100 g", n.label, n.unit),
+                format!(
+                    "{} must be at most {max} {} per 100 g{check}",
+                    n.label, n.unit
+                ),
             )
         })?;
         Ok(food)
     }
 
     /// A food as kept (a profile import's): trimmed and bounded text, known
-    /// non-negative nutrients, valid servings, and total carbohydrate
-    /// derived from carbohydrate plus fibre whenever carbohydrate is given,
-    /// whatever the writer sent. History is never refused for the per-100 caps.
+    /// non-negative nutrients, valid servings, and, with fibre known, total
+    /// carbohydrate derived from carbohydrate plus fibre whenever
+    /// carbohydrate is given, whatever the writer sent (carbohydrate from
+    /// the total less fibre otherwise). History is never refused for the
+    /// per-100 caps.
     ///
     /// # Errors
     /// The first field that fails, named in the user's words.
     pub fn checked_kept(mut self) -> Result<Self, Error> {
         self.name = text(&self.name, "name", NAME_MAX)?;
+        checked_opt_uid(self.uid.as_deref())?;
         self.brand = opt_text(self.brand.as_deref(), "brand", NAME_MAX)?;
         self.barcode = self
             .barcode
@@ -363,20 +660,35 @@ impl FoodInput {
             .filter(|b| !b.is_empty())
             .map(|b| checked_barcode(b).map(str::to_owned))
             .transpose()?;
-        self.per100
-            .validate()
-            .map_err(|key| match nutrients::find(&key) {
-                Some(n) => bad(format!("{}: must be a number ≥ 0", n.label)),
-                None => bad(format!("unknown nutrient {key}")),
-            })?;
-        if let Some(available) = self.per100.get("net_carbs") {
-            let fibre = self.per100.get("fiber").unwrap_or(0.0);
-            self.per100.insert("carbs", available + fibre);
+        self.per100.validate().map_err(|key| {
+            let why = match nutrients::find(&key) {
+                Some(n) => format!("{}: must be a number ≥ 0", n.label),
+                None => format!("unknown nutrient {key}"),
+            };
+            Error::invalid_field("per100", why)
+        })?;
+        // Each carbohydrate is derived from the other with fibre known: net
+        // wins. Unknown fibre isn't 0, so the other stays unknown.
+        if let Some(fibre) = self.per100.get("fiber") {
+            match (self.per100.get("net_carbs"), self.per100.get("carbs")) {
+                (Some(available), _) => self.per100.insert("carbs", available + fibre),
+                (None, Some(total)) => self.per100.insert("net_carbs", (total - fibre).max(0.0)),
+                (None, None) => {}
+            }
         }
         self.category = checked_category(self.category.as_deref())?;
         self.servings = checked_servings(&self.servings)?;
         if self.servings.iter().any(|s| s.label == WHOLE_RECIPE) {
             return Err(bad(format!("“{WHOLE_RECIPE}” is kept for recipes")));
+        }
+        if let Some(b) = &mut self.basis {
+            b.serving = b.serving.trim().to_owned();
+            if !self.servings.iter().any(|s| s.label == b.serving) {
+                return Err(Error::invalid_field(
+                    "basis",
+                    format!("values are per “{}”, which isn't a serving", b.serving),
+                ));
+            }
         }
         Ok(self)
     }
@@ -391,11 +703,8 @@ impl RecipeInput {
     /// The first field that fails.
     pub fn checked(mut self) -> Result<Self, Error> {
         self.name = text(&self.name, "name", NAME_MAX)?;
-        self.instructions = opt_multiline(
-            self.instructions.as_deref(),
-            "instructions",
-            INSTRUCTIONS_MAX,
-        )?;
+        checked_opt_uid(self.uid.as_deref())?;
+        self.notes = opt_multiline(self.notes.as_deref(), "notes", NOTES_MAX)?;
         self.cooked_g = self.cooked_g.map(grams).transpose()?;
         if let Some(n) = self.makes
             && !(1..=MAKES_MAX).contains(&n)
@@ -423,6 +732,7 @@ impl MealInput {
     /// A blank or long name, or bad items.
     pub fn checked(mut self) -> Result<Self, Error> {
         self.name = text(&self.name, "name", NAME_MAX)?;
+        checked_opt_uid(self.uid.as_deref())?;
         check_items(&mut self.items)?;
         Ok(self)
     }
@@ -441,4 +751,124 @@ pub struct WaterFood {
 pub struct WaterFoodInput {
     #[serde(deserialize_with = "super::profile::present")]
     pub food_id: Option<i64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A soft drink of your own, served
+    /// "250 ml" or "0,33 l bottle", is a drink; a bare unit or a cup is no
+    /// volume, and a gravy's decilitre no drink.
+    #[test]
+    fn a_volume_serving_makes_a_drink() {
+        let by = |label: &str, per100: &Nutrients| {
+            drink_by_kind(
+                "Pepsi Max",
+                None,
+                &[Serving {
+                    label: label.to_owned(),
+                    grams: 250.0,
+                }],
+                per100,
+            )
+        };
+        let none = Nutrients::default();
+        for drink in [
+            "250 ml",
+            "0.5 l",
+            "0,33 L",
+            "33 cl",
+            "1 dl",
+            "500ml",
+            "2 l bottle",
+            "Can 0,33 l",
+            "0,44 l can",
+            "1 cocktail",
+            "shot",
+        ] {
+            assert!(by(drink, &none), "{drink}");
+        }
+        for food in ["dl", "1 cup", "slice", "ml", "l"] {
+            assert!(!by(food, &none), "{food}");
+        }
+        assert!(!drink_by_kind("Pepsi Max", None, &[], &none));
+        // A decilitre of something dense, or of a sauce, is eaten; a
+        // spirit's isn't.
+        let dense = Nutrients::of(&[("energy", 120.0)]);
+        assert!(!by("1 dl", &dense));
+        assert!(by("4 cl", &dense));
+        let spirit = Nutrients::of(&[("energy", 220.0), ("alcohol", 30.0)]);
+        assert!(by("1 dl", &spirit));
+        let gravy = |label: &str| {
+            drink_by_kind(
+                "Ruskeakastike",
+                None,
+                &[Serving {
+                    label: label.to_owned(),
+                    grams: 100.0,
+                }],
+                &Nutrients::of(&[("energy", 40.0)]),
+            )
+        };
+        assert!(!gravy("1 dl"));
+    }
+
+    fn burger(basis: &str, protein: f64) -> FoodInput {
+        FoodInput {
+            name: "Burger".to_owned(),
+            per100: Nutrients::of(&[("energy", 257.0), ("protein", protein)]),
+            servings: vec![Serving {
+                label: "Burger".to_owned(),
+                grams: 210.0,
+            }],
+            basis: Some(Basis {
+                serving: basis.to_owned(),
+                estimated: true,
+            }),
+            ..FoodInput::default()
+        }
+    }
+
+    fn invalid(r: Result<FoodInput, Error>) -> (Option<String>, String) {
+        match r {
+            Err(Error::Invalid { field, message }) => (field, message),
+            other => panic!("expected Invalid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn basis_must_name_a_serving() {
+        let kept = burger(" Burger ", 10.0).checked().unwrap();
+        assert_eq!(kept.basis.unwrap().serving, "Burger", "trimmed");
+        // A removed or renamed basis serving, kept or new alike.
+        for food in [
+            burger("Slice", 10.0),
+            FoodInput {
+                servings: vec![],
+                ..burger("Burger", 10.0)
+            },
+        ] {
+            assert_eq!(invalid(food.clone().checked()).0.as_deref(), Some("basis"));
+            assert_eq!(invalid(food.checked_kept()).0.as_deref(), Some("basis"));
+        }
+    }
+
+    #[test]
+    fn cap_error_names_the_basis_serving() {
+        let (field, message) = invalid(burger("Burger", 150.0).checked());
+        assert_eq!(field.as_deref(), Some("per100"));
+        assert_eq!(
+            message,
+            "Protein must be at most 110 g per 100 g; check the weight of “Burger”"
+        );
+        let plain = FoodInput {
+            basis: None,
+            ..burger("Burger", 150.0)
+        };
+        assert_eq!(
+            invalid(plain.checked()).1,
+            "Protein must be at most 110 g per 100 g"
+        );
+    }
 }

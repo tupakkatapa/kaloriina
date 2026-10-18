@@ -1,22 +1,29 @@
-//! A profile as one file: export format v1 and the checks an
-//! import passes before anything is written.
+//! A profile as one file: export format v3, the only one read, and the
+//! checks an import passes before anything is written. v2 (ADR 0027):
+//! `sessions` are `activities`, `activity_days` and `activity_sessions`
+//! are `device_days` and `device_sessions`, and a set of an exercise
+//! deleted since has no `exercise` ref, only its name. v3: `activity_imports`
+//! are `import_days`, a device session's `kcal_total` is `total_kcal`, and
+//! a day has `bmr_kcal`, `bmr_origin` and `distance_m`. `tests/fixtures/export-v3.json`
+//! pins it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::prelude::*;
 use super::{
-    ActivityDay, ActivitySession, Body, BodyPart, CheckIn, CheckInInput, ExerciseInput,
-    ExerciseTraits, FoodInput, GoalDir, HabitInput, ItemInput, MeasurementInput, NoteInput,
-    PlanInput, ProfileInput, RecipeInput, Serving, SessionInput, SessionSet, SessionSource,
-    SessionType, Side, Source, Step, SyncedWorkouts, Target, TargetInput, TargetsInput,
-    WeightInput, WeightSource, WorkoutInput, checked_day, checked_group, checked_habit_amount,
-    checked_session, checked_time, checked_uid, is_barcode, is_key,
+    ActivityInput, ActivitySet, ActivitySource, ActivityType, Basis, Body, BodyPart, CheckIn,
+    CheckInInput, DeviceDay, DeviceSession, ExerciseInput, ExerciseTraits, FoodInput, FoodKind,
+    GoalDir, HabitInput, InsightPref, ItemInput, KcalSource, MeasurementInput, NapIn, NapSource,
+    NoteInput, PlanInput, ProfileInput, RecipeInput, Serving, Side, SleepStage, Source, Step,
+    SyncedWorkouts, Target, TargetInput, TargetsInput, WeightInput, WeightSource, WorkoutInput,
+    checked_day, checked_group, checked_habit_amount, checked_nap, checked_session, checked_stage,
+    checked_time, checked_uid, is_barcode, is_key,
 };
 
 /// What the file says it is.
 pub const EXPORT_FORMAT: &str = "kaloriina-profile";
 /// The newest format this release reads and the one it writes.
-pub const EXPORT_VERSION: u64 = 1;
+pub const EXPORT_VERSION: u64 = 3;
 
 /// A whole profile: what it owns, plus the shared foods and exercises it
 /// uses, named by file-local refs. Readers ignore keys they don't know.
@@ -38,12 +45,15 @@ pub struct ProfileExport {
     /// Daily check-ins; files from before check-ins have none.
     #[serde(default)]
     pub check_ins: Vec<CheckIn>,
+    /// Insights hidden until a day or pinned.
+    #[serde(default)]
+    pub insight_prefs: Vec<InsightPref>,
     #[serde(default)]
     pub entries: Vec<ExportedEntry>,
     #[serde(default)]
     pub day_totals: Vec<ExportedDayTotal>,
     #[serde(default)]
-    pub sessions: Vec<ExportedSession>,
+    pub activities: Vec<ExportedActivity>,
     /// Food refs.
     #[serde(default)]
     pub favorites: Vec<String>,
@@ -62,14 +72,24 @@ pub struct ProfileExport {
     /// Health Connect activity; files from before have none. The
     /// sync's status stays with the installation.
     #[serde(default)]
-    pub activity_days: Vec<ActivityDay>,
+    pub device_days: Vec<DeviceDay>,
     #[serde(default)]
-    pub activity_sessions: Vec<ActivitySession>,
-    /// Watch workouts deleted or dismissed, never promoted again; files
+    pub device_sessions: Vec<DeviceSession>,
+    /// A Google Health import's own values per day (what fills a day a
+    /// sync leaves empty); files from before have none.
+    #[serde(default)]
+    pub import_days: Vec<DeviceDay>,
+    /// Device workouts deleted or dismissed, never promoted again; files
     /// from before have none.
     #[serde(default)]
     pub workout_tombstones: Vec<ExportedTombstone>,
-    /// Whether a sync adds new watch workouts or lists them.
+    #[serde(default)]
+    pub naps: Vec<ExportedNap>,
+    /// Each night's sleep stage spans, one row per span; files from before
+    /// have none.
+    #[serde(default)]
+    pub sleep_stages: Vec<SleepStage>,
+    /// Whether a sync adds new device workouts or lists them.
     #[serde(default)]
     pub synced_workouts: SyncedWorkouts,
     /// The food "+ Water" logs, when the profile picked one: a food ref.
@@ -86,6 +106,31 @@ pub struct ProfileExport {
     /// Workouts planned on a day.
     #[serde(default)]
     pub plans: Vec<ExportedPlan>,
+    /// Daily items with their skips; files from before have none. Entries
+    /// that ticked one name it (`entries[].repeat`).
+    #[serde(default)]
+    pub daily_items: Vec<ExportedDailyItem>,
+}
+
+/// A daily item: its food by ref, its amount, and the days skipped. Its
+/// ref is its place in the file ("1", "2", …), so a restore exports the
+/// same file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportedDailyItem {
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub food: String,
+    pub grams: f64,
+    #[serde(default)]
+    pub serving: Option<String>,
+    #[serde(default)]
+    pub quantity: Option<f64>,
+    pub start: String,
+    /// `YYYY-MM-DDTHH:MM:SSZ`; now when left out.
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub skips: Vec<String>,
 }
 
 /// The bound openScale user.
@@ -106,6 +151,11 @@ pub struct ExportedWorkout {
     pub minutes: Option<u32>,
     #[serde(default)]
     pub kcal: Option<u32>,
+    /// Files from before have none.
+    #[serde(default)]
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub archived: bool,
 }
 
 /// A workout step as [`Step`] has it, its exercise by ref.
@@ -133,6 +183,12 @@ pub enum ExportedStep {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         every: Option<u32>,
         steps: Vec<ExportedStep>,
+    },
+    Note {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
     },
 }
 
@@ -167,6 +223,10 @@ impl ExportedStep {
                     times: *times,
                     every: *every,
                     steps: Self::from_steps(steps, reference),
+                },
+                Step::Note { name, text } => Self::Note {
+                    name: name.clone(),
+                    text: text.clone(),
                 },
             })
             .collect()
@@ -208,6 +268,10 @@ impl ExportedStep {
                         every: *every,
                         steps: Self::to_steps(steps, ids)?,
                     },
+                    Self::Note { name, text } => Step::Note {
+                        name: name.clone(),
+                        text: text.clone(),
+                    },
                 })
             })
             .collect()
@@ -235,9 +299,6 @@ pub struct ExportedHabit {
     /// `at_most` when left out.
     #[serde(default)]
     pub goal_dir: Option<GoalDir>,
-    /// Files from before habit goals: an `at_most` goal. Read only.
-    #[serde(default, skip_serializing)]
-    pub day_limit: Option<f64>,
     #[serde(default)]
     pub archived: bool,
     /// `YYYY-MM-DDTHH:MM:SSZ`; now when left out.
@@ -269,12 +330,33 @@ pub struct ExportedScaleReading {
     pub water: Option<f64>,
     #[serde(default)]
     pub muscle: Option<f64>,
+    /// Files from before 2026-10-12 have none of these (and a visceral
+    /// fat rating until 2026-10-13: ignored).
+    #[serde(default)]
+    pub bone_kg: Option<f64>,
+    #[serde(default)]
+    pub lbm_kg: Option<f64>,
+    #[serde(default)]
+    pub bmr_kcal: Option<f64>,
+}
+
+/// A nap; files from before naps have none.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportedNap {
+    pub uid: String,
+    pub day: String,
+    pub start_at: String,
+    pub end_at: String,
+    pub source: NapSource,
+    #[serde(default)]
+    pub source_key: Option<String>,
+    /// Time asleep; files from before (and naps without stages) have none.
+    #[serde(default)]
+    pub asleep_min: Option<i64>,
 }
 
 /// The profile's own fields. The weight travels as `weights`, goals as
-/// `targets`; files from before say `weight_kg` (a weigh-in on the
-/// import day when the file has no `weights`), `workouts_per_week` and
-/// `goal_weight_kg` (read as targets).
+/// `targets`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportedProfile {
     /// The id it had: kept by a restore when free, else unused.
@@ -283,18 +365,10 @@ pub struct ExportedProfile {
     pub name: String,
     #[serde(flatten)]
     pub body: Body,
-    #[serde(default, skip_serializing)]
-    pub workouts_per_week: Option<u32>,
-    #[serde(default, skip_serializing)]
-    pub goal_weight_kg: Option<f64>,
-    #[serde(default, skip_serializing)]
-    pub weight_kg: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportedTarget {
-    /// Files from before goals say `nutrient`.
-    #[serde(alias = "nutrient")]
     pub metric: String,
     pub value: f64,
 }
@@ -303,7 +377,7 @@ pub struct ExportedTarget {
 pub struct ExportedWeight {
     pub day: String,
     pub kg: f64,
-    /// `manual` when left out (files from before scale sync).
+    /// `hand` when left out (files from before scale sync).
     #[serde(default)]
     pub source: WeightSource,
     /// When it was set, epoch ms (decides a scale reading against a typed
@@ -343,14 +417,16 @@ pub struct ExportedEntry {
     pub amount: String,
     #[serde(default)]
     pub nutrients: Option<Nutrients>,
-    #[serde(default)]
-    pub imported: bool,
-    /// The group imported history came in under.
+    /// The group imported history came in under: set, the entry is
+    /// imported history.
     #[serde(default)]
     pub src_group: Option<String>,
     #[serde(default)]
     pub time: Option<String>,
     pub created_at: String,
+    /// The daily item this entry ticked: its ref in `daily_items`.
+    #[serde(default)]
+    pub repeat: Option<String>,
 }
 
 /// An imported history total.
@@ -362,7 +438,7 @@ pub struct ExportedDayTotal {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExportedSession {
+pub struct ExportedActivity {
     pub uid: String,
     pub day: String,
     pub name: String,
@@ -371,17 +447,30 @@ pub struct ExportedSession {
     pub kcal: Option<u32>,
     #[serde(default)]
     pub sets: Vec<ExportedSet>,
-    /// Files from before Health Connect 2 have none of these.
-    #[serde(default, rename = "type")]
-    pub kind: Option<SessionType>,
+    /// Files from before Health Connect 2 have none of these; absent or
+    /// `null`, the type is a workout.
+    #[serde(
+        default,
+        rename = "type",
+        deserialize_with = "super::activity::workout_if_null"
+    )]
+    pub kind: ActivityType,
     #[serde(default)]
     pub distance_m: Option<u32>,
     #[serde(default)]
     pub start_at: Option<String>,
     #[serde(default)]
-    pub source: SessionSource,
+    pub source: ActivitySource,
     #[serde(default)]
     pub source_key: Option<String>,
+    /// Where its energy came from, and the device's heart rate; files from
+    /// before 2026-10-12 have none (energy then reads as the hand's).
+    #[serde(default)]
+    pub kcal_source: Option<KcalSource>,
+    #[serde(default)]
+    pub avg_hr: Option<u32>,
+    #[serde(default)]
+    pub max_hr: Option<u32>,
     /// The workout it was done from: a workout ref.
     #[serde(default)]
     pub workout: Option<String>,
@@ -390,21 +479,22 @@ pub struct ExportedSession {
     pub created_at: Option<String>,
 }
 
-/// A deleted or dismissed watch workout: its key, and the type and start
+/// A deleted or dismissed device workout: its key, and the type and start
 /// that catch a re-id'd copy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportedTombstone {
     pub key: String,
     #[serde(default, rename = "type")]
-    pub kind: Option<SessionType>,
+    pub kind: Option<ActivityType>,
     #[serde(default)]
     pub start_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportedSet {
-    /// Exercise ref.
-    pub exercise: String,
+    /// Exercise ref; `None` for an exercise deleted since (version 2).
+    #[serde(default)]
+    pub exercise: Option<String>,
     #[serde(default)]
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -426,7 +516,11 @@ pub struct ExportedFood {
     pub brand: Option<String>,
     #[serde(default)]
     pub barcode: Option<String>,
+    /// A recipe's is `custom`.
     pub source: Source,
+    /// `food` when left out.
+    #[serde(default)]
+    pub kind: FoodKind,
     #[serde(default)]
     pub fineli_id: Option<i64>,
     #[serde(default)]
@@ -437,7 +531,7 @@ pub struct ExportedFood {
     pub makes: Option<u32>,
     /// A recipe's; left out when none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instructions: Option<String>,
+    pub notes: Option<String>,
     #[serde(default)]
     pub archived: bool,
     /// A food category key; none when left out.
@@ -445,9 +539,19 @@ pub struct ExportedFood {
     pub category: Option<String>,
     #[serde(default)]
     pub servings: Vec<Serving>,
+    /// The serving its values were typed for; left out when none (per
+    /// 100 g, and in files before it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basis: Option<Basis>,
     /// A recipe's ingredients.
     #[serde(default)]
     pub items: Vec<ExportedItem>,
+    /// Drink ([`super::Food`]), and whether it was set by hand: only then
+    /// is it taken as yours; else it is derived again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drink: Option<bool>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub drink_set: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -455,6 +559,11 @@ pub struct ExportedItem {
     /// Food ref.
     pub food: String,
     pub grams: f64,
+    /// How it was measured (`quantity` of serving `serving`); grams count.
+    #[serde(default)]
+    pub serving: Option<String>,
+    #[serde(default)]
+    pub quantity: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -566,11 +675,20 @@ impl ProfileExport {
             ));
         }
         match header.version.as_ref().and_then(serde_json::Value::as_u64) {
-            Some(v) if (1..=EXPORT_VERSION).contains(&v) => {}
+            Some(EXPORT_VERSION) => {}
+            Some(v) if v < EXPORT_VERSION => {
+                return Err(Error::invalid_field(
+                    "version",
+                    format!(
+                        "version must be {EXPORT_VERSION}: the file is from an older release; \
+                         export the profile again"
+                    ),
+                ));
+            }
             _ => {
                 return Err(Error::invalid_field(
                     "version",
-                    format!("version must be 1–{EXPORT_VERSION}: the file is from a newer release"),
+                    format!("version must be {EXPORT_VERSION}: the file is from a newer release"),
                 ));
             }
         }
@@ -579,8 +697,7 @@ impl ProfileExport {
 
     /// Every check the API makes on the same data, plus the file's own:
     /// uids well formed and each once, refs resolving, recipes acyclic.
-    /// Ages count to `today`; quick adds become foods (see
-    /// `quick_adds_to_foods`); goals a profile kept become targets.
+    /// Ages count to `today`.
     ///
     /// # Errors
     /// The first failure, blamed on the list it's in.
@@ -590,36 +707,8 @@ impl ProfileExport {
             body: self.profile.body.clone(),
             ..ProfileInput::default()
         }
-        .checked(today)?;
-        // A file from before goals keeps two of them on the profile.
-        let legacy = [
-            (
-                "workouts_per_week",
-                self.profile.workouts_per_week.map(f64::from),
-            ),
-            ("goal_weight", self.profile.goal_weight_kg),
-        ];
-        for (metric, value) in legacy {
-            if let Some(value) = value
-                && !self.targets.iter().any(|t| t.metric == metric)
-            {
-                self.targets.push(ExportedTarget {
-                    metric: metric.to_owned(),
-                    value,
-                });
-            }
-        }
-        // ... and its weight, when it has no weight log.
-        if let Some(kg) = self.profile.weight_kg
-            && self.weights.is_empty()
-        {
-            self.weights.push(ExportedWeight {
-                day: today.to_owned(),
-                kg,
-                source: WeightSource::Manual,
-                set_at: None,
-            });
-        }
+        // The file's goal date was the profile's: it may have passed since.
+        .checked(today, self.profile.body.goal_date.as_deref())?;
         let targets = TargetsInput {
             targets: self
                 .targets
@@ -635,7 +724,6 @@ impl ProfileExport {
         .checked()
         .map_err(within("targets", "targets".to_owned()))?;
         self.check_days()?;
-        self.quick_adds_to_foods();
         self.check_foods()?;
         self.check_exercises()?;
         let foods: BTreeSet<String> = self.foods.iter().map(|f| f.reference.clone()).collect();
@@ -645,6 +733,7 @@ impl ProfileExport {
                 format!("unknown food ref “{r}”"),
             ));
         }
+        self.check_daily_items(&foods)?;
         self.check_entries(&foods)?;
         if let Some(r) = self.water_food.as_ref().filter(|r| !foods.contains(*r)) {
             return Err(Error::invalid_field(
@@ -653,7 +742,7 @@ impl ProfileExport {
             ));
         }
         self.check_workouts()?;
-        self.check_sessions()?;
+        self.check_activities()?;
         self.check_habits()?;
         self.check_activity()?;
         if let Some(b) = &mut self.openscale {
@@ -665,51 +754,6 @@ impl ProfileExport {
             targets,
             file: self,
         })
-    }
-
-    /// Quick adds (entries with nutrients and no food, logged before quick
-    /// adds were removed) become archived foods of their own, one per name
-    /// and values, as migration 31 turned the stored ones.
-    fn quick_adds_to_foods(&mut self) {
-        let mut refs: BTreeSet<String> = self.foods.iter().map(|f| f.reference.clone()).collect();
-        let mut made: BTreeMap<(String, String), String> = BTreeMap::new();
-        for e in &mut self.entries {
-            let (false, None, Some(n)) = (e.imported, &e.food, &e.nutrients) else {
-                continue;
-            };
-            let (grams, per100) = n.per100_fitting(e.grams);
-            let values = serde_json::to_string(&per100).unwrap_or_default();
-            let reference = made
-                .entry((e.name.clone(), values))
-                .or_insert_with(|| {
-                    // One of these is free: there are more than refs.
-                    let reference = (0..=refs.len())
-                        .map(|i| format!("quick-{i}"))
-                        .find(|r| !refs.contains(r))
-                        .unwrap_or_default();
-                    refs.insert(reference.clone());
-                    self.foods.push(ExportedFood {
-                        reference: reference.clone(),
-                        name: e.name.clone(),
-                        brand: None,
-                        barcode: None,
-                        source: Source::Custom,
-                        fineli_id: None,
-                        per100,
-                        cooked_g: None,
-                        makes: None,
-                        instructions: None,
-                        archived: true,
-                        category: None,
-                        servings: Vec::new(),
-                        items: Vec::new(),
-                    });
-                    reference
-                })
-                .clone();
-            e.food = Some(reference);
-            e.grams = Some(grams);
-        }
     }
 
     /// Weights, measurements, notes and check-ins as their routes take them
@@ -763,12 +807,20 @@ impl ProfileExport {
                 return Err(at(bad("the day is listed twice")));
             }
         }
+        let mut prefs = BTreeSet::new();
+        for i in &mut self.insight_prefs {
+            let at = within("insight_prefs", i.id.clone());
+            *i = InsightPref::checked(&i.id, i.state, i.until.as_deref()).map_err(&at)?;
+            if !prefs.insert(i.id.clone()) {
+                return Err(at(bad("the insight is listed twice")));
+            }
+        }
         let mut readings = BTreeSet::new();
         for r in &mut self.scale_readings {
             let at = within("scale_readings", r.day.clone());
             r.source = text(&r.source, "source", LABEL_MAX).map_err(&at)?;
             if !is_date(&r.day) {
-                return Err(at(bad("day must be YYYY-MM-DD")));
+                return Err(at(bad("day must be a real date (YYYY-MM-DD)")));
             }
             WeightInput {
                 kg: r.weight,
@@ -780,6 +832,13 @@ impl ProfileExport {
             if !(percent(r.body_fat) && percent(r.water) && percent(r.muscle)) {
                 return Err(at(bad("body fat, water and muscle must be 0–100 %")));
             }
+            let upto = |v: Option<f64>, max: f64| v.is_none_or(|v| v > 0.0 && v <= max);
+            if !(upto(r.bone_kg, BONE_KG_MAX)
+                && upto(r.lbm_kg, BODY_KG_MAX)
+                && upto(r.bmr_kcal, BMR_KCAL_MAX))
+            {
+                return Err(at(bad("bone and lean mass and BMR must be in bounds")));
+            }
             if !readings.insert((r.source.clone(), r.source_user, r.taken_at)) {
                 return Err(at(bad("a reading is listed twice")));
             }
@@ -788,7 +847,7 @@ impl ProfileExport {
         for t in &mut self.day_totals {
             let at = within("day_totals", t.day.clone());
             if !is_date(&t.day) {
-                return Err(at(bad("day must be YYYY-MM-DD")));
+                return Err(at(bad("day must be a real date (YYYY-MM-DD)")));
             }
             t.group = text(&t.group, "group", LABEL_MAX).map_err(&at)?;
             nutrients_ok(&t.nutrients).map_err(&at)?;
@@ -799,22 +858,27 @@ impl ProfileExport {
         Ok(())
     }
 
-    /// Health Connect activity within the sync's value bounds (no window
+    /// Activity (synced and imported) within the sync's value bounds (no window
     /// applies to a file), each day and workout key once.
     fn check_activity(&mut self) -> Result<(), Error> {
-        let mut days = BTreeSet::new();
-        for d in &self.activity_days {
-            let at = within("activity_days", d.day.clone());
-            if checked_day(d.clone()).is_none() {
-                return Err(at(bad("a day's values must be in bounds, one at least")));
-            }
-            if !days.insert(d.day.clone()) {
-                return Err(at(bad("the day is listed twice")));
+        for (field, list) in [
+            ("device_days", &self.device_days),
+            ("import_days", &self.import_days),
+        ] {
+            let mut days = BTreeSet::new();
+            for d in list {
+                let at = within(field, d.day.clone());
+                if checked_day(d.clone()).is_none() {
+                    return Err(at(bad("a day's values must be in bounds, one at least")));
+                }
+                if !days.insert(d.day.clone()) {
+                    return Err(at(bad("the day is listed twice")));
+                }
             }
         }
         let mut keys = BTreeSet::new();
-        for s in &mut self.activity_sessions {
-            let at = within("activity_sessions", s.day.clone());
+        for s in &mut self.device_sessions {
+            let at = within("device_sessions", s.day.clone());
             *s = checked_session(s.clone()).ok_or_else(|| {
                 at(bad(
                     "a workout's key, times, type or energy is out of bounds",
@@ -822,6 +886,36 @@ impl ProfileExport {
             })?;
             if !keys.insert(s.key.clone()) {
                 return Err(at(bad(format!("workout {} is listed twice", s.key))));
+            }
+        }
+        let mut naps = BTreeSet::new();
+        for n in &mut self.naps {
+            let at = within("naps", n.day.clone());
+            checked_uid(&n.uid).map_err(&at)?;
+            let nap = checked_nap(NapIn {
+                day: n.day.clone(),
+                key: n.source_key.clone().unwrap_or_else(|| "x".to_owned()),
+                start_at: n.start_at.clone(),
+                end_at: n.end_at.clone(),
+                asleep_min: n.asleep_min,
+            })
+            .ok_or_else(|| {
+                at(bad(
+                    "a nap's day, key, times and time asleep must be in bounds",
+                ))
+            })?;
+            (n.start_at, n.end_at) = (nap.start_at, nap.end_at);
+            if !naps.insert(n.uid.clone()) {
+                return Err(at(bad("a nap is listed twice")));
+            }
+        }
+        let mut spans = BTreeSet::new();
+        for st in &mut self.sleep_stages {
+            let at = within("sleep_stages", st.day.clone());
+            *st = checked_stage(st.clone())
+                .ok_or_else(|| at(bad("a span's day and times must be in bounds")))?;
+            if !spans.insert((st.source, st.start_at.clone())) {
+                return Err(at(bad("a span is listed twice")));
             }
         }
         if self.workout_tombstones.len() > TOMBSTONES_MAX {
@@ -857,7 +951,16 @@ impl ProfileExport {
             .collect();
         for f in &mut self.foods {
             let at = within("foods", format!("food “{}”", f.reference));
-            if f.source == Source::Recipe {
+            if f.kind == FoodKind::Recipe {
+                if f.source != Source::Custom {
+                    return Err(at(bad("a recipe is your own (source “custom”)")));
+                }
+                if f.basis.is_some() {
+                    return Err(at(bad("a recipe's values are its ingredients'")));
+                }
+                for i in &mut f.items {
+                    check_item_serving(i).map_err(&at)?;
+                }
                 let items = f
                     .items
                     .iter()
@@ -865,10 +968,10 @@ impl ProfileExport {
                         let food_id = index
                             .get(&i.food)
                             .ok_or_else(|| bad(format!("unknown ingredient ref “{}”", i.food)))?;
-                        Ok(ItemInput {
-                            food_id: i64::try_from(*food_id).unwrap_or(i64::MAX),
-                            grams: i.grams,
-                        })
+                        Ok(ItemInput::grams(
+                            i64::try_from(*food_id).unwrap_or(i64::MAX),
+                            i.grams,
+                        ))
                     })
                     .collect::<Result<Vec<_>, Error>>()
                     .map_err(&at)?;
@@ -880,21 +983,22 @@ impl ProfileExport {
                     servings: f.servings.clone(),
                     archived: f.archived,
                     category: f.category.clone(),
-                    instructions: f.instructions.clone(),
+                    notes: f.notes.clone(),
                     rev: None,
+                    uid: None,
                 }
                 .checked()
                 .map_err(&at)?;
                 f.name = input.name;
                 f.servings = input.servings;
                 f.category = input.category;
-                f.instructions = input.instructions;
+                f.notes = input.notes;
                 for (item, checked) in f.items.iter_mut().zip(input.items) {
-                    item.grams = checked.grams;
+                    item.grams = checked.amount.grams.unwrap_or(item.grams);
                 }
             } else {
-                if f.instructions.is_some() {
-                    return Err(at(bad("only a recipe has instructions")));
+                if f.notes.is_some() {
+                    return Err(at(bad("only a recipe has notes")));
                 }
                 if !f.items.is_empty() {
                     return Err(at(bad("only a recipe has ingredients")));
@@ -907,10 +1011,17 @@ impl ProfileExport {
                     servings: f.servings.clone(),
                     archived: f.archived,
                     category: f.category.clone(),
+                    basis: f.basis.clone(),
                     rev: None,
+                    uid: None,
+                    drink: f.drink.filter(|_| f.drink_set),
                 }
                 .checked_kept()
                 .map_err(&at)?;
+                if f.source == Source::Fineli && input.basis.is_some() {
+                    return Err(at(bad("Fineli's values are per 100 g, not per a serving")));
+                }
+                f.basis = input.basis;
                 f.name = input.name;
                 f.brand = input.brand;
                 f.barcode = input.barcode;
@@ -945,11 +1056,15 @@ impl ProfileExport {
                 steps: ExportedStep::to_steps(&w.steps, &exercises).map_err(&at)?,
                 minutes: w.minutes,
                 kcal: w.kcal,
+                notes: w.notes.clone(),
+                archived: w.archived,
                 rev: None,
+                uid: None,
             }
             .checked()
             .map_err(&at)?;
             w.name = input.name;
+            w.notes = input.notes;
         }
         let workouts: BTreeSet<&str> = self.workouts.iter().map(|w| w.reference.as_str()).collect();
         let mut uids = BTreeSet::new();
@@ -972,11 +1087,11 @@ impl ProfileExport {
                 return Err(at(bad(format!("uid “{uid}” is listed twice"))));
             }
         }
-        for s in &self.sessions {
+        for s in &self.activities {
             if let Some(r) = s.workout.as_deref().filter(|r| !workouts.contains(r)) {
                 return Err(Error::invalid_field(
-                    "sessions",
-                    format!("session “{}”: unknown workout ref “{r}”", s.uid),
+                    "activities",
+                    format!("activity “{}”: unknown workout ref “{r}”", s.uid),
                 ));
             }
         }
@@ -1003,6 +1118,7 @@ impl ProfileExport {
                 variant_of: None,
                 traits: x.traits.clone(),
                 rev: None,
+                uid: None,
             }
             .checked()
             .map_err(&at)?;
@@ -1032,8 +1148,67 @@ impl ProfileExport {
         Ok(())
     }
 
+    /// Daily items as their routes keep them, refs once, at most
+    /// [`DAILY_ITEMS_MAX`]; entries name known ones, one per item and day.
+    fn check_daily_items(&mut self, foods: &BTreeSet<String>) -> Result<(), Error> {
+        if self.daily_items.len() > DAILY_ITEMS_MAX as usize {
+            return Err(Error::invalid_field(
+                "daily_items",
+                format!("at most {DAILY_ITEMS_MAX} daily items"),
+            ));
+        }
+        unique_refs(
+            "daily_items",
+            self.daily_items.iter().map(|d| d.reference.as_str()),
+        )?;
+        for d in &mut self.daily_items {
+            let at = within("daily_items", format!("daily item “{}”", d.reference));
+            if !foods.contains(&d.food) {
+                return Err(at(bad(format!("unknown food ref “{}”", d.food))));
+            }
+            grams(d.grams).map_err(&at)?;
+            d.serving = opt_text(d.serving.as_deref(), "serving", LABEL_MAX).map_err(&at)?;
+            if d.serving.is_some() != d.quantity.is_some_and(|q| q.is_finite() && q > 0.0) {
+                return Err(at(bad("give a serving and its quantity together")));
+            }
+            if !is_date(&d.start) {
+                return Err(at(bad("start must be a real date (YYYY-MM-DD)")));
+            }
+            checked_created_at(d.created_at.as_deref()).map_err(&at)?;
+            let mut days = BTreeSet::new();
+            for day in &d.skips {
+                if !is_date(day) || !days.insert(day.as_str()) {
+                    return Err(at(bad(format!("skip “{day}” is not a date, or twice"))));
+                }
+            }
+        }
+        let items: BTreeSet<&str> = self
+            .daily_items
+            .iter()
+            .map(|d| d.reference.as_str())
+            .collect();
+        let mut ticked = BTreeSet::new();
+        for e in &self.entries {
+            let Some(r) = e.repeat.as_deref() else {
+                continue;
+            };
+            let why = if !items.contains(r) {
+                format!("unknown daily item ref “{r}”")
+            } else if !ticked.insert((r, e.day.as_str())) {
+                format!("daily item “{r}” is ticked twice on {}", e.day)
+            } else {
+                continue;
+            };
+            return Err(Error::invalid_field(
+                "entries",
+                format!("entry “{}”: {why}", e.uid),
+            ));
+        }
+        Ok(())
+    }
+
     /// Sessions as their route takes them (sets by exercise ref), uids once.
-    fn check_sessions(&mut self) -> Result<(), Error> {
+    fn check_activities(&mut self) -> Result<(), Error> {
         let exercises: BTreeMap<&str, i64> = self
             .exercises
             .iter()
@@ -1041,24 +1216,34 @@ impl ProfileExport {
             .map(|(x, i)| (x.reference.as_str(), i))
             .collect();
         let (mut uids, mut keys) = (BTreeSet::new(), BTreeSet::new());
-        for s in &mut self.sessions {
-            let at = within("sessions", format!("session “{}”", s.uid));
+        for s in &mut self.activities {
+            let at = within("activities", format!("activity “{}”", s.uid));
             if !uids.insert(s.uid.clone()) {
                 return Err(at(bad("uid is listed twice")));
             }
-            // A set-based session has no distance: dropped as
+            // A type without a distance (a workout) has none: dropped as
             // migration 33 dropped stored ones, not refused.
-            if s.kind.is_none() {
+            if !s.kind.distance() {
                 s.distance_m = None;
             }
             let sets = s
                 .sets
                 .iter()
                 .map(|set| {
-                    let exercise_id = *exercises
-                        .get(set.exercise.as_str())
-                        .ok_or_else(|| bad(format!("unknown exercise ref “{}”", set.exercise)))?;
-                    Ok(SessionSet {
+                    let exercise_id = set
+                        .exercise
+                        .as_deref()
+                        .map(|r| {
+                            exercises
+                                .get(r)
+                                .copied()
+                                .ok_or_else(|| bad(format!("unknown exercise ref “{r}”")))
+                        })
+                        .transpose()?;
+                    if exercise_id.is_none() && set.name.trim().is_empty() {
+                        return Err(bad("a set without an exercise needs its name"));
+                    }
+                    Ok(ActivitySet {
                         exercise_id,
                         name: set.name.clone(),
                         reps: set.reps,
@@ -1069,7 +1254,7 @@ impl ProfileExport {
                 })
                 .collect::<Result<Vec<_>, Error>>()
                 .map_err(&at)?;
-            let input = SessionInput {
+            let input = ActivityInput {
                 day: s.day.clone(),
                 workout_id: None,
                 name: s.name.clone(),
@@ -1091,7 +1276,7 @@ impl ProfileExport {
             {
                 return Err(at(bad("source_key must be a Health Connect id, once")));
             }
-            if s.source == SessionSource::HealthConnect && s.source_key.is_none() {
+            if s.source == ActivitySource::HealthConnect && s.source_key.is_none() {
                 return Err(at(bad("a synced session needs its source_key")));
             }
             checked_created_at(s.created_at.as_deref()).map_err(&at)?;
@@ -1114,13 +1299,12 @@ impl ProfileExport {
             let input = HabitInput {
                 name: h.name.clone(),
                 unit: h.unit.clone(),
-                // Files from before goals had a direction say `day_limit`:
-                // an at-most goal, the default direction.
-                goal_value: h.goal_value.or(h.day_limit),
+                goal_value: h.goal_value,
                 goal_dir: h.goal_dir.map(|d| d.as_str().to_owned()),
                 day_limit: super::Gone::default(),
                 archived: h.archived,
                 rev: None,
+                uid: None,
             }
             .checked()
             .map_err(&at)?;
@@ -1128,8 +1312,7 @@ impl ProfileExport {
                 return Err(at(bad("name is listed twice")));
             }
             (h.name, h.unit) = (input.name, input.unit);
-            (h.goal_value, h.goal_dir, h.day_limit) =
-                (input.goal_value, Some(input.goal_dir), None);
+            (h.goal_value, h.goal_dir) = (input.goal_value, Some(input.goal_dir));
             checked_created_at(h.created_at.as_deref()).map_err(&at)?;
             let mut days = BTreeSet::new();
             for d in &h.days {
@@ -1144,19 +1327,34 @@ impl ProfileExport {
     }
 }
 
-/// One entry as stored rows look: imported history has no food and no
-/// nutrients (its totals are `day_totals`); a logged food names one. Quick
-/// adds were made foods before (`quick_adds_to_foods`).
+/// An ingredient's serving and quantity come together or not at all. Its
+/// food may lack the serving where it lands: it then reads as grams.
+fn check_item_serving(i: &mut ExportedItem) -> Result<(), Error> {
+    i.serving = opt_text(i.serving.as_deref(), "serving", LABEL_MAX)?;
+    match (&i.serving, i.quantity) {
+        (None, None) => Ok(()),
+        (Some(_), Some(q)) if q.is_finite() && q > 0.0 => Ok(()),
+        (Some(_), Some(_)) => Err(bad("quantity must be more than 0")),
+        _ => Err(bad(
+            "give an ingredient's serving and its quantity together",
+        )),
+    }
+}
+
+/// One entry as stored rows look: imported history (it names its
+/// `src_group`) has no food and no nutrients (its totals are `day_totals`);
+/// a logged food names one.
 fn check_entry(e: &mut ExportedEntry, foods: &BTreeSet<String>) -> Result<(), Error> {
     if !is_date(&e.day) {
-        return Err(bad("day must be YYYY-MM-DD"));
+        return Err(bad("day must be a real date (YYYY-MM-DD)"));
     }
-    e.group = if e.imported {
+    e.src_group = opt_text(e.src_group.as_deref(), "source group", LABEL_MAX)?;
+    let imported = e.src_group.is_some();
+    e.group = if imported {
         text(&e.group, "group", LABEL_MAX)?
     } else {
         checked_group(&e.group)?.to_owned()
     };
-    e.src_group = opt_text(e.src_group.as_deref(), "source group", LABEL_MAX)?;
     e.name = text(&e.name, "name", NAME_MAX)?;
     e.amount = text(&e.amount, "amount", NAME_MAX)?;
     e.serving = opt_text(e.serving.as_deref(), "serving", LABEL_MAX)?;
@@ -1180,7 +1378,7 @@ fn check_entry(e: &mut ExportedEntry, foods: &BTreeSet<String>) -> Result<(), Er
     {
         return Err(bad(format!("unknown food ref “{f}”")));
     }
-    let shape_ok = if e.imported {
+    let shape_ok = if imported {
         e.food.is_none() && e.nutrients.is_none()
     } else {
         e.food.is_some()

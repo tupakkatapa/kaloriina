@@ -1,20 +1,27 @@
 //! A profile out to one file and back in: the export read and
 //! the import, all of it in one transaction or nothing.
 
+#[cfg(test)]
+use super::device::DAY_COLUMNS;
+use super::device::{
+    day_list, import_insert, import_list, sleep_stage_list, stages_put, stored_naps,
+};
+use super::foods::{insert_food, insert_recipe};
 use super::prelude::*;
-use super::workouts::check_exercises;
+use super::workouts::{WORKOUT_COLS, check_exercises, insert_workout, workout_row};
 use super::{
-    ENTRY_COLS, activity_insert, activity_list, check_in_list, entry_row, food_by_barcode,
-    habit_list, measurement_list, name_free, named_sets, note_list, profile_get, recompute,
-    session_list, sync_portion, sync_status, target_list, tombstone, tombstone_list, workout_get,
-    write_servings, write_targets,
+    ENTRY_COLS, activity_list, check_in_list, device_insert, entry_row, food_by_barcode,
+    habit_list, insight_pref_list, measurement_list, name_free, named_sets, note_list, profile_get,
+    recompute, sets_put, sync_portion, sync_status, target_list, tombstone, tombstone_list,
+    workout_get, write_servings, write_targets,
 };
 use crate::model::{
-    CheckedImport, EXPORT_FORMAT, EXPORT_VERSION, ExportedBinding, ExportedDayTotal, ExportedEntry,
-    ExportedExercise, ExportedFood, ExportedHabit, ExportedHabitDay, ExportedItem,
-    ExportedMeasurement, ExportedNote, ExportedPlan, ExportedProfile, ExportedScaleReading,
-    ExportedSession, ExportedSet, ExportedStep, ExportedTarget, ExportedWeight, ExportedWorkout,
-    GoalDir, OPENSCALE, ProfileExport,
+    CheckedImport, EXPORT_FORMAT, EXPORT_VERSION, ExportedActivity, ExportedBinding,
+    ExportedDailyItem, ExportedDayTotal, ExportedEntry, ExportedExercise, ExportedFood,
+    ExportedHabit, ExportedHabitDay, ExportedItem, ExportedMeasurement, ExportedNap, ExportedNote,
+    ExportedPlan, ExportedProfile, ExportedScaleReading, ExportedSet, ExportedStep, ExportedTarget,
+    ExportedWeight, ExportedWorkout, GoalDir, IMPORT_KEY_PREFIX, KcalSource, OPENSCALE,
+    ProfileExport,
 };
 
 /// The tables an export reaches by ref besides those a profile owns (the
@@ -37,6 +44,8 @@ pub const EXPORTED: &[(&str, &[&str])] = &[
             "height_cm",
             "activity",
             "goal_kg_per_week",
+            "goal_date",
+            "latitude",
             "water_food_id",
             "synced_workouts",
         ],
@@ -55,24 +64,35 @@ pub const EXPORTED: &[(&str, &[&str])] = &[
             "grams",
             "amount",
             "nutrients",
-            "imported",
             "created_at",
             "serving",
             "quantity",
             "time",
+            "daily_item_id",
         ],
     ),
+    (
+        "daily_item",
+        &[
+            "food_id",
+            "grams",
+            "serving",
+            "quantity",
+            "start",
+            "created_at",
+        ],
+    ),
+    ("daily_skip", &["day"]),
     ("day_total", &["day", "grp", "nutrients"]),
     ("favorite", &["food_id"]),
     (
-        "workout_session",
+        "activity",
         &[
             "uid",
             "day",
             "name",
             "minutes",
             "kcal",
-            "sets",
             "type",
             "distance_m",
             "start_at",
@@ -80,11 +100,19 @@ pub const EXPORTED: &[(&str, &[&str])] = &[
             "source_key",
             "workout_id",
             "created_at",
+            "kcal_source",
+            "avg_hr",
+            "max_hr",
         ],
+    ),
+    (
+        "activity_set",
+        &["exercise_id", "name", "reps", "seconds", "kg", "side"],
     ),
     ("day_note", &["day", "text"]),
     ("measurement", &["day", "kind", "value"]),
     ("check_in", &["day", "mood", "energy", "stress", "tags"]),
+    ("insight_pref", &["insight_id", "state", "until"]),
     (
         "habit",
         &[
@@ -109,27 +137,15 @@ pub const EXPORTED: &[(&str, &[&str])] = &[
             "body_fat",
             "water",
             "muscle",
+            "bone_kg",
+            "lbm_kg",
+            "bmr_kcal",
         ],
     ),
+    ("device_day", DAY_COLUMNS),
+    ("import_day", DAY_COLUMNS),
     (
-        "activity_day",
-        &[
-            "day",
-            "active_kcal",
-            "steps",
-            "resting_hr",
-            "hrv_ms",
-            "asleep_min",
-            "in_bed_min",
-            "bedtime",
-            "wake_time",
-            "deep_min",
-            "rem_min",
-            "light_min",
-        ],
-    ),
-    (
-        "activity_session",
+        "device_session",
         &[
             "source_key",
             "day",
@@ -138,11 +154,30 @@ pub const EXPORTED: &[(&str, &[&str])] = &[
             "type",
             "name",
             "kcal",
+            "total_kcal",
             "distance_m",
             "recording_method",
+            "avg_hr",
+            "max_hr",
         ],
     ),
     ("workout_tombstone", &["source_key", "type", "start_at"]),
+    (
+        "nap",
+        &[
+            "uid",
+            "day",
+            "start_at",
+            "end_at",
+            "source",
+            "source_key",
+            "asleep_min",
+        ],
+    ),
+    (
+        "sleep_stage",
+        &["day", "start_at", "end_at", "stage", "source"],
+    ),
     (
         "food",
         &[
@@ -150,19 +185,27 @@ pub const EXPORTED: &[(&str, &[&str])] = &[
             "brand",
             "barcode",
             "source",
+            "kind",
             "per100",
             "cooked_g",
             "archived",
             "fineli_id",
             "makes",
-            "instructions",
+            "notes",
             "category",
+            "basis",
+            "basis_estimated",
+            "drink",
+            "drink_set",
         ],
     ),
     ("serving", &["label", "grams"]),
-    ("recipe_item", &["food_id", "grams"]),
+    ("recipe_item", &["food_id", "grams", "serving", "quantity"]),
     ("exercise", &["name", "measure", "traits", "variant_of"]),
-    ("workout", &["name", "steps", "minutes", "kcal"]),
+    (
+        "workout",
+        &["name", "steps", "minutes", "kcal", "archived", "notes"],
+    ),
     (
         "planned_workout",
         &["day", "workout_id", "uid", "created_at"],
@@ -176,18 +219,66 @@ pub const EXCLUDED: &[(&str, &[&str], &str)] = &[
     ("*", &["id", "rev"], "local row identity"),
     ("*", &["profile_id"], "the owner: a file is one profile"),
     ("habit_day", &["habit_id"], "travels inside its habit"),
+    ("daily_skip", &["daily_item_id"], "travels inside its item"),
     ("serving", &["food_id"], "travels inside its food"),
     ("recipe_item", &["recipe_id"], "travels inside its recipe"),
+    (
+        "activity_set",
+        &["activity_id", "idx"],
+        "travels inside its activity, in order",
+    ),
     (
         "exercise",
         &["source"],
         "matched by name; one the instance lacks is created as your own",
     ),
-    ("food", &["category_auto"], "importer bookkeeping"),
+    (
+        "food",
+        &["category_auto", "fineli_class"],
+        "importer bookkeeping",
+    ),
+    ("food", &["uid"], "a create's retry key, local transport"),
+    ("habit", &["uid"], "a create's retry key, local transport"),
+    ("workout", &["uid"], "a create's retry key, local transport"),
+    (
+        "exercise",
+        &["uid"],
+        "a create's retry key, local transport",
+    ),
+    ("profile", &["uid"], "a create's retry key, local transport"),
     (
         "sync_state",
-        &["seen_users", "last_seen", "last_result"],
+        &["seen_users", "last_seen", "last_result", "records_result"],
         "device status, re-learned on the next sync (the health_connect row is only that)",
+    ),
+    (
+        "health_record",
+        &[
+            "source",
+            "kind",
+            "record_id",
+            "start_at",
+            "end_at",
+            "day",
+            "data",
+            "received_at",
+        ],
+        "the raw archive (ADR 0019): hundreds of MB a year, it travels in backups only",
+    ),
+    (
+        "photo",
+        &["uid", "day", "grp", "taken_at", "mime", "bytes"],
+        "photos (ADR 0022): up to 512 MiB a profile, they travel in backups only",
+    ),
+    (
+        "hook",
+        &["url", "webhook_id", "events", "last_result"],
+        "outbound hooks (ADR 0024): a LAN address and a secret, set again where the profile lands",
+    ),
+    (
+        "feedback",
+        &["kind", "text", "status", "created_at"],
+        "the instance's, not a profile's: pulled by `kaloriina feedback`",
     ),
 ];
 
@@ -202,7 +293,8 @@ fn reference(id: i64) -> String {
 pub fn profile_export(conn: &Connection, pid: ProfileId) -> Result<ProfileExport, Error> {
     let (profile, exported_at, synced_workouts, water_food) = conn.query_row(
         "SELECT name, sex, birth_date, height_cm, activity, goal_kg_per_week,
-             strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), synced_workouts, water_food_id
+             strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), synced_workouts, water_food_id, goal_date,
+             latitude
          FROM profile WHERE id = ?",
         [pid],
         |r| {
@@ -216,10 +308,9 @@ pub fn profile_export(conn: &Connection, pid: ProfileId) -> Result<ProfileExport
                         height_cm: r.get(3)?,
                         activity: r.get(4)?,
                         goal_kg_per_week: r.get(5)?,
+                        goal_date: r.get(9)?,
+                        latitude: r.get(10)?,
                     },
-                    workouts_per_week: None,
-                    goal_weight_kg: None,
-                    weight_kg: None,
                 },
                 r.get(6)?,
                 r.get(7)?,
@@ -227,10 +318,11 @@ pub fn profile_export(conn: &Connection, pid: ProfileId) -> Result<ProfileExport
             ))
         },
     )?;
-    let sessions = session_list(conn, pid, None, None, None)?;
-    let activity = activity_list(conn, pid, None, None)?;
+    let sessions = activity_list(conn, pid, None, None, None)?;
+    let activity = super::device_day_list(conn, pid, None, None)?;
     let plans = exported_plans(conn, pid)?;
     let workouts = exported_workouts(conn, &sessions, &plans)?;
+    let (daily_items, daily_refs) = exported_daily_items(conn, pid)?;
     let binding = sync_status(conn, pid)?.bound_user.map(|b| ExportedBinding {
         bound_user: b.id,
         bound_username: Some(b.username).filter(|n| !n.is_empty()),
@@ -244,18 +336,9 @@ pub fn profile_export(conn: &Connection, pid: ProfileId) -> Result<ProfileExport
         water_food,
         openscale: binding,
         exercises: exported_exercises(conn, &sessions, &workouts)?,
-        workouts: workouts
-            .into_iter()
-            .map(|w| ExportedWorkout {
-                reference: reference(w.id),
-                name: w.name,
-                steps: ExportedStep::from_steps(&w.steps, &reference),
-                minutes: w.minutes,
-                kcal: w.kcal,
-            })
-            .collect(),
+        workouts: workouts.into_iter().map(exported_workout).collect(),
         plans,
-        sessions: exported_sessions(conn, pid, sessions)?,
+        activities: exported_activities(conn, pid, sessions)?,
         targets: target_list(conn, pid)?
             .into_iter()
             // A default isn't the profile's: it applies wherever it lands.
@@ -267,8 +350,11 @@ pub fn profile_export(conn: &Connection, pid: ProfileId) -> Result<ProfileExport
             .collect(),
         weights: exported_weights(conn, pid)?,
         scale_readings: exported_readings(conn, pid)?,
-        activity_days: activity.days,
-        activity_sessions: activity.sessions,
+        device_days: day_list(conn, pid, None, None)?,
+        naps: exported_naps(conn, pid)?,
+        sleep_stages: sleep_stage_list(conn, pid, None, None)?,
+        device_sessions: activity.sessions,
+        import_days: import_list(conn, pid)?,
         workout_tombstones: tombstone_list(conn, pid)?,
         measurements: measurement_list(conn, pid, None, None)?
             .into_iter()
@@ -286,7 +372,8 @@ pub fn profile_export(conn: &Connection, pid: ProfileId) -> Result<ProfileExport
             })
             .collect(),
         check_ins: check_in_list(conn, pid, None, None)?,
-        entries: exported_entries(conn, pid)?,
+        insight_prefs: insight_pref_list(conn, pid)?,
+        entries: exported_entries(conn, pid, &daily_refs)?,
         day_totals: exported_day_totals(conn, pid)?,
         favorites: conn
             .prepare("SELECT food_id FROM favorite WHERE profile_id = ? ORDER BY food_id")?
@@ -294,21 +381,89 @@ pub fn profile_export(conn: &Connection, pid: ProfileId) -> Result<ProfileExport
             .collect::<rusqlite::Result<_>>()?,
         foods: exported_foods(conn, pid)?,
         habits: exported_habits(conn, pid)?,
+        daily_items,
     })
 }
 
-fn exported_sessions(
+/// The profile's daily items, oldest first, refs by place; and each one's
+/// ref by id, for the entries that ticked it.
+fn exported_daily_items(
     conn: &Connection,
     pid: ProfileId,
-    sessions: Vec<Session>,
-) -> Result<Vec<ExportedSession>, Error> {
+) -> Result<(Vec<ExportedDailyItem>, BTreeMap<i64, String>), Error> {
+    let mut skips: BTreeMap<i64, Vec<String>> = BTreeMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT s.daily_item_id, s.day FROM daily_skip s JOIN daily_item d ON d.id = s.daily_item_id
+         WHERE d.profile_id = ? ORDER BY s.day",
+    )?;
+    for row in stmt.query_map([pid], |r| Ok((r.get(0)?, r.get(1)?)))? {
+        let (id, day) = row?;
+        skips.entry(id).or_default().push(day);
+    }
+    let mut refs = BTreeMap::new();
+    let items = conn
+        .prepare(
+            "SELECT id, food_id, grams, serving, quantity, start, created_at FROM daily_item
+             WHERE profile_id = ? ORDER BY id",
+        )?
+        .query_map([pid], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                ExportedDailyItem {
+                    reference: String::new(),
+                    food: reference(r.get(1)?),
+                    grams: r.get(2)?,
+                    serving: r.get(3)?,
+                    quantity: r.get(4)?,
+                    start: r.get(5)?,
+                    created_at: r.get(6)?,
+                    skips: Vec::new(),
+                },
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .zip(1..)
+        .map(|((id, item), n)| {
+            let reference = n.to_string();
+            refs.insert(id, reference.clone());
+            ExportedDailyItem {
+                reference,
+                skips: skips.remove(&id).unwrap_or_default(),
+                ..item
+            }
+        })
+        .collect();
+    Ok((items, refs))
+}
+
+fn exported_naps(conn: &Connection, pid: ProfileId) -> Result<Vec<ExportedNap>, Error> {
+    Ok(stored_naps(conn, pid)?
+        .into_iter()
+        .map(|n| ExportedNap {
+            uid: n.uid,
+            day: n.day,
+            start_at: n.start_at,
+            end_at: n.end_at,
+            source: n.source,
+            source_key: n.source_key,
+            asleep_min: n.asleep_min,
+        })
+        .collect())
+}
+
+fn exported_activities(
+    conn: &Connection,
+    pid: ProfileId,
+    sessions: Vec<Activity>,
+) -> Result<Vec<ExportedActivity>, Error> {
     let created: BTreeMap<i64, String> = conn
-        .prepare("SELECT id, created_at FROM workout_session WHERE profile_id = ?")?
+        .prepare("SELECT id, created_at FROM activity WHERE profile_id = ?")?
         .query_map([pid], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
     Ok(sessions
         .into_iter()
-        .map(|s| ExportedSession {
+        .map(|s| ExportedActivity {
             created_at: created.get(&s.id).cloned(),
             workout: s.workout_id.map(reference),
             uid: s.uid,
@@ -321,11 +476,14 @@ fn exported_sessions(
             start_at: s.start_at,
             source: s.source,
             source_key: s.source_key,
+            kcal_source: s.kcal_source,
+            avg_hr: s.avg_hr,
+            max_hr: s.max_hr,
             sets: s
                 .sets
                 .into_iter()
                 .map(|set| ExportedSet {
-                    exercise: reference(set.exercise_id),
+                    exercise: set.exercise_id.map(reference),
                     name: set.name,
                     reps: set.reps,
                     seconds: set.seconds,
@@ -355,10 +513,22 @@ fn exported_plans(conn: &Connection, pid: ProfileId) -> Result<Vec<ExportedPlan>
         .collect::<rusqlite::Result<_>>()?)
 }
 
+fn exported_workout(w: Workout) -> ExportedWorkout {
+    ExportedWorkout {
+        reference: reference(w.id),
+        name: w.name,
+        steps: ExportedStep::from_steps(&w.steps, &reference),
+        minutes: w.minutes,
+        kcal: w.kcal,
+        notes: w.notes,
+        archived: w.archived,
+    }
+}
+
 /// The workouts the sessions were done from and the plans name, by id.
 fn exported_workouts(
     conn: &Connection,
-    sessions: &[Session],
+    sessions: &[Activity],
     plans: &[ExportedPlan],
 ) -> Result<Vec<Workout>, Error> {
     let ids: BTreeSet<i64> = sessions
@@ -379,7 +549,8 @@ fn exported_readings(
 ) -> Result<Vec<ExportedScaleReading>, Error> {
     Ok(conn
         .prepare(
-            "SELECT source, source_user, source_id, taken_at, day, weight, body_fat, water, muscle
+            "SELECT source, source_user, source_id, taken_at, day, weight, body_fat, water, muscle,
+                 bone_kg, lbm_kg, bmr_kcal
              FROM scale_reading WHERE profile_id = ? ORDER BY taken_at, source, source_user",
         )?
         .query_map([pid], |r| {
@@ -393,6 +564,9 @@ fn exported_readings(
                 body_fat: r.get(6)?,
                 water: r.get(7)?,
                 muscle: r.get(8)?,
+                bone_kg: r.get(9)?,
+                lbm_kg: r.get(10)?,
+                bmr_kcal: r.get(11)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?)
@@ -413,9 +587,13 @@ fn exported_day_totals(conn: &Connection, pid: ProfileId) -> Result<Vec<Exported
         .collect::<rusqlite::Result<_>>()?)
 }
 
-fn exported_entries(conn: &Connection, pid: ProfileId) -> Result<Vec<ExportedEntry>, Error> {
+fn exported_entries(
+    conn: &Connection,
+    pid: ProfileId,
+    daily_refs: &BTreeMap<i64, String>,
+) -> Result<Vec<ExportedEntry>, Error> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {ENTRY_COLS}, src_grp FROM entry WHERE profile_id = ? ORDER BY day, id"
+        "SELECT {ENTRY_COLS} FROM entry WHERE profile_id = ? ORDER BY day, id"
     ))?;
     Ok(stmt
         .query_map([pid], |r| {
@@ -431,10 +609,10 @@ fn exported_entries(conn: &Connection, pid: ProfileId) -> Result<Vec<ExportedEnt
                 quantity: e.quantity,
                 amount: e.amount,
                 nutrients: e.nutrients,
-                imported: e.imported,
-                src_group: r.get(15)?,
+                src_group: e.src_group,
                 time: e.time,
                 created_at: e.created_at,
+                repeat: e.repeat.and_then(|r| daily_refs.get(&r.id).cloned()),
             })
         })?
         .collect::<rusqlite::Result<_>>()?)
@@ -446,6 +624,7 @@ fn exported_foods(conn: &Connection, pid: ProfileId) -> Result<Vec<ExportedFood>
             "WITH RECURSIVE used(id) AS (
                  SELECT food_id FROM entry WHERE profile_id = ?1 AND food_id IS NOT NULL
                  UNION SELECT food_id FROM favorite WHERE profile_id = ?1
+                 UNION SELECT food_id FROM daily_item WHERE profile_id = ?1
                  UNION SELECT water_food_id FROM profile
                      WHERE id = ?1 AND water_food_id IS NOT NULL
                  UNION SELECT i.food_id FROM recipe_item i JOIN used ON i.recipe_id = used.id
@@ -453,34 +632,45 @@ fn exported_foods(conn: &Connection, pid: ProfileId) -> Result<Vec<ExportedFood>
         )?
         .query_map([pid], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
-    let mut items =
-        conn.prepare("SELECT food_id, grams FROM recipe_item WHERE recipe_id = ? ORDER BY rowid")?;
+    // Items as stored: a serving's removal clears the items measured in it
+    // (migration 52 cleared the ones from before).
+    let mut items = conn.prepare(
+        "SELECT food_id, grams, serving, quantity FROM recipe_item
+         WHERE recipe_id = ? ORDER BY rowid",
+    )?;
     let mut out = Vec::with_capacity(ids.len());
     for id in ids {
         let food = written(food_get(conn, id)?);
-        let fineli_id: Option<i64> =
-            conn.query_row("SELECT fineli_id FROM food WHERE id = ?", [id], |r| {
-                r.get(0)
-            })?;
+        let (fineli_id, drink_set): (Option<i64>, bool) = conn.query_row(
+            "SELECT fineli_id, drink_set FROM food WHERE id = ?",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
         out.push(ExportedFood {
             reference: reference(id),
             name: food.name,
             brand: food.brand,
             barcode: food.barcode,
             source: food.source,
+            kind: food.kind,
             fineli_id,
             per100: food.per100,
             cooked_g: food.cooked_g,
             makes: food.makes,
-            instructions: food.instructions,
+            notes: food.notes,
             archived: food.archived,
             category: food.category,
             servings: food.servings,
+            basis: food.basis,
+            drink: Some(food.drink),
+            drink_set,
             items: items
                 .query_map([id], |r| {
                     Ok(ExportedItem {
                         food: reference(r.get(0)?),
                         grams: r.get(1)?,
+                        serving: r.get(2)?,
+                        quantity: r.get(3)?,
                     })
                 })?
                 .collect::<rusqlite::Result<_>>()?,
@@ -491,14 +681,14 @@ fn exported_foods(conn: &Connection, pid: ProfileId) -> Result<Vec<ExportedFood>
 
 fn exported_exercises(
     conn: &Connection,
-    sessions: &[Session],
+    activities: &[Activity],
     workouts: &[Workout],
 ) -> Result<Vec<ExportedExercise>, Error> {
-    let sets: BTreeMap<i64, &SessionSet> = sessions
+    // A set of an exercise deleted since has none (`exercise_id` NULL).
+    let mut ids: BTreeSet<i64> = activities
         .iter()
-        .flat_map(|s| s.sets.iter().map(|set| (set.exercise_id, set)))
+        .flat_map(|a| a.sets.iter().filter_map(|set| set.exercise_id))
         .collect();
-    let mut ids: BTreeSet<i64> = sets.keys().copied().collect();
     for w in workouts {
         ids.extend(exercise_steps(&w.steps).iter().map(|s| s.exercise_id));
     }
@@ -507,35 +697,19 @@ fn exported_exercises(
         if found.contains_key(&id) {
             continue;
         }
-        let x = if let Some(x) = exercise_get(conn, id)? {
-            ids.extend(x.variant_of);
+        let x = exercise_get(conn, id)?
+            .ok_or_else(|| Error::Internal(format!("exercise {id} is gone")))?;
+        ids.extend(x.variant_of);
+        found.insert(
+            id,
             ExportedExercise {
                 reference: reference(x.id),
                 name: x.name,
                 measure: x.measure,
                 variant_of: x.variant_of.map(reference),
                 traits: x.traits,
-            }
-        } else {
-            // Deleted since: the sets kept its name, which is what an
-            // import matches by.
-            // (A workout's exercises can't be deleted.)
-            let set = sets
-                .get(&id)
-                .ok_or_else(|| Error::Internal(format!("exercise {id} of a workout is gone")))?;
-            ExportedExercise {
-                reference: reference(id),
-                name: set.name.clone(),
-                measure: if set.reps.is_some() {
-                    Measure::Reps
-                } else {
-                    Measure::Time
-                },
-                variant_of: None,
-                traits: ExerciseTraits::default(),
-            }
-        };
-        found.insert(id, x);
+            },
+        );
     }
     Ok(found.into_values().collect())
 }
@@ -548,21 +722,70 @@ fn blamed(field: &'static str, what: String) -> impl Fn(Error) -> Error {
     }
 }
 
+/// The file's diary entries, each on its food and daily item here.
+fn write_entries(
+    tx: &Transaction,
+    pid: ProfileId,
+    file: &ProfileExport,
+    foods: &BTreeMap<&str, i64>,
+    daily: &BTreeMap<&str, i64>,
+) -> Result<(), Error> {
+    for e in &file.entries {
+        tx.execute(
+            "INSERT INTO entry (profile_id, day, grp, src_grp, food_id, name, grams, amount,
+                 nutrients, created_at, uid, serving, quantity, time, daily_item_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                pid,
+                e.day,
+                e.group,
+                e.src_group,
+                e.food.as_deref().map(|r| foods[r]),
+                e.name,
+                e.grams,
+                e.amount,
+                e.nutrients.as_ref().map(json),
+                e.created_at,
+                e.uid,
+                e.serving,
+                e.quantity,
+                e.time,
+                e.repeat.as_deref().map(|r| daily[r])
+            ],
+        )?;
+    }
+    // An entry's values are its food's here: a matched food may
+    // say other numbers than the file's.
+    for id in foods.values().collect::<BTreeSet<_>>() {
+        super::foods::entries_follow(tx, *id)?;
+    }
+    Ok(())
+}
+
 /// Create a profile from a checked export, all of it or nothing. Foods,
 /// exercises and workouts match ones here or are created as
 /// your own. A `restore` keeps the file's profile id when no profile has
 /// it, and binds its openScale user again; a plain import does
 /// neither.
 ///
-/// `ponytail:` the import holds the one database lock for its whole run
+/// Its day weights are picked again from its readings at `now` in `tz`, and
+/// copies of one workout collapsed (the file's may follow older rules).
+///
+/// ponytail: the import holds the one database lock for its whole run
 /// (seconds for years of data); chunk it if other requests visibly stall.
 pub fn profile_import(
     conn: &mut Connection,
     import: &CheckedImport,
     restore: bool,
+    now: i64,
+    tz: &TimeZone,
 ) -> Result<Profile, Error> {
     let tx = write(conn)?;
     let file = &import.file;
+    let uid = import.profile.uid.as_deref();
+    if let Some(earlier) = super::foods::created_before(&tx, "profile", uid)? {
+        return Ok(written(profile_get(&tx, ProfileId(earlier))?));
+    }
     name_free(&tx, &import.profile.name, None)?;
     let pid = insert_profile(&tx, import, restore)?;
     write_targets(&tx, pid, &import.targets)?;
@@ -586,31 +809,9 @@ pub fn profile_import(
             .map_err(blamed("workouts", format!("workout “{}”", w.reference)))?;
         workouts.insert(&w.reference, id);
     }
-    for e in &file.entries {
-        tx.execute(
-            "INSERT INTO entry (profile_id, day, grp, src_grp, food_id, name, grams, amount,
-                 nutrients, imported, created_at, uid, serving, quantity, time)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            params![
-                pid,
-                e.day,
-                e.group,
-                e.src_group,
-                e.food.as_deref().map(|r| foods[r]),
-                e.name,
-                e.grams,
-                e.amount,
-                e.nutrients.as_ref().map(json),
-                e.imported,
-                e.created_at,
-                e.uid,
-                e.serving,
-                e.quantity,
-                e.time
-            ],
-        )?;
-    }
-    write_sessions(&tx, pid, file, &exercises, &workouts)?;
+    let daily = write_daily_items(&tx, pid, file, &foods)?;
+    write_entries(&tx, pid, file, &foods, &daily)?;
+    write_activities(&tx, pid, file, &exercises, &workouts)?;
     for p in &file.plans {
         tx.execute(
             "INSERT INTO planned_workout (profile_id, day, workout_id, uid, created_at)
@@ -632,10 +833,17 @@ pub fn profile_import(
         )?;
     }
     if let Some(r) = &file.water_food {
+        let id = foods[r.as_str()];
         tx.execute(
             "UPDATE profile SET water_food_id = ? WHERE id = ?",
-            params![foods[r.as_str()], pid],
+            params![id, pid],
         )?;
+        // The water food is a drink unless set by hand, as when picked.
+        tx.execute(
+            "UPDATE food SET drink = 1 WHERE id = ? AND NOT drink_set",
+            [id],
+        )?;
+        super::foods::derive(&tx, id)?;
     }
     if restore && let Some(b) = &file.openscale {
         tx.execute(
@@ -644,9 +852,45 @@ pub fn profile_import(
             params![pid, OPENSCALE, b.bound_user, b.bound_username],
         )?;
     }
+    super::scale::weights_repick(&tx, Some(pid), now, tz)?;
+    super::sync_workouts::copies_collapse(&tx, Some(pid))?;
     let profile = written(profile_get(&tx, pid)?);
     tx.commit()?;
     Ok(profile)
+}
+
+/// The daily items with their skips: each one's id by ref.
+fn write_daily_items<'f>(
+    tx: &Transaction,
+    pid: ProfileId,
+    file: &'f ProfileExport,
+    foods: &BTreeMap<&str, i64>,
+) -> Result<BTreeMap<&'f str, i64>, Error> {
+    let mut ids = BTreeMap::new();
+    for d in &file.daily_items {
+        tx.execute(
+            "INSERT INTO daily_item (profile_id, food_id, grams, serving, quantity, start, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, coalesce(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))",
+            params![
+                pid,
+                foods[d.food.as_str()],
+                d.grams,
+                d.serving,
+                d.quantity,
+                d.start,
+                d.created_at
+            ],
+        )?;
+        let id = tx.last_insert_rowid();
+        for day in &d.skips {
+            tx.execute(
+                "INSERT INTO daily_skip (daily_item_id, day) VALUES (?, ?)",
+                params![id, day],
+            )?;
+        }
+        ids.insert(d.reference.as_str(), id);
+    }
+    Ok(ids)
 }
 
 /// The profile's weights, measurements, notes, check-ins and imported
@@ -661,8 +905,8 @@ fn write_days(tx: &Transaction, pid: ProfileId, file: &ProfileExport) -> Result<
     for r in &file.scale_readings {
         tx.execute(
             "INSERT INTO scale_reading (profile_id, source, source_user, taken_at, source_id,
-                 day, weight, body_fat, water, muscle)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 day, weight, body_fat, water, muscle, bone_kg, lbm_kg, bmr_kcal)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 pid,
                 r.source,
@@ -673,11 +917,33 @@ fn write_days(tx: &Transaction, pid: ProfileId, file: &ProfileExport) -> Result<
                 r.weight,
                 r.body_fat,
                 r.water,
-                r.muscle
+                r.muscle,
+                r.bone_kg,
+                r.lbm_kg,
+                r.bmr_kcal
             ],
         )?;
     }
-    activity_insert(tx, pid, &file.activity_days, &file.activity_sessions)?;
+    device_insert(tx, pid, &file.device_days, &file.device_sessions)?;
+    for n in &file.naps {
+        tx.execute(
+            "INSERT INTO nap (profile_id, uid, day, start_at, end_at, source, source_key,
+                              asleep_min)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                pid,
+                n.uid,
+                n.day,
+                n.start_at,
+                n.end_at,
+                n.source,
+                n.source_key,
+                n.asleep_min
+            ],
+        )?;
+    }
+    import_insert(tx, pid, &file.import_days)?;
+    stages_put(tx, pid, &file.sleep_stages)?;
     for t in &file.workout_tombstones {
         tombstone(tx, pid, &t.key, t.kind, t.start_at.as_deref())?;
     }
@@ -700,6 +966,12 @@ fn write_days(tx: &Transaction, pid: ProfileId, file: &ProfileExport) -> Result<
             params![pid, c.day, c.mood, c.energy, c.stress, json(&c.tags)],
         )?;
     }
+    for i in &file.insight_prefs {
+        tx.execute(
+            "INSERT INTO insight_pref (profile_id, insight_id, state, until) VALUES (?, ?, ?, ?)",
+            params![pid, i.id, i.state, i.until],
+        )?;
+    }
     for t in &file.day_totals {
         tx.execute(
             "INSERT INTO day_total (profile_id, day, grp, nutrients) VALUES (?, ?, ?, ?)",
@@ -710,16 +982,16 @@ fn write_days(tx: &Transaction, pid: ProfileId, file: &ProfileExport) -> Result<
 }
 
 /// The sessions, their sets named after the exercises here.
-fn write_sessions(
+fn write_activities(
     tx: &Transaction,
     pid: ProfileId,
     file: &ProfileExport,
     exercises: &BTreeMap<&str, i64>,
     workouts: &BTreeMap<&str, i64>,
 ) -> Result<(), Error> {
-    for s in &file.sessions {
+    for s in &file.activities {
         let workout_id = s.workout.as_deref().map(|r| workouts[r]);
-        let input = SessionInput {
+        let input = ActivityInput {
             day: s.day.clone(),
             workout_id,
             name: s.name.clone(),
@@ -728,8 +1000,8 @@ fn write_sessions(
             sets: s
                 .sets
                 .iter()
-                .map(|set| SessionSet {
-                    exercise_id: exercises[set.exercise.as_str()],
+                .map(|set| ActivitySet {
+                    exercise_id: set.exercise.as_deref().map(|r| exercises[r]),
                     name: set.name.clone(),
                     reps: set.reps,
                     seconds: set.seconds,
@@ -743,20 +1015,29 @@ fn write_sessions(
             start_at: s.start_at.clone(),
             rev: None,
         };
-        let sets = named_sets(tx, &input, None)
-            .map_err(blamed("sessions", format!("session “{}”", s.uid)))?;
+        // The file vouches for the names of sets without an exercise.
+        let sets = named_sets(tx, &input, &input.sets)
+            .map_err(blamed("activities", format!("activity “{}”", s.uid)))?;
+        // A file from before says nothing: as migration 42 read the rows.
+        let kcal_source = s.kcal.and(s.kcal_source.or(Some(
+            match (s.source, s.source_key.as_deref()) {
+                (ActivitySource::HealthConnect, _) => KcalSource::HealthConnect,
+                (_, Some(k)) if k.starts_with(IMPORT_KEY_PREFIX) => KcalSource::Import,
+                _ => KcalSource::Hand,
+            },
+        )));
         tx.execute(
-            "INSERT INTO workout_session (profile_id, day, name, minutes, kcal, sets, uid, type,
-                 distance_m, start_at, source, source_key, workout_id, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                 coalesce(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))",
+            "INSERT INTO activity (profile_id, day, name, minutes, kcal, uid, type,
+                 distance_m, start_at, source, source_key, workout_id, created_at, kcal_source,
+                 avg_hr, max_hr)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                 coalesce(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')), ?, ?, ?)",
             params![
                 pid,
                 s.day,
                 s.name,
                 s.minutes,
                 s.kcal,
-                json(&sets),
                 s.uid,
                 s.kind,
                 s.distance_m,
@@ -764,9 +1045,13 @@ fn write_sessions(
                 s.source,
                 s.source_key,
                 workout_id,
-                s.created_at
+                s.created_at,
+                kcal_source,
+                s.avg_hr,
+                s.max_hr
             ],
         )?;
+        sets_put(tx, tx.last_insert_rowid(), &sets)?;
     }
     Ok(())
 }
@@ -797,7 +1082,6 @@ fn exported_habits(conn: &Connection, pid: ProfileId) -> Result<Vec<ExportedHabi
             unit: h.unit,
             goal_value: h.goal_value,
             goal_dir: Some(h.goal_dir),
-            day_limit: None,
             archived: h.archived,
         })
         .collect())
@@ -832,7 +1116,7 @@ fn write_habits(tx: &Transaction, pid: ProfileId, file: &ProfileExport) -> Resul
 }
 
 /// The food here that is the file's: the same Fineli id, else the same
-/// barcode, else the same source, name, brand and values.
+/// barcode, else the same source, kind, name, brand and values.
 fn match_food(tx: &Transaction, f: &ExportedFood) -> Result<Option<i64>, Error> {
     if let Some(fineli_id) = f.fineli_id {
         let id = tx
@@ -853,9 +1137,10 @@ fn match_food(tx: &Transaction, f: &ExportedFood) -> Result<Option<i64>, Error> 
     }
     let wanted = json(&f.per100);
     let mut stmt = tx.prepare_cached(
-        "SELECT id, per100 FROM food WHERE source = ? AND name = ? AND brand IS ? ORDER BY id",
+        "SELECT id, per100 FROM food
+         WHERE source = ? AND kind = ? AND name = ? AND brand IS ? ORDER BY id",
     )?;
-    for row in stmt.query_map(params![f.source, f.name, f.brand], |r| {
+    for row in stmt.query_map(params![f.source.as_str(), f.kind, f.name, f.brand], |r| {
         Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
     })? {
         let (id, per100) = row?;
@@ -869,53 +1154,76 @@ fn match_food(tx: &Transaction, f: &ExportedFood) -> Result<Option<i64>, Error> 
 
 /// A food the file has and this instance doesn't, as your own: a recipe
 /// stays a recipe (its values computed from the ingredients here); any
-/// other is custom, without its Fineli id, keeping its barcode if unused.
+/// other is custom (a Fineli one keeping its Fineli id), keeping its barcode
+/// if unused.
 fn create_food(
     tx: &Transaction,
     f: &ExportedFood,
     foods: &BTreeMap<&str, i64>,
 ) -> Result<i64, Error> {
-    if f.source != Source::Recipe {
+    if f.kind != FoodKind::Recipe {
         let barcode = match &f.barcode {
-            Some(code) if food_by_barcode(tx, code)?.is_none() => Some(code),
+            Some(code) if food_by_barcode(tx, code)?.is_none() => Some(code.clone()),
             _ => None,
         };
-        tx.execute(
-            "INSERT INTO food (name, brand, barcode, source, per100, archived, category)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-            params![
-                f.name,
-                f.brand,
-                barcode,
-                Source::Custom,
-                json(&f.per100),
-                f.archived,
-                f.category
-            ],
-        )?;
-        let id = tx.last_insert_rowid();
-        write_servings(tx, id, &f.servings)?;
+        let food = FoodInput {
+            name: f.name.clone(),
+            brand: f.brand.clone(),
+            barcode,
+            per100: f.per100.clone(),
+            servings: f.servings.clone(),
+            archived: f.archived,
+            category: f.category.clone(),
+            basis: f.basis.clone(),
+            rev: None,
+            uid: None,
+            drink: f.drink.filter(|_| f.drink_set),
+        };
+        let id = insert_food(tx, &food, Source::Custom)?;
+        // A copy of a Fineli food keeps its id, so the Fineli import takes
+        // it back.
+        if let Some(fineli_id) = f.fineli_id {
+            tx.execute(
+                "UPDATE food SET fineli_id = ?2 WHERE id = ?1
+                     AND NOT EXISTS (SELECT 1 FROM food WHERE fineli_id = ?2)",
+                params![id, fineli_id],
+            )?;
+        }
         return Ok(id);
     }
-    tx.execute(
-        "INSERT INTO food (name, source, cooked_g, archived, makes, instructions, category)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-        params![
-            f.name,
-            Source::Recipe,
-            f.cooked_g,
-            f.archived,
-            f.makes,
-            f.instructions,
-            f.category
-        ],
-    )?;
-    let id = tx.last_insert_rowid();
+    let recipe = RecipeInput {
+        name: f.name.clone(),
+        cooked_g: f.cooked_g,
+        makes: f.makes,
+        // The file's items and servings are written below, by ref.
+        items: Vec::new(),
+        servings: Vec::new(),
+        archived: f.archived,
+        notes: f.notes.clone(),
+        category: f.category.clone(),
+        rev: None,
+        uid: None,
+    };
+    let id = insert_recipe(tx, &recipe)?;
     // Ingredients come first in a checked file, so each is mapped already.
+    // A serving the food here lacks (one matched, not created) is dropped:
+    // the item is its grams.
     for item in &f.items {
+        let food_id = foods[item.food.as_str()];
+        let has: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM serving WHERE food_id = ? AND label = ?)",
+            params![food_id, item.serving],
+            |r| r.get(0),
+        )?;
+        let (serving, quantity) = if has {
+            (item.serving.as_deref(), item.quantity)
+        } else {
+            (None, None)
+        };
         tx.execute(
-            "INSERT INTO recipe_item (recipe_id, food_id, grams) VALUES (?, ?, ?)",
-            params![id, foods[item.food.as_str()], item.grams],
+            "INSERT INTO recipe_item (recipe_id, food_id, grams, serving, quantity)
+             VALUES (?, ?, ?, ?, ?)",
+            params![id, food_id, item.grams, serving, quantity],
         )?;
     }
     let mut servings = f.servings.clone();
@@ -931,6 +1239,8 @@ fn create_food(
     write_servings(tx, id, &servings)?;
     recompute(tx, id)?;
     sync_portion(tx, id)?;
+    // Its stored labels and flags, as a saved recipe's.
+    super::foods::derive(tx, id)?;
     Ok(id)
 }
 
@@ -963,29 +1273,34 @@ fn import_exercise(
     Ok(tx.last_insert_rowid())
 }
 
-/// The workout here with the file's name and the same steps, else a new
-/// one.
+/// The workout here that is the file's as written
+/// ([`Workout::same_definition`]), else a new one.
 fn import_workout(
     tx: &Transaction,
     w: &ExportedWorkout,
     exercises: &BTreeMap<&str, i64>,
 ) -> Result<i64, Error> {
-    let steps = ExportedStep::to_steps(&w.steps, exercises)?;
-    check_exercises(tx, &steps)?;
-    let mut same = tx.prepare_cached("SELECT id, steps FROM workout WHERE name = ? ORDER BY id")?;
-    for row in same.query_map([&w.name], |r| {
-        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
-    })? {
-        let (id, stored) = row?;
-        if from_json::<Vec<Step>>(&stored)? == steps {
-            return Ok(id);
+    let input = WorkoutInput {
+        name: w.name.clone(),
+        steps: ExportedStep::to_steps(&w.steps, exercises)?,
+        minutes: w.minutes,
+        kcal: w.kcal,
+        notes: w.notes.clone(),
+        archived: w.archived,
+        rev: None,
+        uid: None,
+    };
+    check_exercises(tx, &input.steps)?;
+    let mut same = tx.prepare_cached(&format!(
+        "SELECT {WORKOUT_COLS} FROM workout WHERE name = ? ORDER BY id"
+    ))?;
+    for row in same.query_map([&w.name], workout_row)? {
+        let here = row?;
+        if here.same_definition(&input) {
+            return Ok(here.id);
         }
     }
-    tx.execute(
-        "INSERT INTO workout (name, steps, minutes, kcal) VALUES (?, ?, ?, ?)",
-        params![w.name, json(&steps), w.minutes, w.kcal],
-    )?;
-    Ok(tx.last_insert_rowid())
+    insert_workout(tx, &input)
 }
 
 /// The profile row: the file's id when restoring and free, else a new one.
@@ -1009,8 +1324,8 @@ fn insert_profile(
     let b = &p.body;
     tx.execute(
         "INSERT INTO profile (id, name, sex, birth_date, height_cm, activity, goal_kg_per_week,
-             synced_workouts)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             goal_date, latitude, synced_workouts, uid)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             id,
             p.name,
@@ -1019,7 +1334,10 @@ fn insert_profile(
             b.height_cm,
             b.activity,
             b.goal_kg_per_week,
-            file.synced_workouts
+            b.goal_date,
+            b.latitude,
+            file.synced_workouts,
+            p.uid
         ],
     )?;
     Ok(ProfileId(tx.last_insert_rowid()))

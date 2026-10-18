@@ -6,13 +6,36 @@ use super::{Food, Source};
 /// Food not eaten yet.
 pub const PLANNED: &str = "Planned";
 /// Food eaten.
-pub const CONSUMED: &str = "Consumed";
+pub const EATEN: &str = "Eaten";
 /// Diary groups shown on every day, in order. Imported history may add others.
-pub const GROUPS: [&str; 2] = [PLANNED, CONSUMED];
+pub const GROUPS: [&str; 2] = [PLANNED, EATEN];
+
+/// What a day or summary counts as eaten: every group but Planned.
+#[must_use]
+pub fn eaten(group: &str) -> bool {
+    group != PLANNED
+}
+
+text_enum! {
+    /// What an entry is: your own (a food, grams and values), a due day of
+    /// a daily series (its food read now; no row until ticked), or imported
+    /// history (no food or values of its own: they're in its group's
+    /// total).
+    pub enum EntryKind {
+        Own = "own",
+        Due = "due",
+        Imported = "imported",
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Entry {
-    pub id: i64,
+    /// `None` for a due day of a series ([`Repeat`]): it has no row until
+    /// it is ticked.
+    pub id: Option<i64>,
+    /// Its address under `/entries/`: the id, or a due day's
+    /// `daily-{item}-{day}` ([`EntryKey`]).
+    pub key: String,
     pub day: String,
     pub group: String,
     pub food_id: Option<i64>,
@@ -26,9 +49,9 @@ pub struct Entry {
     /// their export's text.
     pub amount: String,
     pub nutrients: Option<Nutrients>,
-    pub imported: bool,
     pub created_at: String,
-    /// Stable sync identity; never reused, unlike `id`.
+    /// Stable sync identity; never reused, unlike `id`. A due day's is the
+    /// uid its tick takes: its key.
     pub uid: String,
     /// The database the food came from; `None` for imported history. Read
     /// from the food: a merged food's entries are repointed, so it always
@@ -36,9 +59,177 @@ pub struct Entry {
     pub source: Option<Source>,
     /// When it was eaten, "HH:MM"; display only.
     pub time: Option<String>,
+    /// Its food's weight is a guess ([`super::Basis::estimated`]), read
+    /// from the food like `source`: its grams are approximate.
+    pub weight_estimated: bool,
+    /// The series it repeats in: a due day's, or the one a tick ticked.
+    pub repeat: Option<Repeat>,
+    /// Imported history: the import group it came from, which it is removed
+    /// with (`DELETE …/imported/{day}/{src_group}`); `None` for your own.
+    pub src_group: Option<String>,
+    pub kind: EntryKind,
+    /// Its food is measured by volume: a drink whose values are per
+    /// 100 ml (not Fineli's, not a recipe), read from the food; its grams
+    /// read as millilitres.
+    pub by_volume: bool,
 }
 
-/// Amount label for a plain gram quantity, to at most one decimal.
+impl Entry {
+    /// Imported history: read-only but for its group.
+    #[must_use]
+    pub fn imported(&self) -> bool {
+        self.kind == EntryKind::Imported
+    }
+}
+
+/// A daily series (ADR 0023): a food and amount due in Planned every day
+/// from `start` until ticked (an entry logged with `repeat_of`) or skipped.
+/// Un-ticked days read the series and its food as they are now.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct Repeat {
+    pub id: i64,
+    pub start: String,
+}
+
+/// Where an entry is addressed: a stored entry by id, or a series' day
+/// (`daily-{item}-{day}`), which is due, ticked or skipped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntryKey {
+    Id(i64),
+    Due { item: i64, day: String },
+}
+
+/// Only ASCII digits: what `str::parse` also takes with a sign.
+fn digits(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+}
+
+impl EntryKey {
+    /// A series' day's address.
+    #[must_use]
+    pub fn due(item: i64, day: &str) -> String {
+        format!("daily-{item}-{day}")
+    }
+
+    /// # Errors
+    /// Neither an id nor `daily-{item}-{YYYY-MM-DD}`.
+    pub fn parse(s: &str) -> Result<Self, Error> {
+        let due = s
+            .strip_prefix("daily-")
+            .and_then(|rest| rest.split_once('-'))
+            .filter(|(item, day)| digits(item) && is_date(day));
+        let key = match due {
+            Some((item, day)) => item.parse().ok().map(|item| Self::Due {
+                item,
+                day: day.to_owned(),
+            }),
+            None => digits(s).then(|| s.parse().ok().map(Self::Id)).flatten(),
+        };
+        key.ok_or_else(|| {
+            Error::invalid("an entry's address is its id or daily-{item}-{YYYY-MM-DD}")
+        })
+    }
+}
+
+/// One diary group of a day: its entries and totals.
+#[derive(Debug, Clone, Serialize)]
+pub struct Group {
+    pub name: String,
+    pub entries: Vec<Entry>,
+    pub totals: Nutrients,
+    /// How far `totals` is known ([`super::Known`], ADR 0030), as the day's
+    /// `known` is: a recipe's energy as far as its ingredients carry it.
+    pub known: super::Known,
+}
+
+/// A day as the diary shows it: food by group, what was eaten, targets,
+/// workouts, body, habits and Health Connect's day.
+#[derive(Serialize)]
+pub struct DayView {
+    pub day: String,
+    /// [`GROUPS`] in order, then imported history's other groups by name.
+    /// Planned lists the series due that day first, entry-shaped (no id),
+    /// and counts them in its `totals` (ADR 0023).
+    pub groups: Vec<Group>,
+    /// Every group, planned included.
+    pub total: Nutrients,
+    /// What was eaten: every group but Planned.
+    pub eaten: Nutrients,
+    /// How far `eaten` is known ([`super::Known`]; ADR 0030).
+    pub known: super::Known,
+    pub targets: Vec<super::Target>,
+    pub activities: Vec<super::Activity>,
+    /// Workouts planned that day, not done yet.
+    pub plans: Vec<super::Plan>,
+    /// The day's logged weight, if any.
+    pub weight: Option<f64>,
+    /// Where it came from: `hand`, `openscale` or `health_connect`.
+    pub weight_source: Option<super::WeightSource>,
+    /// Body composition from the day's chosen reading (the morning one,
+    /// `scale_chosen`: the first after waking).
+    pub composition: Option<Composition>,
+    /// The day's note, if any.
+    pub note: Option<String>,
+    /// The day's check-in, if any.
+    pub check_in: Option<CheckIn>,
+    /// The day's body measurements, in [`BodyPart`] order.
+    pub measurements: Vec<BodyValue>,
+    /// The built-ins the day's food held (above 0), stored units (see
+    /// `meta.habits`), in registry order.
+    pub builtins: Vec<BuiltinValue>,
+    /// Each tracker's total that day, archived ones included.
+    pub habits: Vec<HabitValue>,
+    /// Health Connect's day (energy, steps, the night that ended it,
+    /// heart) with its sleep (night and naps), if any.
+    pub device_day: Option<super::ShownDay>,
+    /// The resting energy in effect that day, if any.
+    pub resting: Option<super::Resting>,
+    /// The day's naps, by start.
+    pub naps: Vec<super::Nap>,
+    /// The stage spans of the night that ended the day, by start: the
+    /// device's, else an import's.
+    pub stages: Vec<super::SleepStage>,
+    /// The day's photos, oldest first.
+    pub photos: Vec<super::Photo>,
+    /// Device workouts waiting for Add or Dismiss.
+    pub pending_activities: Vec<super::PendingActivity>,
+    /// The food "+ Water" logs, if any: its entries read as ml or L.
+    pub water_food_id: Option<i64>,
+}
+
+/// Body fat, water and muscle in %, each `null` when the scale gave none.
+#[derive(Debug, Clone, Serialize)]
+pub struct Composition {
+    pub body_fat: Option<f64>,
+    pub water: Option<f64>,
+    pub muscle: Option<f64>,
+}
+
+/// One built-in habit's amount on the day.
+#[derive(Debug, Clone, Serialize)]
+pub struct BuiltinValue {
+    pub habit: String,
+    pub amount: f64,
+    /// See [`super::HabitDayRow::known`].
+    pub known: bool,
+}
+
+/// One habit tracker's total on the day.
+#[derive(Debug, Clone, Serialize)]
+pub struct HabitValue {
+    pub habit_id: i64,
+    pub amount: f64,
+}
+
+/// One body part's measurement on the day, in cm.
+#[derive(Debug, Clone, Serialize)]
+pub struct BodyValue {
+    pub kind: BodyPart,
+    pub value: f64,
+}
+
+/// Amount label for a plain gram quantity, to at most one decimal. A guessed
+/// weight isn't marked in it: clients read the entry's `weight_estimated`.
 #[must_use]
 pub fn gram_amount(grams: f64) -> String {
     format!("{} g", round_to(grams, 1))
@@ -129,8 +320,8 @@ impl Amount {
 }
 
 /// What a log writes: a food (an amount of it), a meal (all its items),
-/// or copies of earlier entries. Exactly one of `food_id`, `meal_id` and
-/// `entry_ids`.
+/// copies of earlier entries, or a series' tick. Exactly one of
+/// `food_id`, `meal_id`, `entry_ids` and `repeat_of`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct EntryInput {
     pub day: String,
@@ -148,6 +339,18 @@ pub struct EntryInput {
     /// Entries of the profile to copy (their snapshots, not their time).
     #[serde(default)]
     pub entry_ids: Option<Vec<i64>>,
+    /// A series ticked on `day`: its food and amount as they are now,
+    /// linked; once per series and day. Its uid is `daily-{item}-{day}`
+    /// (the due day's key) unless given, so two devices log it once.
+    #[serde(default)]
+    pub repeat_of: Option<i64>,
+    /// A food's log only: repeat it daily from `start` (its day when left
+    /// out), as an entry's patch does, in the same write.
+    #[serde(default)]
+    pub repeat: Option<RepeatInput>,
+    /// Before `repeat_of`; refused by name.
+    #[serde(default)]
+    pub daily_item_id: Gone,
     /// When it was eaten, "HH:MM"; given to every entry the log writes.
     #[serde(default)]
     pub time: Option<String>,
@@ -170,9 +373,21 @@ pub struct EntryLog {
 /// What an entry log writes.
 #[derive(Debug, Clone)]
 pub enum Logs {
-    Food { food_id: i64, amount: Amount },
-    Meal { meal_id: i64, portions: f64 },
-    Copy { entry_ids: Vec<i64> },
+    Food {
+        food_id: i64,
+        amount: Amount,
+        repeat: Option<RepeatInput>,
+    },
+    Meal {
+        meal_id: i64,
+        portions: f64,
+    },
+    Copy {
+        entry_ids: Vec<i64>,
+    },
+    Daily {
+        item: i64,
+    },
 }
 
 /// A logged entry changed: moved, re-measured or timed.
@@ -185,6 +400,18 @@ pub struct EntryPatch {
     /// `null` clears the time; left out keeps it.
     #[serde(default)]
     pub time: Nullable<String>,
+    /// `{start}` repeats it daily from `start` (its day when left out),
+    /// `null` stops its series (ticked days keep their entries); left out
+    /// keeps it.
+    #[serde(default)]
+    pub repeat: Nullable<RepeatInput>,
+}
+
+/// Repeat daily from `start`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct RepeatInput {
+    #[serde(default)]
+    pub start: Option<String>,
 }
 
 /// A nullable field of a patch: left out (kept), `null` (cleared) or a
@@ -256,8 +483,8 @@ pub fn checked_group(s: &str) -> Result<&'static str, Error> {
     })
 }
 
-/// A client-made id: [`UID_MIN`]–[`UID_MAX`] letters, digits or `-` (`:` is the server's, for
-/// meal items).
+/// A client-made id: [`UID_MIN`]–[`UID_MAX`] letters, digits or `-` (`:` is the
+/// server's, for meal items).
 ///
 /// # Errors
 /// Anything else.
@@ -272,6 +499,14 @@ pub fn checked_uid(uid: &str) -> Result<&str, Error> {
             format!("uid must be {UID_MIN}–{UID_MAX} letters, digits or -"),
         ))
     }
+}
+
+/// An optional [`checked_uid`].
+///
+/// # Errors
+/// A malformed one.
+pub fn checked_opt_uid(uid: Option<&str>) -> Result<(), Error> {
+    uid.map_or(Ok(()), |u| checked_uid(u).map(|_| ()))
 }
 
 /// A time of day, "HH:MM" from 00:00 to 23:59.
@@ -299,11 +534,15 @@ impl EntryInput {
     /// What it logs, and where.
     ///
     /// # Errors
-    /// A bad day, group, uid, time, portions or ids, or not exactly one of a
-    /// food, a meal and entries to copy.
+    /// A bad day, group, uid, time, portions, ids or repeat, or not exactly
+    /// one of a food, a meal and entries to copy.
     pub fn checked(self) -> Result<EntryLog, Error> {
+        refuse_gone(&[(self.daily_item_id, "daily_item_id", "use repeat_of")])?;
         if !is_date(&self.day) {
-            return Err(Error::invalid_field("day", "day must be YYYY-MM-DD"));
+            return Err(Error::invalid_field(
+                "day",
+                "day must be a real date (YYYY-MM-DD)",
+            ));
         }
         let group = checked_group(&self.group)?;
         if let Some(uid) = &self.uid {
@@ -312,12 +551,25 @@ impl EntryInput {
         if let Some(t) = &self.time {
             checked_time(t)?;
         }
-        let what = match (self.food_id, self.meal_id, self.entry_ids) {
-            (Some(food_id), None, None) => Logs::Food {
+        match &self.repeat {
+            Some(_) if self.food_id.is_none() => {
+                return Err(Error::invalid_field("repeat", "only a food repeats daily"));
+            }
+            Some(RepeatInput { start: Some(d) }) if !is_date(d) => {
+                return Err(Error::invalid_field(
+                    "repeat",
+                    "repeat's start must be a real date (YYYY-MM-DD)",
+                ));
+            }
+            _ => {}
+        }
+        let what = match (self.food_id, self.meal_id, self.entry_ids, self.repeat_of) {
+            (Some(food_id), None, None, None) => Logs::Food {
                 food_id,
                 amount: self.amount,
+                repeat: self.repeat,
             },
-            (None, Some(meal_id), None) => {
+            (None, Some(meal_id), None, None) => {
                 let portions = self.portions.unwrap_or(1.0);
                 if !(portions.is_finite() && portions > 0.0 && portions <= PORTIONS_MAX) {
                     return Err(Error::invalid_field(
@@ -327,7 +579,7 @@ impl EntryInput {
                 }
                 Logs::Meal { meal_id, portions }
             }
-            (None, None, Some(entry_ids)) => {
+            (None, None, Some(entry_ids), None) => {
                 if !(1..=ITEMS_MAX).contains(&entry_ids.len()) {
                     return Err(Error::invalid_field(
                         "entry_ids",
@@ -336,8 +588,11 @@ impl EntryInput {
                 }
                 Logs::Copy { entry_ids }
             }
+            (None, None, None, Some(item)) => Logs::Daily { item },
             _ => {
-                return Err(bad("give exactly one of food_id, meal_id or entry_ids"));
+                return Err(bad(
+                    "give exactly one of food_id, meal_id, entry_ids or repeat_of",
+                ));
             }
         };
         Ok(EntryLog {
@@ -360,13 +615,21 @@ impl EntryPatch {
     }
 
     /// # Errors
-    /// A bad group or time.
-    pub fn checked(self) -> Result<Self, Error> {
+    /// A bad group, time or repeat start.
+    pub fn checked(mut self) -> Result<Self, Error> {
         if let Some(g) = &self.group {
-            checked_group(g)?;
+            self.group = Some(checked_group(g)?.to_owned());
         }
         if let Nullable::Set(t) = &self.time {
             checked_time(t)?;
+        }
+        if let Nullable::Set(RepeatInput { start: Some(d) }) = &self.repeat
+            && !is_date(d)
+        {
+            return Err(Error::invalid_field(
+                "repeat",
+                "repeat's start must be a real date (YYYY-MM-DD)",
+            ));
         }
         Ok(self)
     }
@@ -390,6 +653,72 @@ impl NoteInput {
     pub fn checked(self) -> Result<Self, Error> {
         Ok(Self {
             text: text(&self.text, "text", NOTE_MAX)?,
+        })
+    }
+}
+
+text_enum! {
+    /// What a profile chose for an insight.
+    pub enum InsightState {
+        /// Left out until a day (the Summary's "Hide for 2 weeks").
+        Hidden = "hidden",
+        /// Kept at the top (a discovered pattern's "Interesting").
+        Pinned = "pinned",
+    }
+}
+
+/// A profile's choice for an insight, by its stable id (`low:iron`,
+/// `pattern:sleep~steps`): hidden through `until` (the last day hidden), or
+/// pinned (no `until`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InsightPref {
+    pub id: String,
+    /// Hidden when unsaid: files' older `hidden_insights` have no state.
+    #[serde(default = "hidden")]
+    pub state: InsightState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+}
+
+fn hidden() -> InsightState {
+    InsightState::Hidden
+}
+
+/// The longest insight id kept.
+pub const INSIGHT_ID_MAX: usize = 120;
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct InsightPrefInput {
+    pub state: InsightState,
+    #[serde(default)]
+    pub until: Option<String>,
+}
+
+impl InsightPref {
+    /// # Errors
+    /// A blank or overlong id, a hidden one without `until` a date, or a
+    /// pinned one with an `until`.
+    pub fn checked(id: &str, state: InsightState, until: Option<&str>) -> Result<Self, Error> {
+        match (state, until) {
+            (InsightState::Hidden, Some(u)) if is_date(u) => {}
+            (InsightState::Hidden, _) => {
+                return Err(Error::invalid_field(
+                    "until",
+                    "until must be a real date (YYYY-MM-DD)",
+                ));
+            }
+            (InsightState::Pinned, Some(_)) => {
+                return Err(Error::invalid_field(
+                    "until",
+                    "a pinned insight has no until",
+                ));
+            }
+            (InsightState::Pinned, None) => {}
+        }
+        Ok(Self {
+            id: text(id, "id", INSIGHT_ID_MAX)?,
+            state,
+            until: until.map(str::to_owned),
         })
     }
 }
@@ -580,6 +909,30 @@ mod tests {
         match r {
             Err(Error::Invalid { field, .. }) => field,
             other => panic!("expected Invalid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_entry_is_addressed_by_id_or_series_day() {
+        assert_eq!(EntryKey::parse("42").unwrap(), EntryKey::Id(42));
+        assert_eq!(
+            EntryKey::parse("daily-7-2026-10-07").unwrap(),
+            EntryKey::Due {
+                item: 7,
+                day: "2026-10-07".into()
+            }
+        );
+        assert_eq!(EntryKey::due(7, "2026-10-07"), "daily-7-2026-10-07");
+        for bad in [
+            "",
+            "+42",
+            "-1",
+            "daily-7",
+            "daily-x-2026-10-07",
+            "daily-7-tomorrow",
+            "daily--7-2026-10-07",
+        ] {
+            assert!(EntryKey::parse(bad).is_err(), "{bad}");
         }
     }
 

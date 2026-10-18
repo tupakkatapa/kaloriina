@@ -16,6 +16,8 @@ pub(super) fn routes() -> Router<AppState> {
             "/api/workouts/{id}",
             get(workout_read).put(workout_update).delete(workout_delete),
         )
+        .route("/api/workouts/{id}/usage", get(workout_usage))
+        .route("/api/workouts/{id}/copy", post(workout_copy))
 }
 
 async fn exercises(State(s): State<AppState>) -> Res<Vec<model::Exercise>> {
@@ -43,7 +45,7 @@ async fn exercise_create(
 async fn exercise_update(
     State(s): State<AppState>,
     Path(id): Path<i64>,
-    Json(e): Json<ExerciseInput>,
+    Replace(e): Replace<ExerciseInput>,
 ) -> Res<model::Exercise> {
     let e = e.checked()?;
     Ok(Json(
@@ -72,6 +74,17 @@ async fn workout_read(State(s): State<AppState>, Path(id): Path<i64>) -> Res<mod
     ))
 }
 
+/// A copy of a saved workout: 201 with it.
+async fn workout_copy(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+    Json(c): Json<model::CopyInput>,
+) -> Created<model::Workout> {
+    let c = c.checked()?;
+    let copy = on_db(&s, move |conn| db::workout_copy(conn, id, c.uid.as_deref())).await?;
+    Ok(created(copy))
+}
+
 async fn workout_create(
     State(s): State<AppState>,
     Json(w): Json<WorkoutInput>,
@@ -84,11 +97,17 @@ async fn workout_create(
 async fn workout_update(
     State(s): State<AppState>,
     Path(id): Path<i64>,
-    Json(w): Json<WorkoutInput>,
+    Replace(w): Replace<WorkoutInput>,
 ) -> Res<model::Workout> {
     let w = w.checked()?;
     Ok(Json(
         on_db(&s, move |conn| db::workout_save(conn, Some(id), &w)).await?,
+    ))
+}
+
+async fn workout_usage(State(s): State<AppState>, Path(id): Path<i64>) -> Res<model::WorkoutUsage> {
+    Ok(Json(
+        on_db(&s, move |conn| db::workout_usage(conn, id)).await?,
     ))
 }
 

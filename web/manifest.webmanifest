@@ -3,6 +3,7 @@
   "short_name": "Kaloriina",
   "start_url": "/",
   "display": "standalone",
+  "orientation": "portrait",
   "background_color": "#fafaf7",
   "theme_color": "#2f7d4f",
   "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }]

@@ -7,12 +7,12 @@ import test from "node:test";
 import vm from "node:vm";
 
 import {
-  ATTEMPTS_MAX,
   add,
   attempted,
+  ATTEMPTS_MAX,
   failed,
-  latest,
   items,
+  latest,
   next,
   queueable,
   remove,
@@ -20,6 +20,7 @@ import {
   retry,
   supersede,
   waiting,
+  wake,
 } from "../web/outbox.mjs";
 
 // The outbox keeps its items in localStorage; a Map stands in for it.
@@ -36,8 +37,29 @@ test("only replay-safe writes are queueable", () => {
   const uid = "a";
   for (const [method, path, body, ok] of [
     ["POST", "/profiles/1/entries", { uid, day: "2030-01-01" }, true],
-    ["POST", "/profiles/1/sessions", { uid }, true],
+    ["POST", "/profiles/1/activities", { uid }, true],
+    ["POST", "/profiles/1/sessions", { uid }, false],
     ["POST", "/profiles/1/plans", { uid }, true],
+    ["POST", "/profiles/1/naps", { uid, day: "2030-01-01" }, true],
+    // nap_delete_queues_offline: a nap's delete is by its uid, so a
+    // repeat is a no-op (404, done); its Undo is a create with a uid.
+    [
+      "DELETE",
+      "/profiles/1/naps/0f8fad5b-d9cb-469f-a165-70867728950e",
+      undefined,
+      true,
+    ],
+    ["DELETE", "/profiles/1/naps/abcdefgh", undefined, true],
+    ["PUT", "/profiles/1/naps/abcdefgh", { day: "2030-01-01" }, false],
+    ["DELETE", "/profiles/1/naps/a.b", undefined, false],
+    // Photos and feedback are online only.
+    [
+      "POST",
+      "/profiles/1/photos?day=2030-01-01&grp=Lunch&uid=abcdefgh",
+      undefined,
+      false,
+    ],
+    ["POST", "/feedback", { kind: "bug", text: "x" }, false],
     ["PUT", "/profiles/1/weights/2030-01-01", { kg: 70 }, true],
     ["DELETE", "/profiles/1/weights/2030-01-01", undefined, true],
     ["PUT", "/profiles/1/notes/2030-01-01", { text: "x" }, true],
@@ -58,12 +80,17 @@ test("only replay-safe writes are queueable", () => {
     ["POST", "/profiles/1/entries", { uid, rev: 1 }, false],
     ["PUT", "/profiles/1/weights/2030-01-01", { kg: 70, rev: 1 }, false],
     ["PATCH", "/profiles/1/entries/5", { group: "Lunch" }, false],
-    ["DELETE", "/profiles/1/entries/5", undefined, false],
+    // An entry or plan removed by its id (an Undo, a plan's ✕): ids are
+    // never reused, so a repeat finds it gone (404, done).
+    ["DELETE", "/profiles/1/entries/5", undefined, true],
+    ["DELETE", "/profiles/1/plans/5", undefined, true],
+    ["DELETE", "/profiles/1/entries/5", { x: 1 }, false],
+    ["DELETE", "/profiles/1/activities/5", undefined, false],
     ["PUT", "/profiles/1", { name: "x" }, false],
     ["POST", "/foods", { uid }, false],
     ["GET", "/foods/barcode/123", undefined, false],
     ["PUT", "/profiles/1/weights/today", { kg: 70 }, false],
-    // Add and Dismiss of a watch workout, by key; the mode is
+    // Add and Dismiss of a device workout, by key; the mode is
     // a setting, online only.
     ["POST", "/profiles/1/sync/health/workouts/hc-1", undefined, true],
     ["DELETE", "/profiles/1/sync/health/workouts/hc-1", undefined, true],
@@ -85,7 +112,18 @@ test("the service worker keeps only the diary's reads", () => {
   assert.ok(kept("/api/profiles/3/day/2030-01-01"));
   // The trackers the day's Log card counts; not their days.
   assert.ok(kept("/api/profiles/3/habits"));
+  // A saved workout starts offline once seen online (its run screen reads
+  // the workout, the workouts and the exercises).
+  assert.ok(kept("/api/workouts"));
+  assert.ok(kept("/api/workouts/7"));
+  assert.ok(kept("/api/exercises"));
+  // An activity seen online opens its view offline.
+  assert.ok(kept("/api/profiles/3/activities/12"));
   for (const p of [
+    "/api/workouts/7/usage",
+    "/api/profiles/3/activities",
+    "/api/profiles/3/activities/12/x",
+    "/api/exercises/3/history",
     "/api/foods",
     "/api/foods/search",
     "/api/profiles/3/summary",
@@ -112,7 +150,7 @@ test("the outbox: same uid, attempts, failure, supersede, a day's items", () => 
 
   // Tries count up to ATTEMPTS_MAX, then the item has failed.
   for (let i = 1; i < ATTEMPTS_MAX; i++) attempted(first.key, "offline");
-  assert.equal(next().attempts, ATTEMPTS_MAX - 1);
+  assert.equal(items()[0].attempts, ATTEMPTS_MAX - 1);
   attempted(first.key, "offline");
   assert.equal(items()[0].failed, "offline");
   assert.equal(next(), null);
@@ -144,6 +182,64 @@ test("the outbox: same uid, attempts, failure, supersede, a day's items", () => 
   assert.equal(items()[0].failed, "refused");
   remove(first.key);
   assert.deepEqual(items(), []);
+});
+
+test("a live PUT drops a waiting DELETE of its path, and the reverse", () => {
+  store.clear();
+  const path = "/profiles/1/notes/2030-01-01";
+  add({ method: "DELETE", path, body: null, label: "Remove" });
+  supersede("PUT", path);
+  assert.deepEqual(items(), []);
+  add({ method: "PUT", path, body: { text: "x" }, label: "Note" });
+  supersede("DELETE", path);
+  assert.deepEqual(items(), []);
+});
+
+test("the same uid on two paths is two creates", () => {
+  store.clear();
+  const body = { uid: "u", day: "2030-01-01" };
+  add({ method: "POST", path: "/profiles/1/entries", body, label: "Oats" });
+  add({
+    method: "POST",
+    path: "/profiles/1/activities",
+    body: { ...body, minutes: 30 },
+    label: "Walk",
+  });
+  assert.deepEqual(
+    items().map((x) => x.label),
+    ["Oats", "Walk"],
+  );
+});
+
+test("a malformed item is dropped, not the queue", () => {
+  store.clear();
+  const good = old("PUT", "/profiles/1/notes/2030-01-01", { text: "x" });
+  store.set("outbox", JSON.stringify([good, null, {}, { ...good, body: 3 }]));
+  assert.deepEqual(items(), [good]);
+  add({ method: "DELETE", path: "/y", body: null, label: "Del" });
+  assert.deepEqual(
+    items().map((x) => x.path),
+    [good.path, "/y"],
+  );
+  // A store that isn't a list reads as empty.
+  store.set("outbox", "{}");
+  assert.deepEqual(items(), []);
+});
+
+test("a full store says the change couldn't be kept offline", () => {
+  store.clear();
+  const { setItem } = localStorage;
+  localStorage.setItem = () => {
+    throw new DOMException("quota", "QuotaExceededError");
+  };
+  try {
+    assert.throws(
+      () => add({ method: "PUT", path: "/n", body: {}, label: "Note" }),
+      { code: "storage_full", message: /couldn't keep this change offline/iu },
+    );
+  } finally {
+    localStorage.setItem = setItem;
+  }
 });
 
 test("latest() is the last unfailed write", () => {
@@ -186,18 +282,65 @@ test("offline doesn't count as an attempt", () => {
   assert.deepEqual([items()[0].attempts, items()[0].failed], [0, null]);
   // The server's own errors count, up to failed.
   for (let i = 1; i <= ATTEMPTS_MAX; i++)
-    assert.equal(replayFailed(item, { status: 503, message: "Down" }), "wait");
+    assert.equal(replayFailed(item, { status: 500, message: "Down" }), "wait");
   assert.deepEqual([items()[0].attempts, items()[0].failed], [5, "Down"]);
   // A refusal fails at once; a DELETE already gone is done.
   const bad = add({ method: "PUT", path: "/x", body: {}, label: "Bad" });
   assert.equal(replayFailed(bad, { status: 400, message: "No" }), "next");
   assert.equal(items().find((x) => x.key === bad.key).failed, "No");
+  // A replayed PUT or POST answered 404 fails (its target is gone).
+  const put = add({ method: "PUT", path: "/w", body: {}, label: "Put" });
+  assert.equal(replayFailed(put, { status: 404, message: "Gone" }), "next");
+  assert.equal(items().find((x) => x.key === put.key).failed, "Gone");
   const del = add({ method: "DELETE", path: "/y", body: null, label: "Del" });
   assert.equal(replayFailed(del, { status: 404, message: "Gone" }), "next");
   assert.equal(
     items().find((x) => x.key === del.key),
     undefined,
   );
+});
+
+test("outbox_backoff: a restart's 503s wait; 500s back off, then fail", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 0 });
+  store.clear();
+  const item = add({ method: "PUT", path: "/n", body: {}, label: "Note" });
+  // A proxy answering for a restarting server: six ticks 30 s apart spend
+  // no try.
+  for (let i = 0; i < 6; i++) {
+    assert.equal(replayFailed(item, { status: 503, message: "Down" }), "wait");
+    assert.equal(next()?.key, item.key);
+    t.mock.timers.tick(30_000);
+  }
+  assert.deepEqual([items()[0].attempts, items()[0].failed], [0, null]);
+  // A busy database (an import) and a full disk wait too, uncounted.
+  for (let i = 0; i < ATTEMPTS_MAX * 2; i++) {
+    assert.equal(replayFailed(item, { status: 503, code: "busy" }), "wait");
+    assert.equal(replayFailed(item, { status: 507, code: "storage" }), "wait");
+  }
+  assert.deepEqual([items()[0].attempts, items()[0].failed], [0, null]);
+  // A 500 is a try, and the next waits 30 s · 2^tries (±20 %): the item
+  // isn't offered before then, and holds what's behind it.
+  const behind = add({ method: "PUT", path: "/m", body: {}, label: "Later" });
+  let wait = 30_000;
+  for (let i = 1; i < ATTEMPTS_MAX; i++) {
+    assert.equal(replayFailed(item, { status: 500, message: "Bug" }), "wait");
+    t.mock.timers.tick(wait * 0.8 - 1);
+    assert.equal(next(), null);
+    t.mock.timers.tick(wait * 0.4 + 1);
+    assert.equal(next().key, item.key);
+    wait *= 2;
+  }
+  // "Send now" skips the wait.
+  replayFailed(item, { status: 500, message: "Bug" });
+  assert.equal(items()[0].failed, "Bug");
+  assert.equal(next().key, behind.key);
+  replayFailed(behind, { status: 500, message: "Bug" });
+  assert.equal(next(), null);
+  wake();
+  assert.equal(next().key, behind.key);
+  // The wait is capped at an hour.
+  for (let i = 0; i < 20; i++) attempted(behind.key, "Bug");
+  assert.ok(items()[1].nextAt <= Date.now() + 1.2 * 3_600_000);
 });
 
 test("Try again resends", () => {
@@ -239,4 +382,42 @@ test("every per-day route shape is queueable", () => {
     `/foods/${d}`,
   ])
     assert.ok(!queueable("PUT", path, { x: 1 }), path);
+});
+
+test("a series' tick and skip queue, starting, editing and stopping it don't", () => {
+  const day = "2030-01-01";
+  const key = `daily-3-${day}`;
+  for (const [method, path, body, ok] of [
+    // A tick is an entry create with a uid (the day's key); a skip and its
+    // restore are per-day writes at the due day's address.
+    [
+      "POST",
+      "/profiles/1/entries",
+      { uid: key, day, group: "Eaten", repeat_of: 3 },
+      true,
+    ],
+    ["DELETE", `/profiles/1/entries/${key}`, undefined, true],
+    ["PUT", `/profiles/1/entries/${key}`, undefined, true],
+    // Starting, editing and stopping one is online only; deleting an
+    // entry by its id waits (an Undo).
+    ["PATCH", "/profiles/1/entries/5", { repeat: { start: day } }, false],
+    ["PATCH", `/profiles/1/entries/${key}`, { grams: 5 }, false],
+    ["PATCH", `/profiles/1/entries/${key}`, { repeat: null }, false],
+    ["DELETE", "/profiles/1/entries/5", undefined, true],
+    ["DELETE", "/profiles/1/entries/daily-3-2030-1-1", undefined, false],
+  ])
+    assert.equal(queueable(method, path, body), ok, `${method} ${path}`);
+});
+
+// An item as the outbox stored it before.
+const old = (method, path, body = null, uid = null) => ({
+  key: crypto.randomUUID(),
+  method,
+  path,
+  body,
+  uid,
+  label: "Creatine",
+  queuedAt: "2030-01-01T08:00:00.000Z",
+  attempts: 0,
+  failed: null,
 });

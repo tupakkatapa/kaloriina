@@ -6,7 +6,11 @@ use std::path::PathBuf;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use jiff::tz::TimeZone;
-use kaloriina::{AppState, fineli, import, newest_backup, open, router};
+use kaloriina::model::{FeedbackStatus, feedback_markdown};
+use kaloriina::{
+    AppState, feedback_list, feedback_pull, fineli, google_health, import, newest_backup, open,
+    router, stale_backup,
+};
 use tokio::signal::unix::{SignalKind, signal};
 
 #[derive(Parser)]
@@ -38,8 +42,9 @@ enum Command {
         /// rebinding defence).
         #[arg(long = "allowed-host")]
         allowed_hosts: Vec<String>,
-        /// IANA time zone (e.g. Europe/Helsinki) that decides which day a
-        /// scale reading falls on; read from the system's tz database.
+        /// IANA time zone (e.g. Europe/London) for the server's "today":
+        /// which day a scale reading falls on, and the latest day a sync may
+        /// name; read from the system's tz database.
         /// Default: the system's (TZ, /etc/localtime), else UTC.
         #[arg(long)]
         time_zone: Option<String>,
@@ -69,6 +74,11 @@ enum Command {
         #[arg(long)]
         profile: Option<String>,
     },
+    /// Fill a profile's activity gaps from a Google Takeout export with
+    /// Google Health in it, extracted: workouts, each day's active energy,
+    /// steps, heart rate and HRV, nights and naps. What is already there
+    /// (synced or logged) stays; running it again adds nothing.
+    ImportGoogleHealth(GoogleHealthArgs),
     /// Add the Fineli food database (THL, CC BY 4.0) to the shared foods.
     /// Re-running with a newer release updates those foods in place.
     Fineli {
@@ -86,16 +96,37 @@ enum Command {
         /// Unzipped Fineli open-data package (holding `food.csv`).
         dir: PathBuf,
     },
+    /// Print the open feedback (Profile → Feedback) as Markdown.
+    #[command(group(clap::ArgGroup::new("mode").required(true).args(["pull", "list"])))]
+    Feedback {
+        /// Existing database file.
+        #[arg(long, default_value = "kaloriina.db")]
+        db: PathBuf,
+        /// Print it and mark it pulled: the next pull prints only what came
+        /// since. Writes to the database.
+        #[arg(long)]
+        pull: bool,
+        /// Print it, marking nothing; opens the database read-only.
+        #[arg(long)]
+        list: bool,
+    },
 }
 
-/// A typo in --db must not import into a fresh, empty database.
-fn existing(db: &std::path::Path, create: bool) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        create || db.exists(),
-        "{} does not exist; pass --create to start a new database",
-        db.display()
-    );
-    Ok(())
+/// A typo in --db must not import into a fresh, empty database. `create`
+/// is the command's `--create`, `None` when it has none.
+fn existing(db: &std::path::Path, create: Option<bool>) -> anyhow::Result<()> {
+    match create {
+        _ if db.exists() => Ok(()),
+        Some(true) => Ok(()),
+        Some(false) => anyhow::bail!(
+            "{} does not exist; pass --create to start a new database",
+            db.display()
+        ),
+        None => anyhow::bail!(
+            "{} does not exist; check --db (default: kaloriina.db in the current folder)",
+            db.display()
+        ),
+    }
 }
 
 /// The zone named, or the system's (UTC if it has none).
@@ -113,12 +144,121 @@ fn resolve_time_zone(name: Option<&str>) -> anyhow::Result<TimeZone> {
     Ok(tz)
 }
 
+/// Open (and migrate) `db`, then bring its derived data up to the rules
+/// ([`kaloriina::derived_current`]): with `tz` the zoned families too (the
+/// server's days), else they wait for the next `serve`. `configured`: `tz`
+/// was named, not the system's (or UTC), which the log then says.
+fn open_current(
+    db: &std::path::Path,
+    tz: Option<&TimeZone>,
+    configured: bool,
+) -> anyhow::Result<kaloriina::Connection> {
+    let mut conn = open(db).with_context(|| format!("opening {}", db.display()))?;
+    let ran = kaloriina::derived_current(&mut conn, tz, kaloriina::model::now_ms());
+    let zoned = ["night_rule_version", "weight_rule_version"];
+    if let Some(tz) = tz
+        && !configured
+        && zoned.iter().any(|k| ran.contains_key(k))
+    {
+        tracing::warn!(
+            time_zone = tz.iana_name().unwrap_or("fixed offset"),
+            "stored days follow the current rules in the system's zone (UTC without one): \
+             no --time-zone given"
+        );
+    }
+    Ok(conn)
+}
+
+#[derive(clap::Args)]
+struct GoogleHealthArgs {
+    /// Existing database file.
+    #[arg(long, default_value = "kaloriina.db")]
+    db: PathBuf,
+    /// Profile to import into; may be left out when there is only one.
+    #[arg(long)]
+    profile: Option<String>,
+    /// IANA time zone the days are counted in: the server's (`serve
+    /// --time-zone`), so a sample falls on the day a browser import files
+    /// it under.
+    #[arg(long)]
+    time_zone: String,
+    /// The folders the Takeout export was extracted to (every part's, when
+    /// it came in several).
+    #[arg(required = true)]
+    exports: Vec<PathBuf>,
+}
+
+/// `kaloriina import-google-health`: find the export's files first, so a
+/// wrong path never opens the database.
+fn import_google_health(a: &GoogleHealthArgs) -> anyhow::Result<()> {
+    let tz = resolve_time_zone(Some(&a.time_zone))?;
+    let files = google_health::files_at(&a.exports)?;
+    existing(&a.db, None)?;
+    let mut conn = open_current(&a.db, Some(&tz), true)?;
+    let profile = import::profile_for(&conn, a.profile.as_deref())?;
+    let c = google_health::import(&mut conn, profile, &files, &tz).context("importing")?;
+    println!(
+        "google health: {} days filled ({} nights), {} naps, {} workouts added, {} already there, {} rows kept raw, {} rows skipped",
+        c.days, c.nights, c.naps, c.activities, c.kept, c.records, c.skipped
+    );
+    Ok(())
+}
+
+/// `kaloriina fineli`: read the package first, so a wrong path never
+/// creates a database; then its foods and their ingredient classes.
+fn fineli_import(db: &std::path::Path, create: bool, dir: &std::path::Path) -> anyhow::Result<()> {
+    let reading = || format!("reading {}", dir.display());
+    let foods = fineli::read(dir).with_context(reading)?;
+    let classes = fineli::ingredient_classes(dir).with_context(reading)?;
+    existing(db, Some(create))?;
+    let mut conn = open_current(db, None, false)?;
+    let added = fineli::store(&mut conn, &foods, &classes)?;
+    println!("fineli: {} foods, {added} new", foods.len());
+    Ok(())
+}
+
+/// `kaloriina feedback`: the open feedback as Markdown; `pull` then marks
+/// what was printed pulled, else the database opens read-only.
+fn feedback(db: &std::path::Path, pull: bool) -> anyhow::Result<()> {
+    use std::io::Write;
+    existing(db, None)?;
+    let what = || format!("opening {}", db.display());
+    let mut conn = if pull {
+        open_current(db, None, false)?
+    } else {
+        let conn =
+            kaloriina::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .with_context(what)?;
+        // Read-only, so not upgraded here.
+        let known: bool = conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE name = 'feedback')",
+            [],
+            |r| r.get(0),
+        )?;
+        anyhow::ensure!(
+            known,
+            "{} predates feedback: start `kaloriina serve` on it once to upgrade it",
+            db.display()
+        );
+        conn
+    };
+    let items = feedback_list(&conn, Some(FeedbackStatus::Open))?;
+    let mut out = std::io::stdout().lock();
+    out.write_all(feedback_markdown(&items).as_bytes())
+        .and_then(|()| out.flush())
+        .context("printing the feedback; none was marked pulled")?;
+    if pull {
+        let ids: Vec<i64> = items.iter().map(|f| f.id).collect();
+        feedback_pull(&mut conn, &ids)?;
+    }
+    Ok(())
+}
+
 /// WARN when the newest backup copy is over 48 hours old (or there is
 /// none): the backup job failing is otherwise silent.
 fn warn_on_old_backups(dir: &std::path::Path) {
-    const STALE_MS: i64 = 48 * 60 * 60 * 1000;
     match newest_backup(dir) {
-        Ok(Some(at)) if jiff::Timestamp::now().as_millisecond() - at <= STALE_MS => {}
+        Ok(Some(at)) if !stale_backup(Some(at), jiff::Timestamp::now().as_millisecond()) => {}
         Ok(Some(at)) => tracing::warn!(
             dir = %dir.display(),
             newest = %jiff::Timestamp::from_millisecond(at).unwrap_or_default(),
@@ -128,6 +268,10 @@ fn warn_on_old_backups(dir: &std::path::Path) {
         Err(e) => tracing::warn!(dir = %dir.display(), error = %e, "backup dir unreadable"),
     }
 }
+
+/// How long a stop waits for open requests before it drops them (`SQLite`
+/// rolls back what they hadn't committed).
+const DRAIN_MAX: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Resolve on Ctrl-C or SIGTERM (systemd stop), letting requests finish.
 async fn shutdown() {
@@ -152,7 +296,7 @@ async fn serve(
 ) -> anyhow::Result<()> {
     // Before the database: a typo must not migrate or create one.
     let tz = resolve_time_zone(time_zone.as_deref())?;
-    let conn = open(&db).with_context(|| format!("opening {}", db.display()))?;
+    let conn = open_current(&db, Some(&tz), time_zone.is_some())?;
     let addr = SocketAddr::new(address, port);
     let listener = tokio::net::TcpListener::bind(addr)
         .await
@@ -165,9 +309,22 @@ async fn serve(
         warn_on_old_backups(dir);
     }
     state.backup_dir = backup_dir;
-    axum::serve(listener, router(state))
-        .with_graceful_shutdown(shutdown())
-        .await?;
+    let stopping = std::sync::Arc::new(tokio::sync::Notify::new());
+    let server = axum::serve(listener, router(state)).with_graceful_shutdown({
+        let stopping = stopping.clone();
+        async move {
+            shutdown().await;
+            stopping.notify_one();
+        }
+    });
+    // A stalled upload must not hold a deploy: the drain has a deadline.
+    tokio::select! {
+        result = std::future::IntoFuture::into_future(server) => result?,
+        () = async {
+            stopping.notified().await;
+            tokio::time::sleep(DRAIN_MAX).await;
+        } => tracing::warn!("requests still open {DRAIN_MAX:?} after the stop; dropping them"),
+    }
     Ok(())
 }
 
@@ -225,8 +382,8 @@ async fn main() -> anyhow::Result<()> {
                 .transpose()
             };
             let (servings, summary) = (input(servings)?, input(summary)?);
-            existing(&db, create)?;
-            let mut conn = open(&db).with_context(|| format!("opening {}", db.display()))?;
+            existing(&db, Some(create))?;
+            let mut conn = open_current(&db, None, false)?;
             let profile = import::profile_for(&conn, profile.as_deref())?;
             let has_servings = servings.is_some();
             let report = import::import(
@@ -249,6 +406,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Command::ImportGoogleHealth(args) => import_google_health(&args)?,
         Command::Fineli {
             classes: true, dir, ..
         } => {
@@ -265,14 +423,8 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Fineli {
             db, create, dir, ..
-        } => {
-            // Read the package first so a wrong path never creates a database.
-            let foods = fineli::read(&dir).with_context(|| format!("reading {}", dir.display()))?;
-            existing(&db, create)?;
-            let mut conn = open(&db).with_context(|| format!("opening {}", db.display()))?;
-            let added = fineli::store(&mut conn, &foods)?;
-            println!("fineli: {} foods, {added} new", foods.len());
-        }
+        } => fineli_import(&db, create, &dir)?,
+        Command::Feedback { db, pull, .. } => feedback(&db, pull)?,
     }
     Ok(())
 }

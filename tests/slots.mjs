@@ -1,7 +1,7 @@
 // `unique()` without Playwright, so `web.test.mjs` can check its promise.
 
 // Slots a spec may use: 0 to SLOTS - 1.
-export const SLOTS = 1000;
+export const SLOTS = 1167;
 
 // Both projects share one server and database. Each test passes its own
 // slot number, so every test/project pair gets distinct names, barcodes and a
@@ -16,7 +16,7 @@ export function unique(slot, testInfo) {
   const p = testInfo.project.name === "chromium" ? 0 : 1;
   // Each retry and repeat runs on the same server, so it gets its own run;
   // runs are numbered densely (the config's retries, not a guess), so the
-  // years up to 9999 hold 23 of them: `--repeat-each 23` without retries.
+  // years up to 9999 hold 20 of them: `--repeat-each 20` without retries.
   const tries = (testInfo.project.retries ?? 0) + 1;
   const run = testInfo.repeatEachIndex * tries + testInfo.retry;
   const n = run * SLOTS * 2 + slot * 2 + p;

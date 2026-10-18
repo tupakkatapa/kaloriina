@@ -1,0 +1,465 @@
+{
+  "_": "Sleep sessions to nights and naps, the one rule the server makes Health Connect's nights by and the Google Health import shares (model::sleep): sessions at most sleep_join_s apart are one block, except that a session under night_min_min starting at least sleep_split_s after a block already night_min_min in bed starts its own (a nap after waking); a block under night_min_min ending before night_part_end (local) on the wake day of the night block after it is that night's start (joined: the bedtime is its); a block of at least night_min_min minutes in bed (the union of its sessions) is a night on its wake day, the longest winning a day (another skipped and counted); a block over in_bed_max_min is skipped and counted; any other block is one nap per session (overlapping sessions are one, keyed by the first), each on its own wake day. Times in UTC, days and clocks in zone. Read by a Rust test.",
+  "zone": "Europe/Helsinki",
+  "sleep_join_s": 7200,
+  "sleep_split_s": 3600,
+  "night_min_min": 180,
+  "in_bed_max_min": 1440,
+  "night_part_end": "06:00",
+  "cases": [
+    {
+      "name": "a night across midnight",
+      "sessions": [
+        {
+          "id": "n",
+          "start": "2026-10-08T20:10:00Z",
+          "end": "2026-10-09T04:05:00Z"
+        }
+      ],
+      "nights": [
+        {
+          "day": "2026-10-09",
+          "start_at": "2026-10-08T20:10:00Z",
+          "end_at": "2026-10-09T04:05:00Z",
+          "in_bed_min": 475,
+          "asleep_min": 475,
+          "bedtime": "23:10",
+          "wake_time": "07:05"
+        }
+      ],
+      "naps": [],
+      "skipped": 0
+    },
+    {
+      "name": "a split night is one",
+      "sessions": [
+        {
+          "id": "n1",
+          "start": "2026-10-08T20:00:00Z",
+          "end": "2026-10-08T23:00:00Z"
+        },
+        {
+          "id": "n2",
+          "start": "2026-10-08T23:30:00Z",
+          "end": "2026-10-09T04:00:00Z"
+        }
+      ],
+      "nights": [
+        {
+          "day": "2026-10-09",
+          "start_at": "2026-10-08T20:00:00Z",
+          "end_at": "2026-10-09T04:00:00Z",
+          "in_bed_min": 450,
+          "asleep_min": 450,
+          "bedtime": "23:00",
+          "wake_time": "07:00"
+        }
+      ],
+      "naps": [],
+      "skipped": 0
+    },
+    {
+      "name": "a gap over two hours splits, the longer block wins the day and the other is skipped",
+      "sessions": [
+        {
+          "id": "early",
+          "start": "2026-10-08T18:00:00Z",
+          "end": "2026-10-08T21:30:00Z"
+        },
+        {
+          "id": "late",
+          "start": "2026-10-09T00:30:00Z",
+          "end": "2026-10-09T05:00:00Z"
+        }
+      ],
+      "nights": [
+        {
+          "day": "2026-10-09",
+          "start_at": "2026-10-09T00:30:00Z",
+          "end_at": "2026-10-09T05:00:00Z",
+          "in_bed_min": 270,
+          "asleep_min": 270,
+          "bedtime": "03:30",
+          "wake_time": "08:00"
+        }
+      ],
+      "naps": [],
+      "skipped": 1
+    },
+    {
+      "name": "a short sleep ending before 06:00 on the night's wake day starts that night",
+      "sessions": [
+        {
+          "id": "early",
+          "start": "2026-10-13T22:36:00Z",
+          "end": "2026-10-14T01:21:00Z"
+        },
+        {
+          "id": "late",
+          "start": "2026-10-14T07:26:00Z",
+          "end": "2026-10-14T11:09:00Z"
+        }
+      ],
+      "nights": [
+        {
+          "day": "2026-10-14",
+          "start_at": "2026-10-13T22:36:00Z",
+          "end_at": "2026-10-14T11:09:00Z",
+          "in_bed_min": 388,
+          "asleep_min": 388,
+          "bedtime": "01:36",
+          "wake_time": "14:09"
+        }
+      ],
+      "naps": [],
+      "skipped": 0
+    },
+    {
+      "name": "a short sleep ending after 06:00 before the night stays a nap",
+      "sessions": [
+        {
+          "id": "early",
+          "start": "2026-10-14T04:00:00Z",
+          "end": "2026-10-14T05:00:00Z"
+        },
+        {
+          "id": "late",
+          "start": "2026-10-14T07:26:00Z",
+          "end": "2026-10-14T11:09:00Z"
+        }
+      ],
+      "nights": [
+        {
+          "day": "2026-10-14",
+          "start_at": "2026-10-14T07:26:00Z",
+          "end_at": "2026-10-14T11:09:00Z",
+          "in_bed_min": 223,
+          "asleep_min": 223,
+          "bedtime": "10:26",
+          "wake_time": "14:09"
+        }
+      ],
+      "naps": [
+        {
+          "key": "early",
+          "day": "2026-10-14",
+          "start_at": "2026-10-14T04:00:00Z",
+          "end_at": "2026-10-14T05:00:00Z"
+        }
+      ],
+      "skipped": 0
+    },
+    {
+      "name": "a lone nap",
+      "sessions": [
+        {
+          "id": "nap",
+          "start": "2026-10-09T11:00:00Z",
+          "end": "2026-10-09T11:40:00Z"
+        }
+      ],
+      "nights": [],
+      "naps": [
+        {
+          "key": "nap",
+          "day": "2026-10-09",
+          "start_at": "2026-10-09T11:00:00Z",
+          "end_at": "2026-10-09T11:40:00Z"
+        }
+      ],
+      "skipped": 0
+    },
+    {
+      "name": "naps are per session: the awake gap is no sleep",
+      "sessions": [
+        {
+          "id": "p1",
+          "start": "2026-10-09T10:00:00Z",
+          "end": "2026-10-09T11:00:00Z"
+        },
+        {
+          "id": "p2",
+          "start": "2026-10-09T12:30:00Z",
+          "end": "2026-10-09T13:30:00Z"
+        }
+      ],
+      "nights": [],
+      "naps": [
+        {
+          "key": "p1",
+          "day": "2026-10-09",
+          "start_at": "2026-10-09T10:00:00Z",
+          "end_at": "2026-10-09T11:00:00Z"
+        },
+        {
+          "key": "p2",
+          "day": "2026-10-09",
+          "start_at": "2026-10-09T12:30:00Z",
+          "end_at": "2026-10-09T13:30:00Z"
+        }
+      ],
+      "skipped": 0
+    },
+    {
+      "name": "a short sleep an hour or more after the night is a nap, not its end",
+      "sessions": [
+        {
+          "id": "n",
+          "start": "2026-10-08T20:10:00Z",
+          "end": "2026-10-09T04:05:00Z"
+        },
+        {
+          "id": "doze",
+          "start": "2026-10-09T05:30:00Z",
+          "end": "2026-10-09T06:00:00Z"
+        }
+      ],
+      "nights": [
+        {
+          "day": "2026-10-09",
+          "start_at": "2026-10-08T20:10:00Z",
+          "end_at": "2026-10-09T04:05:00Z",
+          "in_bed_min": 475,
+          "asleep_min": 475,
+          "bedtime": "23:10",
+          "wake_time": "07:05"
+        }
+      ],
+      "naps": [
+        {
+          "key": "doze",
+          "day": "2026-10-09",
+          "start_at": "2026-10-09T05:30:00Z",
+          "end_at": "2026-10-09T06:00:00Z"
+        }
+      ],
+      "skipped": 0
+    },
+    {
+      "name": "a short sleep within the hour after the night joins it",
+      "sessions": [
+        {
+          "id": "n",
+          "start": "2026-10-08T20:10:00Z",
+          "end": "2026-10-09T04:05:00Z"
+        },
+        {
+          "id": "m",
+          "start": "2026-10-09T04:40:00Z",
+          "end": "2026-10-09T05:10:00Z"
+        }
+      ],
+      "nights": [
+        {
+          "day": "2026-10-09",
+          "start_at": "2026-10-08T20:10:00Z",
+          "end_at": "2026-10-09T05:10:00Z",
+          "in_bed_min": 505,
+          "asleep_min": 505,
+          "bedtime": "23:10",
+          "wake_time": "08:10"
+        }
+      ],
+      "naps": [],
+      "skipped": 0
+    },
+    {
+      "name": "a nap across midnight is filed under its wake day",
+      "sessions": [
+        {
+          "id": "late",
+          "start": "2026-10-08T20:30:00Z",
+          "end": "2026-10-08T21:20:00Z"
+        }
+      ],
+      "nights": [],
+      "naps": [
+        {
+          "key": "late",
+          "day": "2026-10-09",
+          "start_at": "2026-10-08T20:30:00Z",
+          "end_at": "2026-10-08T21:20:00Z"
+        }
+      ],
+      "skipped": 0
+    },
+    {
+      "name": "the same nap from two apps is one",
+      "sessions": [
+        {
+          "id": "a",
+          "start": "2026-10-09T11:00:00Z",
+          "end": "2026-10-09T11:40:00Z"
+        },
+        {
+          "id": "b",
+          "start": "2026-10-09T11:00:00Z",
+          "end": "2026-10-09T11:40:00Z"
+        }
+      ],
+      "nights": [],
+      "naps": [
+        {
+          "key": "a",
+          "day": "2026-10-09",
+          "start_at": "2026-10-09T11:00:00Z",
+          "end_at": "2026-10-09T11:40:00Z"
+        }
+      ],
+      "skipped": 0
+    },
+    {
+      "name": "a block over 24 h in bed is skipped, and another night still wins its day",
+      "sessions": [
+        {
+          "id": "long",
+          "start": "2026-10-07T01:00:00Z",
+          "end": "2026-10-08T02:00:00Z"
+        },
+        {
+          "id": "n",
+          "start": "2026-10-08T04:30:00Z",
+          "end": "2026-10-08T12:00:00Z"
+        }
+      ],
+      "nights": [
+        {
+          "day": "2026-10-08",
+          "start_at": "2026-10-08T04:30:00Z",
+          "end_at": "2026-10-08T12:00:00Z",
+          "in_bed_min": 450,
+          "asleep_min": 450,
+          "bedtime": "07:30",
+          "wake_time": "15:00"
+        }
+      ],
+      "naps": [],
+      "skipped": 1
+    },
+    {
+      "name": "exactly 24 h in bed is a night",
+      "sessions": [
+        {
+          "id": "n",
+          "start": "2026-10-08T04:00:00Z",
+          "end": "2026-10-09T04:00:00Z"
+        }
+      ],
+      "nights": [
+        {
+          "day": "2026-10-09",
+          "start_at": "2026-10-08T04:00:00Z",
+          "end_at": "2026-10-09T04:00:00Z",
+          "in_bed_min": 1440,
+          "asleep_min": 1440,
+          "bedtime": "07:00",
+          "wake_time": "07:00"
+        }
+      ],
+      "naps": [],
+      "skipped": 0
+    },
+    {
+      "name": "2 h 59 min is a nap",
+      "sessions": [
+        {
+          "id": "short",
+          "start": "2026-10-08T20:00:00Z",
+          "end": "2026-10-08T22:59:00Z"
+        }
+      ],
+      "nights": [],
+      "naps": [
+        {
+          "key": "short",
+          "day": "2026-10-09",
+          "start_at": "2026-10-08T20:00:00Z",
+          "end_at": "2026-10-08T22:59:00Z"
+        }
+      ],
+      "skipped": 0
+    },
+    {
+      "name": "3 h is a night",
+      "sessions": [
+        {
+          "id": "n",
+          "start": "2026-10-08T20:00:00Z",
+          "end": "2026-10-08T23:00:00Z"
+        }
+      ],
+      "nights": [
+        {
+          "day": "2026-10-09",
+          "start_at": "2026-10-08T20:00:00Z",
+          "end_at": "2026-10-08T23:00:00Z",
+          "in_bed_min": 180,
+          "asleep_min": 180,
+          "bedtime": "23:00",
+          "wake_time": "02:00"
+        }
+      ],
+      "naps": [],
+      "skipped": 0
+    },
+    {
+      "name": "a session of no minutes is no nap",
+      "sessions": [
+        {
+          "id": "zero",
+          "start": "2026-10-09T11:00:00Z",
+          "end": "2026-10-09T11:00:00Z"
+        }
+      ],
+      "nights": [],
+      "naps": [],
+      "skipped": 0
+    },
+    {
+      "name": "the night daylight saving time ends",
+      "sessions": [
+        {
+          "id": "n",
+          "start": "2026-10-24T20:00:00Z",
+          "end": "2026-10-25T05:00:00Z"
+        }
+      ],
+      "nights": [
+        {
+          "day": "2026-10-25",
+          "start_at": "2026-10-24T20:00:00Z",
+          "end_at": "2026-10-25T05:00:00Z",
+          "in_bed_min": 540,
+          "asleep_min": 540,
+          "bedtime": "23:00",
+          "wake_time": "07:00"
+        }
+      ],
+      "naps": [],
+      "skipped": 0
+    },
+    {
+      "name": "the night daylight saving time starts",
+      "sessions": [
+        {
+          "id": "n",
+          "start": "2026-03-28T21:00:00Z",
+          "end": "2026-03-29T04:00:00Z"
+        }
+      ],
+      "nights": [
+        {
+          "day": "2026-03-29",
+          "start_at": "2026-03-28T21:00:00Z",
+          "end_at": "2026-03-29T04:00:00Z",
+          "in_bed_min": 420,
+          "asleep_min": 420,
+          "bedtime": "23:00",
+          "wake_time": "07:00"
+        }
+      ],
+      "naps": [],
+      "skipped": 0
+    }
+  ]
+}

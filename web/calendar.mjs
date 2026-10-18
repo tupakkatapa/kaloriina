@@ -16,11 +16,11 @@ const WEEKDAYS = Array.from({ length: 7 }, (_, i) =>
 const MONTH = new Intl.DateTimeFormat(undefined, { month: "short" });
 const monthName = (ym) => MONTH.format(new Date(`${ym}-01T12:00`));
 
-// A day's cell: its shade, hatched when nothing was logged, outlined when
-// over. `link` holds the visible day, amount and marks; without it the
-// cell is colour and words for screen readers only (the year's mini months).
-// A day after `now` hasn't happened: its date and marks (a plan), no
-// shade or link.
+// A day's cell: its shade, hatched when nothing was logged, outlined when over;
+// today, still going, outlined alone. `link` holds the visible day, amount and
+// marks; without it the cell is colour and words for screen readers only (the
+// year's mini months). A day after `now` hasn't happened: its date and marks (a
+// plan), no shade or link.
 function cell(s, day, link, now) {
   if (!day) return h("td", { class: "pad" });
   if (day > now) {
@@ -42,12 +42,18 @@ function cell(s, day, link, now) {
     );
   }
   const label = s.label(day);
+  // Today is still going: outlined, not shaded; unless its value
+  // is already final (`s.final`: last night's sleep, a check-in made), then
+  // shaded and outlined.
+  const isToday = day === now;
+  const shaded = !isToday || Boolean(s.final?.(day));
   const attrs = {
     class: [
       "cal-cell",
-      `shade-${s.step(day)}`,
-      s.unlogged(day) ? "none" : null,
-      s.over(day) ? "over" : null,
+      shaded ? `shade-${s.step(day)}` : null,
+      shaded && s.unlogged(day) ? "none" : null,
+      shaded && s.over(day) ? "over" : null,
+      isToday ? "today" : null,
     ]
       .filter(Boolean)
       .join(" "),
@@ -75,7 +81,7 @@ function cell(s, day, link, now) {
   );
 }
 
-function table(s, weeks, caption, className, { link = true } = {}) {
+function table(s, weeks, caption, className, link = true) {
   const now = today();
   return h(
     "table",
@@ -111,8 +117,9 @@ function table(s, weeks, caption, className, { link = true } = {}) {
 }
 
 // The period `kind` from `from` for `series` ({amount, step, unlogged,
-// over, marks, label}, each a function of the day). `monthLink(month)` is
-// where a year's month caption leads.
+// over, marks, label, final?}, each a function of the day; `final(day)`
+// true when today's value won't change). `monthLink(month)` is
+// where a year's month caption leads; a day opens it in the Diary.
 export function calendarView({
   kind,
   from,
@@ -134,7 +141,7 @@ export function calendarView({
         weeks,
         h("a", { href: monthLink(month) }, monthName(month)),
         className,
-        { link: false },
+        false,
       ),
     ),
   );

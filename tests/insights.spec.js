@@ -1,11 +1,13 @@
 // Insights: the weight trend, a goal weight's line and projection, the
 // adaptive energy target, and where a nutrient comes from.
 
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import {
   answer,
   entry,
   exerciseIds,
+  expectFits,
+  fixedToday,
   food,
   ownProfile,
   setTarget,
@@ -13,6 +15,9 @@ import {
   unique,
   workout,
 } from "./helpers.js";
+
+// One today for the whole test, in the page and here.
+test.beforeEach(({ page }) => fixedToday(page));
 
 // `n` days before today as the page sees it.
 const ago = (n) => {
@@ -55,17 +60,43 @@ test("the weight section charts weigh-ins and states the trend", async ({
   const weight = page.locator("section.finder-section", {
     has: page.getByRole("heading", { name: "Weight" }),
   });
-  await expect(weight.getByRole("img", { name: /7-day trend/ })).toBeVisible();
-  const tiles = weight
-    .getByRole("list", { name: "Weight" })
-    .getByRole("listitem");
-  await expect(tiles).toContainText([
-    "−0.7 kg a week",
-    "79.8 kg trend on Jan 10",
+  await expect(weight.getByRole("img", { name: /the trend/u })).toBeVisible();
+  const tiles = weight.getByRole("list", { name: "Weight" }).locator(".tile");
+  // Three weigh-ins are too few for a rate: a day's water would read as one.
+  await expect(tiles).toHaveText([
+    /^79\.8\skg weight trend, Jan 10$/u,
+    // The trend's change, not two readings'.
+    /^−0\.2\skg change over 3 weigh-ins$/u,
   ]);
+  // A fourth, a week after the first: still no rate under two weeks.
+  await weigh(request, pid, "2025-01-12", 79.4);
+  await page.reload();
+  await expect(tiles).toHaveText([
+    /^79\.7\skg weight trend, Jan 12$/u,
+    /^−0\.3\skg change over 4 weigh-ins$/u,
+  ]);
+  // Over two weeks the month gives the rate a week with its margin.
+  await weigh(request, pid, "2025-01-15", 79.15);
+  await weigh(request, pid, "2025-01-18", 78.75);
+  await weigh(request, pid, "2025-01-21", 78.5);
+  await page.goto("/#/summary/body/month/2025-01-01");
+  await expect(tiles).toHaveText([
+    // A margin under 0.1 kg to two decimals, never "± 0".
+    /^−0\.7\skg a week, ±\s0\.03\skg$/u,
+    /^78\.8\skg weight trend, Jan 21$/u,
+    /^−1\.2\skg change over 7 weigh-ins$/u,
+  ]);
+  // Water swings around a flat line: no clear change, the margin said.
+  await weigh(request, pid, "2025-01-15", 80.2);
+  await weigh(request, pid, "2025-01-18", 79.3);
+  await weigh(request, pid, "2025-01-21", 80.1);
+  await page.reload();
+  await expect(tiles.first()).toHaveText(
+    /^No clear change a week, ±\s0\.4\skg$/u,
+  );
 });
 
-test("a goal weight: set on Targets, a dashed line and where the trend gets you", async ({
+test("a goal weight: set on Targets, a dashed line (hidden when far) and where the trend gets you (item 20)", async ({
   page,
   request,
 }, testInfo) => {
@@ -91,11 +122,8 @@ test("a goal weight: set on Targets, a dashed line and where the trend gets you"
   ).toBe(76);
 
   await page.goto(`/#/summary/body/month/${today}`);
-  const line = page.locator(".goal-projection");
-  await expect(line).toHaveText(/^76\skg goal, around \w{3}, \w{3} \d{1,2}$/);
-  await expect(page.locator(".weight canvas")).toHaveAccessibleName(
-    /Dashed: your goal, 76\skg\.$/,
-  );
+  const line = page.locator(".goal-projection .tile");
+  await expect(line).toHaveText(/^76\skg goal, around \w{3}, \w{3} \d{1,2}$/u);
 
   // Moving away from it, and no goal at all.
   const set = (goalKg) => setTarget(request, pid, "goal_weight", goalKg);
@@ -103,15 +131,41 @@ test("a goal weight: set on Targets, a dashed line and where the trend gets you"
   // It fits a narrow phone.
   await page.setViewportSize({ width: 320, height: 640 });
   await page.reload();
-  await expect(line).toHaveText(/^90\skg goal, trend moving away$/);
-  await expect(page.locator(".weight canvas")).toBeVisible();
-  expect(
-    await page.evaluate(() => document.documentElement.scrollWidth),
-  ).toBeLessThanOrEqual(320);
+  await expect(line).toHaveText(/^90\skg goal, trend moving away$/u);
+  const canvas = page.locator(".weight canvas");
+  await expect(canvas).toBeVisible();
+  // Too far to chart without flattening the weigh-ins: in the legend,
+  // struck through until tapped; said in the list; nothing written under
+  // the chart.
+  const goalShown = () =>
+    canvas.evaluate((c) => {
+      const item = window.Chart?.getChart(c)?.legend.legendItems.find(
+        (i) => i.text === "Goal",
+      );
+      return item && !item.hidden;
+    });
+  await expect.poll(goalShown).toBe(false);
+  await expect(page.locator(".weight ul.sr-only li").last()).toHaveText(
+    /^Goal: 90\skg$/u,
+  );
+  await expect(
+    page.locator(".weight .chart-goal, .weight .chart-note"),
+  ).toHaveCount(0);
+  await expectFits(page);
   await set(null);
   await page.reload();
   await expect(page.locator(".weight canvas")).toBeVisible();
   await expect(line).toHaveCount(0);
+
+  // A goal near the weigh-ins is a dashed line on the chart, named to the
+  // tenth as its tile says it.
+  await set(77.9);
+  await page.reload();
+  await expect(line).toHaveText(/^77\.9\skg goal, /u);
+  await expect(page.locator(".weight ul.sr-only li").last()).toHaveText(
+    /^Goal: 77\.9\skg$/u,
+  );
+  await expect.poll(goalShown).toBe(true);
 });
 
 test("a goal with too few weigh-ins says there's no clear trend yet", async ({
@@ -130,28 +184,31 @@ test("a goal with too few weigh-ins says there's no clear trend yet", async ({
     });
   await setTarget(request, pid, "goal_weight", 70);
   await page.goto(`/#/summary/body/month/${today}`);
-  await expect(page.locator(".goal-projection")).toHaveText(
-    /^70\skg goal, no clear trend yet$/,
+  await expect(page.locator(".goal-projection .tile")).toHaveText(
+    /^70\skg goal, no clear trend yet$/u,
   );
 });
-test("too little data says what the energy balance still needs", async ({
+test("Summary sets no energy target: no Last 4 weeks; Targets says why its maintenance isn't the balance (item 18)", async ({
   page,
   request,
 }, testInfo) => {
   const { tag } = unique(401, testInfo);
   await ownProfile(page, request, `Balance ${tag}`);
   await page.goto("/#/summary/food/week");
+  // No food day: no balance, not a heading on its own.
+  await expect(page.locator(".energy-balance")).toHaveCount(0);
+  await expect(page.getByText("Last 4 weeks")).toHaveCount(0);
   await expect(
-    page.getByText(
-      "Not enough data yet: needs 14 days with food logged and two weigh-ins 10 or more days apart. So far: 0 days with food; weigh-ins span 0 days.",
-    ),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: /Energy target →/ }),
+    page.getByRole("button", { name: /Energy target →/u }),
   ).toHaveCount(0);
+  // Targets is the one home: the uncertainty worded as its reason.
+  await page.goto("/#/targets");
+  await expect(page.locator(".needed-energy")).toContainText(
+    "Your weight trend is too short to say: about 2 more weeks of food and weigh-ins.",
+  );
 });
 
-test("the energy balance sets the energy target, and Undo restores it", async ({
+test("Targets offers the energy the balance needs, and Undo restores it", async ({
   page,
   request,
 }, testInfo) => {
@@ -167,44 +224,62 @@ test("the energy balance sets the energy target, and Undo restores it", async ({
     name: `Diet ${tag}`,
     per100: { energy: 500 },
   });
-  // 2,000 kcal a day for 14 days while losing 0.1 kg a day: you use
-  // 2,000 + 0.1 × 7,700 = 2,770 a day; the goal is to keep weight.
+  // 2,000 kcal a day for 14 days while losing 0.1 kg a day; the 7-day
+  // trend, warming up over the window, falls 0.6 kg a week: maintenance is
+  // about 2,000 + 0.6 / 7 × 7,700 ≈ 2,616 a day, sure (the weigh-ins on
+  // one line); the goal is to keep weight, so needed() plans 2,620.
   for (let i = 1; i <= 14; i++)
     await entry(
       request,
-      { day: ago(i), group: "Consumed", food_id: f.id, grams: 400 },
+      { day: ago(i), group: "Eaten", food_id: f.id, grams: 400 },
       pid,
     );
-  await weigh(request, pid, ago(15), 80);
-  await weigh(request, pid, ago(1), 78.6);
+  for (let n = 15; n >= 1; n -= 1)
+    await weigh(
+      request,
+      pid,
+      ago(n),
+      Math.round((78.6 + (n - 1) * 0.1) * 10) / 10,
+    );
 
-  await page.goto("/#/summary/food/week");
-  const section = page.locator(".energy-balance");
-  await expect(section).toContainText(
-    "You ate 2,000 kcal a day and your trend fell 0.7 kg a week: you use about 2,770 kcal a day. For your goal: 2,770 kcal.",
+  await page.goto("/#/targets");
+  const section = page.locator(".needed-energy");
+  // Maintenance, needed and resting as tiles.
+  await expect(
+    section.getByRole("list", { name: "Needed energy" }).locator(".tile"),
+  ).toHaveText([
+    /^≈ 2,620\skcal \(± 0\)\s*maintenance a day$/u,
+    /^2,620\skcal\s*needed a day$/u,
+    /^≈ [\d,]+\skcal\s*resting a day$/u,
+  ]);
+  await expect(
+    section
+      .getByRole("list", { name: "Needed energy" })
+      .locator(".tile")
+      .first(),
+  ).toHaveAccessibleDescription(
+    "What keeps your weight where it is, a day: from what you ate and how your weight moved.",
   );
+  await expect(section.locator(".needed-pace")).toHaveText(
+    "No goal set: planned to keep your weight.",
+  );
+  // Sure: no reason to give.
+  await expect(section).not.toContainText("too short");
   await section
-    .getByRole("button", { name: "Energy target → 2,770 kcal" })
+    .getByRole("button", { name: "Energy target → 2,620 kcal" })
     .click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toContainText(
-    "Protein stays 100 g; carbohydrate 296 g and fat 104 g scale with the energy.",
+    "Protein stays 100 g; carbs 278 g and fat 97 g scale with the energy.",
   );
   expect(await answer(page, "Set target")).toBe(
-    // kcal() joins number and unit with a no-break space.
-    "Set energy target to 2,770\u00a0kcal?",
+    "Set energy target to 2,620\u00A0kcal?",
   );
   const toast = page.locator(".toast");
-  await expect(toast).toContainText("Energy target 2,000 kcal → 2,770 kcal");
-  await expect.poll(() => energyTarget(request, pid)).toBe(2770);
-  // At the new target, nothing more to offer.
-  await expect(section.getByRole("button")).toHaveCount(0);
-
+  await expect(toast).toContainText("Energy target 2,000 kcal → 2,620 kcal");
+  await expect.poll(() => energyTarget(request, pid)).toBe(2620);
   await toast.getByRole("button", { name: "Undo" }).click();
   await expect.poll(() => energyTarget(request, pid)).toBe(2000);
-  await expect(
-    section.getByRole("button", { name: "Energy target → 2,770 kcal" }),
-  ).toBeVisible();
 });
 
 test("a Summary nutrient opens the foods it came from", async ({
@@ -214,21 +289,21 @@ test("a Summary nutrient opens the foods it came from", async ({
   const { day, tag } = unique(403, testInfo);
   const salty = await food(request, {
     name: `Salty ${tag}`,
-    per100: { sodium: 1000 },
+    per100: { energy: 100, sodium: 1000 },
   });
   const mild = await food(request, {
     name: `Mild ${tag}`,
-    per100: { sodium: 1000 },
+    per100: { energy: 100, sodium: 1000 },
   });
   await entry(request, {
     day,
-    group: "Consumed",
+    group: "Eaten",
     food_id: salty.id,
     grams: 300,
   });
   await entry(request, {
     day,
-    group: "Consumed",
+    group: "Eaten",
     food_id: mild.id,
     grams: 100,
   });
@@ -236,8 +311,16 @@ test("a Summary nutrient opens the foods it came from", async ({
   await entry(request, { day, group: "Planned", food_id: mild.id, grams: 900 });
 
   await page.goto(`/#/summary/food/week/${day}`);
-  await page.getByText("Other nutrients").click();
-  await page.getByRole("link", { name: "Salt", exact: true }).click();
+  // Salt is one of the highlighted averages, its name a link to where it
+  // came from.
+  await page
+    .locator(".daily-averages")
+    .getByRole("button", { name: "Highlighted" })
+    .click();
+  await page
+    .locator(".daily-averages :not([inert]) > .target")
+    .getByRole("link", { name: "Salt" })
+    .click();
   await expect(
     page.getByRole("heading", { name: "Where salt comes from" }),
   ).toBeVisible();
@@ -248,10 +331,10 @@ test("a Summary nutrient opens the foods it came from", async ({
   await expect(rows.nth(1)).toContainText(`Mild ${tag}`);
   await expect(rows.nth(1)).toContainText("25 %");
   await page.getByRole("link", { name: "Back" }).click();
-  await expect(page).toHaveURL(new RegExp(`#/summary/food/week/${day}$`));
+  await expect(page).toHaveURL(new RegExp(`#/summary/food/week/${day}$`, "u"));
 });
 
-test("the Summary lists the period's notes, measurements and plans", async ({
+test("the Summary lists the period's notes and plans, and charts its measurements", async ({
   page,
   request,
 }, testInfo) => {
@@ -275,18 +358,55 @@ test("the Summary lists the period's notes, measurements and plans", async ({
   });
   expect(plan.ok()).toBeTruthy();
 
-  await page.goto("/#/summary/training/week/2025-01-06");
+  await page.goto("/#/summary/activity/week/2025-01-06");
   await expect(
-    page.getByRole("list", { name: "Workouts" }).getByRole("listitem"),
-  ).toHaveText(["0 workouts", "1 planned"]);
+    page.getByRole("list", { name: "Activities" }).locator(".tile"),
+  ).toHaveText(["0 activities", "1 planned"]);
   await page.goto("/#/summary/body/week/2025-01-06");
-  const measures = page.locator("ul.measurements li");
-  await expect(measures).toHaveText([
-    "Waist82 cm → 80.5 cm (−1.5 cm)",
-    "Hips98 cm on Jan 8",
-  ]);
+  // Measurements chart in the body switch: waist's two, hips' one in words.
+  const section = page.locator("section.weight");
+  await expect(
+    section.getByRole("heading", { name: "Waist by day" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("radiogroup", { name: "Chart" }).getByRole("radio"),
+  ).toHaveText(["Waist", "Hips"]);
+  await page
+    .getByRole("radiogroup", { name: "Chart" })
+    .getByRole("radio", { name: "Hips" })
+    .click();
+  await expect(section.getByText(/^Hips: 98\scm on Jan 8$/u)).toBeVisible();
   const note = page.locator("ul.notes li");
   await expect(note).toContainText(`Slept badly ${tag}`);
   await note.getByRole("link").click();
-  await expect(page).toHaveURL(/#\/day\/2025-01-07$/);
+  await expect(page).toHaveURL(/#\/day\/2025-01-07$/u);
+});
+
+// A rate is judged as it reads. A steady +0.035 kg a week
+// with no scatter is "clear" in kg, but reads ±0.0: no clear change, its
+// margin never "± 0".
+test("a clear rate that rounds to ±0 reads No clear change; a tiny margin < 0.01", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { tag } = unique(1144, testInfo);
+  const pid = await ownProfile(page, request, `Steady ${tag}`);
+  // Every second day of March 2025: +0.01 kg each, a straight line.
+  for (let i = 0; i < 15; i += 1)
+    await weigh(
+      request,
+      pid,
+      `2025-03-${String(1 + 2 * i).padStart(2, "0")}`,
+      Math.round((80 + 0.01 * i) * 100) / 100,
+    );
+  await page.goto("/#/summary/body/month/2025-03-10");
+  const tiles = page
+    .locator("section.finder-section", {
+      has: page.getByRole("heading", { name: "Weight" }),
+    })
+    .getByRole("list", { name: "Weight" })
+    .locator(".tile");
+  await expect(tiles.first()).toHaveText(
+    /^No clear change a week, ±\s<\s0\.01\skg$/u,
+  );
 });

@@ -2,7 +2,7 @@
 // Monday-first grids. No DOM here, so `node --test` covers it.
 
 import { shift, weekStart } from "./dates.mjs";
-import { NBSP, fmt } from "./nutrients.mjs";
+import { fmt, NBSP } from "./format.mjs";
 
 // The shade of `amount`: 0 for none, else 1–4 by `bounds` (each step's
 // largest amount; above the last is 4).
@@ -19,9 +19,22 @@ export function quartiles(amounts) {
   const sorted = amounts.filter((a) => a > 0).toSorted((a, b) => a - b);
   const distinct = [...new Set(sorted)];
   if (distinct.length < 4)
-    return [...Array(4 - distinct.length).fill(0), ...distinct].slice(0, 3);
+    return [
+      ...Array.from({ length: 4 - distinct.length }, () => 0),
+      ...distinct,
+    ].slice(0, 3);
   return [1, 2, 3].map((k) => sorted[Math.ceil((k * sorted.length) / 4) - 1]);
 }
+
+// A cell's amount, whole and grouped as every number on screen ("1,087"),
+// compact from 10,000 so it fits a phone's cell ("10.5K"; its label says
+// it whole).
+const COMPACT = new Intl.NumberFormat(undefined, {
+  notation: "compact",
+  maximumFractionDigits: 1,
+});
+export const cellAmount = (v) =>
+  Math.abs(v) >= 10_000 ? COMPACT.format(v) : fmt(Math.round(v));
 
 const pad = (n) => String(n).padStart(2, "0");
 
@@ -32,7 +45,7 @@ export function monthGrid(ym) {
   const lead = (new Date(y, m - 1, 1).getDay() + 6) % 7;
   const length = new Date(y, m, 0).getDate();
   const cells = [
-    ...Array(lead).fill(null),
+    ...Array.from({ length: lead }, () => null),
     ...Array.from({ length }, (_, i) => `${ym}-${pad(i + 1)}`),
   ];
   while (cells.length % 7) cells.push(null);

@@ -3,36 +3,39 @@
 // covers it.
 
 import { step } from "./calendar-grid.mjs";
+import { isNil } from "./format.mjs";
+import { judge } from "./nutrients.mjs";
 
-const isNil = (v) => v === null || v === undefined;
-
-// "on", "under" or "over" `target` ({value, min, max}), as the diary's
-// target bars judge it: over past `max`, under below `min`, else on (an
-// "about" target's max is 10 % over; "at most" has no min, "at least" no
-// max). null without a target.
-export function judge(amount, target) {
-  if (isNil(target?.value)) return null;
-  if (!isNil(target.max) && amount > target.max) return "over";
-  if (!isNil(target.min) && amount < target.min) return "under";
-  return "on";
+// How `amount` stands against `target` (judge's "on", "over", "under"),
+// as far as it's proven. A `floor` (a partly known day: the truth is at
+// least this) proves an excess, and an "at least" minimum met; under, or a
+// range's minimum met, may not hold once the rest is known: null.
+export function standing(amount, target, floor = false) {
+  const j = judge(amount, target);
+  if (!floor || j === "over") return j;
+  return j === "on" && isNil(target.max) ? "on" : null;
 }
 
 // A logged day's shade: on target 4, under 1–3 by how close, over 0 (the
-// cell is outlined); without a target, its step of `bounds` (quartiles).
-export function shade(amount, target, bounds) {
-  const j = judge(amount, target);
-  if (j === null) return step(amount, bounds);
+// cell is outlined), a floor proving neither 0; without a target, its
+// step of `bounds` (quartiles).
+export function shade(amount, target, bounds, floor = false) {
+  if (isNil(target?.value)) return step(amount, bounds);
+  const j = standing(amount, target, floor);
   if (j === "on") return 4;
-  if (j === "over") return 0;
+  if (j !== "under") return 0;
   // Under: by share of the minimum, ≥ 75 % 3, ≥ 50 % 2, any 1.
   const share = amount / target.min;
   return share >= 0.75 ? 3 : share >= 0.5 ? 2 : share > 0 ? 1 : 0;
 }
 
-// The logged days' `amounts` against `target`: how many on, over and
-// under, the total and the mean a day.
-export function tally(amounts, target) {
-  const count = (j) => amounts.filter((a) => judge(a, target) === j).length;
+// The logged days' `amounts` against `target` (`floors[i]` when day i is
+// partly known): how many on, over and under as far as proven, the total
+// and the mean a day, and whether any is a floor (`partly`: the total and
+// mean are floors too).
+export function tally(amounts, target, floors = []) {
+  const count = (j) =>
+    amounts.filter((a, i) => standing(a, target, floors[i]) === j).length;
   const total = amounts.reduce((t, a) => t + a, 0);
   return {
     days: amounts.length,
@@ -40,6 +43,25 @@ export function tally(amounts, target) {
     over: count("over"),
     under: count("under"),
     total,
-    mean: amounts.length ? total / amounts.length : 0,
+    mean: amounts.length > 0 ? total / amounts.length : 0,
+    partly: amounts.some((_, i) => Boolean(floors[i])),
   };
+}
+
+// What a day's label adds after its amount: ", on target", ", over",
+// ", 380 kcal under" (`say` writes an amount). A floor says only what it
+// proves (standing), then ", minimum met" or, `known` (KNOWN of it
+// behind the floor, ADR 0030), ", at most 380 kcal under"; else nothing.
+export function verdictWords(
+  amount,
+  target,
+  { floor = false, known = true, say },
+) {
+  const j = standing(amount, target, floor);
+  if (j === "on") return ", on target";
+  if (j === "over") return ", over";
+  if (j === "under") return `, ${say(target.min - amount)} under`;
+  if (!floor || isNil(target?.value) || isNil(target.min)) return "";
+  if (amount >= target.min) return ", minimum met";
+  return known ? `, at most ${say(target.min - amount)} under` : "";
 }

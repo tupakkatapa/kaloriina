@@ -45,7 +45,8 @@ async fn trackers_follow_the_contract() {
     let uri = format!("{HABITS}/{}", snus["id"]);
 
     // An edit names its rev: missing is 400 `rev`, old is 409 `stale`.
-    let edit = json!({ "name": "Snus", "unit": "pouch", "goal_value": 10, "archived": true });
+    let edit = json!({ "name": "Snus", "unit": "pouch", "goal_value": 10, "goal_dir": "at_most",
+                       "archived": true });
     let (status, res) = call(&app, "PUT", &uri, Some(edit.clone())).await;
     assert_eq!(
         (status, &res["field"]),
@@ -69,7 +70,12 @@ async fn trackers_follow_the_contract() {
         (status, &res["code"]),
         (StatusCode::CONFLICT, &json!("stale"))
     );
+}
 
+#[tokio::test]
+async fn tracker_names_are_unique_and_profiles_kept_apart() {
+    let app = app();
+    let snus = tracker(&app, 1, "Snus").await;
     // Names are unique per profile, ignoring case.
     let (status, res) = call(
         &app,
@@ -110,7 +116,10 @@ async fn trackers_follow_the_contract() {
         (
             "PUT",
             format!("/api/profiles/{anna}/habits/{}", snus["id"]),
-            Some(json!({ "name": "X", "unit": "x", "rev": 2 })),
+            Some(
+                json!({ "name": "X", "unit": "x", "goal_value": null, "goal_dir": "at_most",
+                         "archived": false, "rev": 2 }),
+            ),
         ),
         (
             "DELETE",
@@ -253,9 +262,9 @@ async fn day_counts_are_idempotent_totals() {
     assert_eq!(
         days,
         json!([
-            { "habit": snus["id"].to_string(), "day": "2026-10-05", "amount": 2.5 },
-            { "habit": snus["id"].to_string(), "day": DAY, "amount": 4.0 },
-            { "habit": coffee["id"].to_string(), "day": DAY, "amount": 999.0 },
+            { "habit": snus["id"].to_string(), "day": "2026-10-05", "amount": 2.5, "known": true },
+            { "habit": snus["id"].to_string(), "day": DAY, "amount": 4.0, "known": true },
+            { "habit": coffee["id"].to_string(), "day": DAY, "amount": 999.0, "known": true },
         ])
     );
     let (_, days) = call(
@@ -318,7 +327,7 @@ async fn deleting_days_and_trackers() {
     let (_, days) = call(&app, "GET", &format!("{HABITS}/days"), None).await;
     assert_eq!(
         days,
-        json!([{ "habit": coffee["id"].to_string(), "day": DAY, "amount": 999.0 }])
+        json!([{ "habit": coffee["id"].to_string(), "day": DAY, "amount": 999.0, "known": true }])
     );
     let (status, res) = call(&app, "DELETE", &format!("{HABITS}/{}", snus["id"]), None).await;
     assert_eq!(
@@ -428,12 +437,12 @@ async fn eat_a_mixed_day(app: &Router) {
     )
     .await;
 
-    log_entry_on(app, DAY, "Consumed", apple, 200.0).await;
-    log_entry_on(app, DAY, "Consumed", compote, 100.0).await;
-    log_entry_on(app, DAY, "Consumed", bowl, 200.0).await;
-    log_entry_on(app, DAY, "Consumed", pie, 80.0).await;
-    log_entry_on(app, DAY, "Consumed", beer, 600.0).await;
-    log_entry_on(app, DAY, "Consumed", cola, 330.0).await;
+    log_entry_on(app, DAY, "Eaten", apple, 200.0).await;
+    log_entry_on(app, DAY, "Eaten", compote, 100.0).await;
+    log_entry_on(app, DAY, "Eaten", bowl, 200.0).await;
+    log_entry_on(app, DAY, "Eaten", pie, 80.0).await;
+    log_entry_on(app, DAY, "Eaten", beer, 600.0).await;
+    log_entry_on(app, DAY, "Eaten", cola, 330.0).await;
     // Planned isn't eaten.
     log_entry_on(app, DAY, "Planned", cola, 500.0).await;
     log_entry_on(app, "2026-10-05", "Planned", apple, 500.0).await;
@@ -481,11 +490,10 @@ async fn builtin_days_from_nutrients_and_categories() {
     near("alcohol", 24.0);
     near("caffeine", 0.0);
     near("salt", 30.0);
-    assert_eq!(
-        row("processed_meat", DAY),
-        None,
-        "categories only when eaten"
-    );
+    near("creatine", 0.0);
+    // Every food day has every built-in, 0 when none (H3: a category's
+    // 0 is known only once every food eaten has a category).
+    assert_eq!(row("processed_meat", DAY), Some(0.0));
     // Planned only: no food eaten that day, so no built-in rows.
     assert_eq!(row("water", "2026-10-05"), None);
     assert_eq!(row("fruit_veg", "2026-10-05"), None);
@@ -506,9 +514,12 @@ async fn builtin_days_from_nutrients_and_categories() {
             "caffeine",
             "added_sugars",
             "salt",
+            "creatine",
             "sweets_snacks",
+            "fast_food",
             "sugary_drinks",
-            "fruit_veg"
+            "fruit_veg",
+            "processed_meat"
         ]
     );
 
@@ -538,12 +549,12 @@ async fn builtin_days_from_nutrients_and_categories() {
 async fn a_users_category_moves_the_days_amounts_and_meta_describes_the_builtins() {
     let app = app();
     let cola = food_of(&app, "Cola", json!("sugary_drinks"), json!({})).await;
-    log_entry_on(&app, DAY, "Consumed", cola, 330.0).await;
+    log_entry_on(&app, DAY, "Eaten", cola, 330.0).await;
     let has_drinks = |days: &Value| {
         days.as_array()
             .unwrap()
             .iter()
-            .any(|r| r["habit"] == "sugary_drinks")
+            .any(|r| r["habit"] == "sugary_drinks" && r["amount"].as_f64() > Some(0.0))
     };
     let uri = format!("{HABITS}/days?from={DAY}&to={DAY}");
     let (_, days) = call(&app, "GET", &uri, None).await;
@@ -567,8 +578,219 @@ async fn a_users_category_moves_the_days_amounts_and_meta_describes_the_builtins
     assert_eq!(fruit["metric"], "category:fruit_veg");
     assert_eq!(fruit["goal_dir"], "at_least");
     assert_eq!(fruit["source"], json!({ "category": "fruit_veg" }));
+    let habits = meta["habits"].as_array().unwrap();
+    let at = |key: &str| habits.iter().position(|h| h["key"] == key).unwrap();
+    assert_eq!(at("creatine"), at("salt") + 1, "the last nutrient built-in");
+    let creatine = &habits[at("creatine")];
+    assert_eq!(creatine["metric"], "creatine");
+    assert_eq!(creatine["unit"], "g");
+    assert_eq!(creatine["goal_dir"], "at_least");
+    assert_eq!(creatine["per"], "day");
+    assert_eq!(creatine["source"], json!({ "nutrient": "creatine" }));
     assert_eq!(
         meta["food_categories"][3],
         json!({ "key": "fruit_veg", "label": "Fruit and vegetables" })
     );
+}
+
+/// Caffeine is known by the drinks that could hold it, not by
+/// energy: coffee with its caffeine set beside a day of food without any
+/// is known; a caffeine drink without its value makes the day unknown.
+#[tokio::test]
+async fn caffeine_is_known_by_its_drinks_not_energy() {
+    let app = app();
+    let coffee = food_of(
+        &app,
+        "Coffee",
+        Value::Null,
+        json!({ "energy": 2, "caffeine": 40, "water": 99 }),
+    )
+    .await;
+    let bread = food_of(&app, "Bread", Value::Null, json!({ "energy": 250 })).await;
+    let cola = food_of(
+        &app,
+        "Cola",
+        json!("sugary_drinks"),
+        json!({ "energy": 40 }),
+    )
+    .await;
+    log_entry_on(&app, DAY, "Eaten", coffee, 400.0).await;
+    log_entry_on(&app, DAY, "Eaten", bread, 300.0).await;
+    log_entry_on(&app, "2026-10-05", "Eaten", coffee, 200.0).await;
+    log_entry_on(&app, "2026-10-05", "Eaten", cola, 500.0).await;
+    let uri = format!("{HABITS}/days?from=2026-10-05&to={DAY}");
+    let (_, days) = call(&app, "GET", &uri, None).await;
+    let caffeine = |day: &str| {
+        days.as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["habit"] == "caffeine" && r["day"] == day)
+            .unwrap_or_else(|| panic!("no caffeine on {day} in {days}"))
+            .clone()
+    };
+    // 1 % of the day's energy carried caffeine, all of what was drunk.
+    assert_eq!(caffeine(DAY)["amount"], 160.0);
+    assert_eq!(caffeine(DAY)["known"], true);
+    // A cola without its caffeine: 200 of 700 g drunk known, a floor.
+    assert_eq!(caffeine("2026-10-05")["amount"], 80.0);
+    assert_eq!(caffeine("2026-10-05")["known"], false);
+}
+
+/// One coverage model for the built-ins. A day of pizza
+/// and a diet cola is sober and known (neither could hold alcohol); a
+/// creatine supplement's day knows its creatine (it has no energy); a
+/// cola with no category leaves sugary drinks a floor.
+#[tokio::test]
+async fn alcohol_creatine_and_categories_are_known_by_what_could_hold_them() {
+    let app = app();
+    let pizza = food_of(
+        &app,
+        "Mexicana pizza",
+        Value::Null,
+        json!({ "energy": 250, "water": 50, "sodium": 600 }),
+    )
+    .await;
+    let (_, pepsi) = call(
+        &app,
+        "POST",
+        "/api/foods",
+        Some(json!({ "name": "Pepsi Max", "per100": { "energy": 0.3, "net_carbs": 0, "caffeine": 12 },
+                     "servings": [{ "label": "0,5 l bottle", "grams": 500.0 }] })),
+    )
+    .await;
+    let creatine = food_of(
+        &app,
+        "Creatine monohydrate",
+        Value::Null,
+        json!({ "energy": 0, "creatine": 100 }),
+    )
+    .await;
+    let juice = food_of(
+        &app,
+        "Orange juice",
+        json!("sugary_drinks"),
+        json!({ "energy": 45, "water": 88 }),
+    )
+    .await;
+    log_entry_on(&app, DAY, "Eaten", pizza, 300.0).await;
+    log_entry_on(&app, DAY, "Eaten", pepsi["id"].as_i64().unwrap(), 1000.0).await;
+    log_entry_on(&app, DAY, "Eaten", creatine, 3.0).await;
+    log_entry_on(&app, DAY, "Eaten", juice, 200.0).await;
+    let uri = format!("{HABITS}/days?from={DAY}&to={DAY}");
+    let (_, days) = call(&app, "GET", &uri, None).await;
+    let row = |habit: &str| {
+        let r = days
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["habit"] == habit)
+            .unwrap_or_else(|| panic!("no {habit} in {days}"));
+        (r["amount"].as_f64().unwrap(), r["known"].as_bool().unwrap())
+    };
+    assert_eq!(row("alcohol"), (0.0, true), "{days}");
+    assert_eq!(row("caffeine"), (120.0, true), "{days}");
+    assert_eq!(row("creatine"), (3.0, true), "{days}");
+    // The pizza and the cola have no category: the juice's is a floor.
+    assert_eq!(row("sugary_drinks"), (200.0, false), "{days}");
+}
+
+#[tokio::test]
+async fn creatine_counts_from_food() {
+    let app = app();
+    let tub = food_of(&app, "Creatine", Value::Null, json!({ "creatine": 100.0 })).await;
+    log_entry_on(&app, DAY, "Eaten", tub, 3.0).await;
+
+    let uri = format!("{HABITS}/days?from={DAY}&to={DAY}");
+    let (_, days) = call(&app, "GET", &uri, None).await;
+    let creatine = days
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["habit"] == "creatine")
+        .unwrap_or_else(|| panic!("no creatine row in {days}"));
+    assert_eq!(creatine["amount"], 3.0);
+
+    let (_, day) = call(&app, "GET", &format!("/api/profiles/1/day/{DAY}"), None).await;
+    let held = day["builtins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["habit"] == "creatine")
+        .unwrap_or_else(|| panic!("no creatine in {day}"));
+    assert_eq!(held["amount"], 3.0);
+}
+
+#[tokio::test]
+async fn hydration_takes_alcohol_off_capped_at_each_entrys_water() {
+    // Water from food and drink, less 10 ml a gram of alcohol, never below
+    // the entry's own water: beer still hydrates, a spirit counts nothing.
+    let app = app();
+    let beer = food_of(
+        &app,
+        "Beer",
+        Value::Null,
+        json!({ "water": 90, "alcohol": 4 }),
+    )
+    .await;
+    let vodka = food_of(
+        &app,
+        "Vodka",
+        Value::Null,
+        json!({ "water": 60, "alcohol": 33 }),
+    )
+    .await;
+    let tea = food_of(&app, "Tea", Value::Null, json!({ "water": 99.5 })).await;
+    log_entry_on(&app, DAY, "Eaten", beer, 500.0).await;
+    log_entry_on(&app, DAY, "Eaten", vodka, 40.0).await;
+    log_entry_on(&app, DAY, "Eaten", tea, 200.0).await;
+
+    let uri = format!("{HABITS}/days?from={DAY}&to={DAY}");
+    let (_, days) = call(&app, "GET", &uri, None).await;
+    let water = days
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["habit"] == "water")
+        .unwrap_or_else(|| panic!("no water row in {days}"));
+    // Beer 450 − 200, vodka 24 − 132 → 0, tea 199.
+    let got = water["amount"].as_f64().unwrap();
+    assert!((got - 449.0).abs() < 1e-9, "{got}");
+
+    let (_, meta) = call(&app, "GET", "/api/meta", None).await;
+    let hydration = &meta["habits"][0];
+    assert_eq!(
+        (&hydration["key"], &hydration["name"], &hydration["metric"]),
+        (&json!("water"), &json!("Hydration"), &json!("water"))
+    );
+    assert_eq!(hydration["source"], "hydration");
+}
+
+/// A habit's uid is its profile's: the same uid again answers
+/// the first habit, and another profile's habit may carry it too.
+#[tokio::test]
+async fn a_habit_uid_answers_the_first_within_its_profile() {
+    let app = app();
+    let body = json!({ "name": "Snus", "unit": "pouches", "uid": "habit-uid-0001" });
+    let (status, first) = call(&app, "POST", HABITS, Some(body.clone())).await;
+    assert_eq!(status, StatusCode::CREATED, "{first}");
+    let (status, again) = call(&app, "POST", HABITS, Some(body.clone())).await;
+    assert_eq!(status, StatusCode::CREATED, "{again}");
+    assert_eq!(again["id"], first["id"]);
+    let (_, list) = call(&app, "GET", HABITS, None).await;
+    assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
+
+    let (_, anna) = call(
+        &app,
+        "POST",
+        "/api/profiles",
+        Some(
+            json!({ "name": "Anna", "sex": null, "birth_date": null, "height_cm": null,
+                     "activity": null, "goal_kg_per_week": 0.0 }),
+        ),
+    )
+    .await;
+    let uri = format!("/api/profiles/{}/habits", anna["id"]);
+    let (status, hers) = call(&app, "POST", &uri, Some(body)).await;
+    assert_eq!(status, StatusCode::CREATED, "{hers}");
+    assert_ne!(hers["id"], first["id"]);
 }

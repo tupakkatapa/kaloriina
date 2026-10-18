@@ -1,24 +1,32 @@
 // The Foods tab, and the editors of foods, recipes and meals.
 
-import { api, get, meta } from "../api.mjs";
+import { copyForm, saveOnce } from "../actions.mjs";
+import { amountControl, byVolume, PORTION, weightText } from "../amount.mjs";
+import { api, get, meta, scoped } from "../api.mjs";
+import { recipeKnown, recipePer100, wholeOf } from "../coverage.mjs";
 import { today } from "../dates.mjs";
+import { isNil, NBSP, PER_100G, plural, qty } from "../format.mjs";
+import { weightGuessed } from "../health.mjs";
 import { go, href, safeBack } from "../nav.mjs";
 import {
-  KJ_PER_KCAL,
-  MAIN,
   byCategory,
-  fmtNum,
+  guessed,
   inputValue,
-  isNil,
+  mainKeys,
+  netFromTotal,
   nutrient,
   ordered,
-  qty,
-  recipePer100,
+  per100Basis,
+  per100Of,
   registry,
   scaled,
-  summed,
+  shownEnergy,
+  typedCarbs,
   withUnit,
 } from "../nutrients.mjs";
+import { nutritionPanel } from "../nutrition-panel.mjs";
+import { favoriteStar, foodRow, searchFoods } from "../rows.mjs";
+import { servingsEditor } from "../servings.mjs";
 import {
   busy,
   confirmDialog,
@@ -26,15 +34,17 @@ import {
   field,
   fill,
   h,
+  nameInput,
   notify,
   num,
   numberOrNull,
-  nutritionPanel,
   picker,
   POSITIVE,
+  removeButton,
   titleBar,
 } from "../ui.mjs";
-import { finder, foodRow, searchFoods } from "./finder.mjs";
+import { labelStyle } from "../units.mjs";
+import { finder } from "./finder.mjs";
 
 export async function foods() {
   return h(
@@ -52,155 +62,90 @@ export async function foods() {
   );
 }
 
-// A recipe's serving of all of it, and of one portion when it makes some;
-// the server keeps their grams at the recipe's weight (÷ portions).
-const WHOLE = "Whole recipe";
-const PORTION = "Portion";
+// What uses a food or recipe (`/foods/{id}/usage`), or null when that can't
+// be read (offline): the questions below only inform (the save says how many
+// diary entries it changed), so then none is asked.
+const usageOf = (id) => get(`/foods/${id}/usage`).catch(() => null);
 
-// A fixed row's label, or null for one of yours.
-const fixedOf = (row) => row.dataset.fixed ?? null;
-// Where a serving row says it's the default, or offers to become it.
-const slot = () => h("span", { class: "default" });
+// "2 recipes and 1 meal": what holds it, or "" for nothing.
+const holders = (n) =>
+  [
+    n.recipes ? plural(n.recipes, "recipe") : null,
+    n.meals ? plural(n.meals, "meal") : null,
+  ]
+    .filter(Boolean)
+    .join(" and ");
 
-// Servings in order; the first is the default (logging and ingredients
-// start from it), and "Set default" moves one there. With `whole` (a
-// recipe: its weight now), a fixed "Whole recipe" row is kept too, and a
-// fixed "Portion" row while `portion()` (its grams) isn't null.
-function servingsEditor(initial, whole = null, portion = () => null) {
-  const list = h("div", { class: "servings" });
-  // A portion row is hidden, not removed, while `makes` is blank: it keeps
-  // its place.
-  const rows = () => [...list.children].filter((row) => !row.hidden);
-  // The first row says it's the default; the others offer to become it.
-  const mark = () => {
-    for (const [i, row] of rows().entries()) {
-      const name =
-        fixedOf(row) ??
-        (row.querySelector("input").value.trim() || "this serving");
-      fill(
-        row.querySelector(".default"),
-        i === 0
-          ? h("span", { class: "muted" }, "Default")
-          : h(
-              "button",
-              {
-                type: "button",
-                class: "link",
-                "aria-label": `Make ${name} the default`,
-                onclick: () => {
-                  list.prepend(row);
-                  mark();
-                  list.dispatchEvent(new Event("input", { bubbles: true }));
-                },
-              },
-              "Set default",
-            ),
-      );
-    }
-  };
-  const addRow = (s = { label: "", grams: "" }) => {
-    const row = h(
-      "div",
-      { class: "serving" },
-      h("input", {
-        name: "serving-label",
-        value: s.label,
-        placeholder: "e.g. Slice",
-        maxLength: meta.limits.label,
-        "aria-label": "Serving name",
-      }),
-      num({
-        name: "serving-grams",
-        value: s.grams,
-        min: POSITIVE,
-        placeholder: "grams",
-        "aria-label": "Serving grams",
-      }),
-      h("span", {}, "g"),
-      slot(),
-      h(
-        "button",
-        {
-          type: "button",
-          class: "danger icon",
-          "aria-label": "Remove serving",
-          onclick: () => {
-            row.remove();
-            mark();
-            list.dispatchEvent(new Event("input", { bubbles: true }));
-          },
-        },
-        "✕",
-      ),
-    );
-    list.append(row);
-    mark();
-  };
-  // Fixed rows by label: their grams now.
-  const sizes = { [WHOLE]: () => whole(), [PORTION]: () => portion() };
-  const addFixed = (label) =>
-    list.append(
-      h(
-        "div",
-        { class: "serving", "data-fixed": label },
-        h("span", { class: "name" }, label),
-        h("span", { class: "grams" }),
-        h("span", {}, "g"),
-        slot(),
-        h("span", {}),
-      ),
-    );
-  // The whole recipe goes first unless another serving was the default.
-  if (whole && !initial.some((x) => x.label === WHOLE)) addFixed(WHOLE);
-  for (const x of initial)
-    if (whole && x.label in sizes) addFixed(x.label);
-    else addRow(x);
-  list.addEventListener("input", mark);
-  // A new portion goes last, as the server adds it.
-  const refresh = () => {
-    if (whole) {
-      const row = list.querySelector(`[data-fixed="${PORTION}"]`);
-      if (row) row.hidden = portion() === null;
-      else if (portion() !== null) addFixed(PORTION);
-      for (const r of rows().filter(fixedOf))
-        r.querySelector(".grams").textContent = fmtNum(sizes[fixedOf(r)]());
-    }
-    mark();
-  };
-  refresh();
-  const node = h(
-    "fieldset",
-    {},
-    h("legend", {}, "Servings"),
-    list,
-    h("button", { type: "button", onclick: () => addRow() }, "+ Serving"),
-  );
-  const value = () =>
-    rows()
-      .map((row) =>
-        fixedOf(row)
-          ? // Placed, not sized: the server sets the grams.
-            { label: fixedOf(row), grams: 1 }
-          : {
-              label: row.querySelector("input").value.trim(),
-              // 0, not null: an untouched row (no label, no grams) is dropped.
-              grams: numberOrNull(row.querySelector("input[type=number]")) ?? 0,
-            },
-      )
-      // Drop untouched rows; partial ones reach the API and get an error.
-      .filter((x) => x.label || x.grams);
-  return { node, value, refresh };
+// "Logged 12 times and used in 2 recipes.", or "" when nothing uses it.
+const usedText = (n) => {
+  const text = [
+    n.entries ? `logged ${plural(n.entries, "time")}` : null,
+    holders(n) ? `used in ${holders(n)}` : null,
+  ]
+    .filter(Boolean)
+    .join(" and ");
+  return text && `${text[0].toUpperCase()}${text.slice(1)}.`;
+};
+
+// Before saving food or recipe `id` (`name`) with its values changed
+// (`changed`) or servings removed (`gone`, their labels): say what that does
+// to what uses it, and ask. Diary entries keep their amounts but follow the
+// food's values, so only changed values matter to them; recipes and meals
+// follow the food too, and an item measured in a removed serving keeps its
+// grams. True to save.
+async function confirmChange(id, name, { changed, gone, recipe }) {
+  if (!changed && gone.length === 0) return true;
+  const n = await usageOf(id);
+  const held = n ? holders(n) : "";
+  if (!n || !(held || (changed && n.entries))) return true;
+  const one = n.recipes + n.meals === 1;
+  return confirmDialog(`Save changes to ${name}?`, {
+    detail: [
+      usedText(n),
+      changed && n.entries
+        ? "Diary entries with this food follow its values."
+        : null,
+      changed && held ? `The ${held} will use the new values.` : null,
+      held && gone.length > 0
+        ? `Items measured in ${gone.join(", ")} keep their grams.`
+        : null,
+      recipe && held
+        ? `To leave ${one ? "it as it is" : "them as they are"}, Cancel and use Copy: it saves your changes as a new recipe.`
+        : null,
+    ]
+      .filter(Boolean)
+      .join(" "),
+    confirm: "Save",
+    danger: false,
+  });
 }
 
-// Archiving instead of deleting: foods stay behind the history that logged
-// them, so they're hidden from search, not removed. `put(change)` saves the
-// change; the editor is then shown afresh.
+// Labels of `before`'s servings `after` no longer has.
+const goneServings = (before, after) =>
+  before
+    .map((s) => s.label)
+    .filter((label) => !after.some((s) => s.label === label));
+
+// Archiving instead of deleting: a food in use stays behind what uses it,
+// so it's hidden from search, not removed. `put(change)` saves the change;
+// the editor is then shown afresh. Archiving one in use asks first.
 function archiveButton(food, put, shell) {
   return h(
     "button",
     {
       type: "button",
       onclick: busy(async () => {
+        const n = food.archived ? null : await usageOf(food.id);
+        if (
+          n &&
+          usedText(n) &&
+          !(await confirmDialog(`Archive ${food.name}?`, {
+            detail: `${usedText(n)} Archiving hides it from search; your diary, recipes and meals keep it.`,
+            confirm: "Archive",
+            danger: false,
+          }))
+        )
+          return;
         const saved = await put({ archived: !food.archived });
         shell().markClean();
         go(location.hash);
@@ -213,6 +158,43 @@ function archiveButton(food, put, shell) {
     },
     food.archived ? "Unarchive" : "Archive",
   );
+}
+
+// Delete or Archive, by what the server says of food `id` (`usage`, null
+// offline: archived then): nothing but favourites using it, it's deleted
+// (they go with it); else it's archived, or unarchived. `put` as
+// `archiveButton`'s.
+const removal = (food, usage, put, shell) => ({
+  secondary:
+    usage?.deletable && !food.archived ? [] : [archiveButton(food, put, shell)],
+  remove: usage?.deletable
+    ? {
+        ask: `Delete ${food.name}?`,
+        detail: usage.favorites ? "It leaves your favourites too." : null,
+        run: () => api("DELETE", `/foods/${food.id}`),
+        after: href.foods(),
+        done: `Deleted ${food.name}`,
+      }
+    : null,
+});
+
+// Per-100 g values within what 100 g can hold (`meta.limits.per100_max`,
+// by stored unit), as the server checks them: the first over it is thrown
+// at its field, so the form says so before it asks anything.
+// `basis` is the serving they were typed per, if any.
+function checkCaps(per100, basis) {
+  for (const [key, v] of Object.entries(per100)) {
+    const { unit } = meta.nutrients.find((n) => n.key === key);
+    const max = meta.limits.per100_max[unit];
+    if (v <= max) continue;
+    const n = nutrient(key);
+    throw Object.assign(
+      new Error(
+        `${n.label} must be at most ${qty(n.show(max), n.unit)} per 100${NBSP}g${basis ? `; check the weight of “${basis}”` : ""}`,
+      ),
+      { field: key },
+    );
+  }
 }
 
 // Merging a duplicate into this food or recipe starts here.
@@ -246,36 +228,72 @@ const categorySelect = (value) =>
     ),
   );
 
+// The current profile's targets, for what 100 kcal gives: `paint(targets)`
+// once they arrive, so an editor neither waits nor fails for them (none
+// shown when they can't be read).
+const withTargets = (paint) => get(scoped("/targets")).then(paint, () => {});
+
+// A sugary drink is a drink of itself, as the server derives it
+// (src/model/food.rs `drink_by_kind`).
+const DRINK = "sugary_drinks";
+
+// One carbohydrate is typed, as the label reads it (net on the EU label,
+// total on the US one); the other follows from it and fibre. Nor is any
+// nutrient the server sums (`derived`: EPA+DHA) typed.
+const isTyped = (n) =>
+  (!["carbs", "net_carbs"].includes(n.key) || n.key === typedCarbs()) &&
+  !n.derived;
+
+// An input's value: energy whole in kJ, as everywhere it shows (an
+// untouched field still saves the kcal it had); the rest as `inputValue`.
+const shownValue = (key, stored) =>
+  key === "energy" && nutrient(key).unit === "kJ" && !isNil(stored)
+    ? String(shownEnergy(stored))
+    : inputValue(key, stored);
+
 export async function foodEditor(id, params) {
   const isNew = id === "new";
-  const food = isNew
-    ? {
-        name: params.get("name") ?? "",
-        brand: "",
-        barcode: params.get("barcode") ?? "",
-        per100: {},
-        servings: [],
-        archived: false,
-      }
-    : await get(`/foods/${id}`);
-  if (food.source === "recipe") {
+  const [food, usage] = await Promise.all([
+    isNew
+      ? {
+          name: params.get("name") ?? "",
+          brand: "",
+          barcode: params.get("barcode") ?? "",
+          per100: {},
+          servings: [],
+          archived: false,
+        }
+      : get(`/foods/${id}`),
+    isNew ? null : usageOf(id),
+  ]);
+  if (food.kind === "recipe") {
     location.replace(href.recipe(id));
     return null;
   }
   // Fineli's name and values are its own: shown, not edited.
   const fineli = food.source === "fineli";
-  const name = h("input", {
-    name: "name",
+  // Drink, derived; a tick changed is yours (one tick: ADR 0020).
+  const touched = new Set();
+  const ticks = {
+    drink: h("input", {
+      type: "checkbox",
+      name: "drink",
+      checked: Boolean(food.drink),
+      onchange: () => touched.add("drink"),
+    }),
+  };
+  const asTicked = () => ({ ...food, drink: ticks.drink.checked });
+  const name = nameInput({
+    max: meta.limits.name,
     value: food.name,
-    required: true,
     disabled: fineli,
-    maxLength: meta.limits.name,
   });
-  const brand = h("input", {
+  const brand = nameInput({
+    max: meta.limits.name,
     name: "brand",
+    required: false,
     value: food.brand ?? "",
     disabled: fineli,
-    maxLength: meta.limits.name,
   });
   const barcode = h("input", {
     name: "barcode",
@@ -284,8 +302,7 @@ export async function foodEditor(id, params) {
     pattern: "[0-9]*",
   });
   const servings = servingsEditor(food.servings);
-  // Total carbohydrate is derived (available + fibre), so it isn't editable.
-  const editable = registry.filter((n) => n.key !== "carbs");
+  const editable = registry.filter((x) => isTyped(x));
   const inputs = Object.fromEntries(
     editable.map((n) => [
       n.key,
@@ -298,72 +315,199 @@ export async function foodEditor(id, params) {
                 Math.round(nutrient("energy").show(food.per100.energy) * 10) /
                   10,
               )
-            : inputValue(n.key, food.per100[n.key]),
+            : shownValue(n.key, food.per100[n.key]),
         disabled: fineli,
       }),
     ]),
   );
-  // EU labels print energy in kJ and kcal; either one fills the other. The
-  // registry's input is in this device's unit (kcal or kJ), this one in the
-  // other.
-  const [otherUnit, perKcal] =
-    nutrient("energy").unit === "kJ" ? ["kcal", 1] : ["kJ", KJ_PER_KCAL];
-  const ratio = perKcal / nutrient("energy").show(1);
-  const kj = num({
-    disabled: fineli,
-    value: isNil(food.per100.energy)
-      ? ""
-      : Math.round(food.per100.energy * perKcal),
-  });
-  kj.addEventListener("input", () => {
-    inputs.energy.value = kj.value === "" ? "" : Math.round(kj.value / ratio);
-  });
-  inputs.energy.addEventListener("input", () => {
-    kj.value =
-      inputs.energy.value === "" ? "" : Math.round(inputs.energy.value * ratio);
-  });
+  // Energy only in this device's unit (kcal or kJ), as everywhere.
   const fields = (list) =>
-    list.flatMap((n) => [
-      ...(n.key === "energy"
-        ? [field(`Energy (${otherUnit})`, kj, { inline: true })]
-        : []),
-      field(withUnit(n), inputs[n.key], { inline: true }),
-    ]);
-  const per100 = () => {
-    const out = {};
+    list.map((n) => field(withUnit(n), inputs[n.key], { inline: true }));
+  // Values per: 100 g, or one of your servings (its row, `basisRow`; a
+  // rename keeps it). Per 100 g stays what's stored; the inputs show the
+  // values of `viewGrams`, written from per-100 g `base` as `shown`. An
+  // input still reading what was written gives back its `base` value as it
+  // was, so a switch or an untouched field never re-derives it (D10).
+  // The US label reads per serving: a food without a basis opens at its
+  // first serving there (saved as its basis), as its label would.
+  const own = servings.own();
+  let basisRow =
+    own.find((s) => s.label === food.basis?.serving)?.row ??
+    (labelStyle() === "us" && !fineli && !food.basis
+      ? own.find((s) => s.label && s.grams > 0)?.row
+      : null) ??
+    null;
+  let viewGrams = 100;
+  let base = food.per100;
+  let shown = {};
+  const remember = () => {
+    shown = Object.fromEntries(
+      Object.entries(inputs).map(([k, input]) => [k, input.value]),
+    );
+  };
+  const write = (values, grams) => {
+    const view = scaled(values, grams);
     for (const [k, input] of Object.entries(inputs))
-      if (input.value !== "") out[k] = nutrient(k).store(Number(input.value));
+      input.value = shownValue(k, view[k]);
+    base = values;
+    viewGrams = grams;
+    remember();
+  };
+  const per100 = () => {
+    const typed = {};
+    for (const [k, input] of Object.entries(inputs))
+      if (input.value !== "") typed[k] = nutrient(k).store(Number(input.value));
+    const out = viewGrams === 100 ? typed : per100Of(typed, viewGrams);
+    for (const k of Object.keys(out))
+      if (inputs[k].value === shown[k] && !isNil(base[k])) out[k] = base[k];
+    // US: total carbs typed, net sent only with fibre known (total less
+    // fibre); without fibre the net stays unknown. Both left as shown, the
+    // stored net goes back.
+    if (inputs.carbs && !isNil(out.carbs)) {
+      const kept =
+        inputs.carbs.value === shown.carbs &&
+        inputs.fiber.value === shown.fiber &&
+        !isNil(base.net_carbs);
+      const net = kept ? base.net_carbs : netFromTotal(out.carbs, out.fiber);
+      if (!isNil(net)) out.net_carbs = net;
+    }
+    // The carbohydrate this label doesn't type (a total on the EU label,
+    // the net on the US one), given alone, stays while the typed is unknown.
+    const other = typedCarbs() === "carbs" ? "net_carbs" : "carbs";
+    if (isNil(out[typedCarbs()]) && !isNil(base[other]))
+      out[other] = base[other];
     return out;
   };
-  // Live: the default serving's values as typed. Per 100 g is the form
-  // itself, so the panel shows only with a serving.
+  const basisOf = () => servings.own().find((s) => s.row === basisRow);
+  // The servings to choose from: named and weighed, and the chosen one
+  // while its weight is being retyped (read at its last weight).
+  const choices = () =>
+    servings
+      .own()
+      .filter((s) => s.row === basisRow || (s.label && s.grams > 0));
+  const basisSelect = h("select", {
+    name: "basis",
+    "aria-label": "Values per",
+    // Before the form's own input listener: it rebuilds the options.
+    oninput: () => {
+      const values = per100();
+      const pick =
+        basisSelect.value === "" ? null : choices()[Number(basisSelect.value)];
+      basisRow = pick?.row ?? null;
+      write(values, pick ? pick.grams || viewGrams : 100);
+    },
+  });
+  const guess = h("input", {
+    type: "checkbox",
+    name: "basis_estimated",
+    checked: Boolean(food.basis?.estimated),
+  });
+  const guessHint = h("small", { class: "muted" });
+  const guessField = h(
+    "div",
+    { class: "field" },
+    h("label", { class: "check" }, guess, " Weight is a guess"),
+    guessHint,
+  );
+  const estimated = () => Boolean(basisRow) && guess.checked;
+  // Follow the servings: a removed basis serving puts the values back per
+  // 100 g (at its last weight); its new weight keeps the numbers typed per
+  // it, and per 100 g follows (D3).
+  const syncBasis = () => {
+    const now = basisOf();
+    if (basisRow && !now) {
+      basisRow = null;
+      write(per100(), 100);
+    } else if (now?.grams > 0 && now.grams !== viewGrams) {
+      base = {};
+      viewGrams = now.grams;
+    }
+    fill(
+      basisSelect,
+      h("option", { value: "" }, per100Basis(asTicked()).replace("Per ", "")),
+      choices().map((s, i) =>
+        h(
+          "option",
+          { value: String(i), selected: s.row === basisRow },
+          `${s.label || "Unnamed"} (${qty(s.grams || viewGrams, "g")})`,
+        ),
+      ),
+    );
+    basisSelect.value = basisRow
+      ? String(choices().findIndex((s) => s.row === basisRow))
+      : "";
+    guessField.hidden = !basisRow;
+    const per = now?.label || "serving";
+    guessHint.textContent = `Use when only per-item values are published. Logged nutrients stay exact per ${per}; gram counts (habits, traffic lights) use the guess.`;
+  };
+  if (basisRow) write(food.per100, basisOf().grams);
+  else remember();
+  syncBasis();
+  // As the form reads them before any edit: what a change is measured by.
+  const loadedValues = JSON.stringify(per100());
+  // Live: the health cues, and the other view of what's typed: per 100 g
+  // when typed per a serving, else the default serving's values.
   const panel = nutritionPanel();
+  let targets = null;
   const repaint = () => {
     const serving = servings.value().find((s) => s.label && s.grams > 0);
-    panel.node.hidden = !serving;
-    if (serving)
-      panel.paint([
-        {
-          label: `${serving.label} (${qty(serving.grams, "g")})`,
-          values: scaled(per100(), serving.grams),
-        },
-      ]);
+    const values = per100();
+    const basis = per100Basis(asTicked());
+    panel.paint(
+      basisRow
+        ? [
+            {
+              label: estimated() ? `${basis} (≈ estimated weight)` : basis,
+              values,
+            },
+          ]
+        : serving
+          ? [
+              {
+                label: `${serving.label} (${qty(serving.grams, "g")})`,
+                values: scaled(values, serving.grams),
+              },
+            ]
+          : [],
+      {
+        per100: values,
+        drink: ticks.drink.checked,
+        basis,
+        grams: null,
+        targets,
+        estimated: estimated(),
+      },
+    );
   };
   const category = categorySelect(food.category);
+  const send = saveOnce("/foods");
+  const removing = isNew
+    ? { secondary: [], remove: null }
+    : removal(
+        food,
+        usage,
+        (change) => send(body(change), food.id),
+        () => shell,
+      );
   const body = (change = {}) => ({
     // Fineli's own fields go back as they came.
     name: fineli ? food.name : name.value,
     brand: fineli ? food.brand : brand.value || null,
     barcode: barcode.value || null,
     per100: fineli ? food.per100 : per100(),
+    basis: basisRow
+      ? { serving: basisOf().label, estimated: guess.checked }
+      : null,
     category: category.value || null,
     servings: servings.value(),
     archived: food.archived,
+    ...Object.fromEntries([...touched].map((k) => [k, ticks[k].checked])),
     ...(isNew ? {} : { rev: food.rev }),
     ...change,
   });
   const shell = editor({
     title: isNew ? "New food" : food.name,
+    action: isNew ? null : await favoriteStar(food),
     back:
       safeBack(params.get("back")) ??
       (params.get("day")
@@ -415,12 +559,28 @@ export async function foodEditor(id, params) {
       field("Category", category, {
         hint: "Counts toward the built-in habit of the same kind.",
       }),
+      h(
+        "div",
+        { class: "field" },
+        h(
+          "label",
+          { class: "check" },
+          ticks.drink,
+          fineli ? " Drink" : ` Drink (values per 100${NBSP}ml)`,
+        ),
+      ),
       servings.node,
       h(
         "fieldset",
         {},
-        h("legend", {}, "Per 100 g"),
-        fields(MAIN.map(nutrient)),
+        // Fineli's values are its own, per 100 g.
+        h("legend", {}, fineli ? PER_100G : ["Values per ", basisSelect]),
+        guessField,
+        fields(
+          mainKeys()
+            .map((x) => nutrient(x))
+            .filter((x) => isTyped(x)),
+        ),
         h(
           "details",
           { class: "fold" },
@@ -430,8 +590,8 @@ export async function foodEditor(id, params) {
             { class: "fold-fields" },
             byCategory(
               ordered()
-                .slice(MAIN.length)
-                .filter((n) => n.key !== "carbs"),
+                .slice(mainKeys().length)
+                .filter((x) => isTyped(x)),
             ).map(([cat, list]) => [
               h("h3", { class: "category" }, cat),
               fields(list),
@@ -440,17 +600,26 @@ export async function foodEditor(id, params) {
         ),
       ),
     ],
+    remove: removing.remove,
     secondary: isNew
       ? []
       : [
-          archiveButton(
-            food,
-            (change) => api("PUT", `/foods/${id}`, body(change)),
+          ...removing.secondary,
+          copyForm(
+            "/foods",
+            body,
             () => shell,
+            href.food,
+            () => ({
+              brand: fineli ? null : brand.value || null,
+              barcode: null,
+              drink: ticks.drink.checked,
+            }),
           ),
           mergeLink(id),
         ],
     save: async () => {
+      if (!fineli) checkCaps(per100(), basisOf()?.label);
       // Without energy a food counts as unknown in every total: ask once.
       if (
         !fineli &&
@@ -461,33 +630,69 @@ export async function foodEditor(id, params) {
           danger: false,
         }))
       )
-        return undefined;
-      return isNew
-        ? api("POST", "/foods", body())
-        : api("PUT", `/foods/${id}`, body());
+        return;
+      if (isNew) return send(body());
+      if (
+        !(await confirmChange(id, food.name, {
+          changed: JSON.stringify(per100()) !== loadedValues,
+          gone: goneServings(food.servings, servings.value()),
+        }))
+      )
+        return;
+      return send(body(), food.id);
     },
     after: (saved) => returnTo(params, saved, (x) => href.food(x)),
     aside: panel.node,
   });
-  shell.form.addEventListener("input", repaint);
+  shell.form.addEventListener("input", () => {
+    syncBasis();
+    repaint();
+  });
   repaint();
+  withTargets((t) => {
+    targets = t;
+    repaint();
+  });
   return shell.node;
 }
 
-// Items of a recipe or meal: food and grams per row. `onChange` runs after
-// every add, remove or grams edit; `parts` gives what the nutrition panel
-// needs; a food's name opens its editor through `onEdit`.
+// A food as a recipe's or meal's item holds it: what the amount and the
+// live panel read, coverage (`known`, `borne`, `drink`) included, as the
+// server's items carry it. One shape for an item picked and one restored.
+const itemOf = (f) => ({
+  food_id: f.id,
+  name: f.name,
+  source: f.source,
+  kind: f.kind,
+  per100: f.per100,
+  servings: f.servings,
+  makes: f.makes,
+  known: f.known,
+  borne: f.borne,
+  drink: f.drink,
+  weight_estimated: guessed(f),
+});
+
+// Items of a recipe or meal: food, amount (a quantity of one of its servings,
+// or grams) and, for a serving, its weight per row. `onChange` runs after every
+// add, remove or amount edit; `parts` gives what the nutrition panel needs; a
+// food's name opens its editor through `onEdit`. A new item (`start` null)
+// begins as logging would: the food's default serving.
 function itemsEditor(initial, onChange = () => {}, onEdit = null) {
   const list = h("ul", { class: "items" });
-  const items = new Map(); // row → item
-  const addItem = (item) => {
-    const grams = num({
-      value: item.grams,
-      min: POSITIVE,
-      required: true,
-      "aria-label": `${item.name} grams`,
-      oninput: onChange,
-    });
+  // Row → {item, amount}.
+  const items = new Map();
+  const addItem = (item, start = item) => {
+    const weight = h("span", { class: "weight muted" });
+    const ml = byVolume(item);
+    // Typed by weight, the amount says it already.
+    const changed = () => {
+      weight.textContent = amount.body().serving
+        ? weightText(amount.grams(), guessed(item), null, ml)
+        : "";
+      onChange();
+    };
+    const amount = amountControl(item, start, changed, item.name);
     const row = h(
       "li",
       { class: "item" },
@@ -503,28 +708,19 @@ function itemsEditor(initial, onChange = () => {}, onEdit = null) {
             item.name,
           )
         : h("span", { class: "name" }, item.name),
-      grams,
-      h("span", {}, "g"),
-      h(
-        "button",
-        {
-          type: "button",
-          class: "danger icon",
-          "aria-label": `Remove ${item.name}`,
-          onclick: () => {
-            row.remove();
-            items.delete(row);
-            onChange();
-          },
-        },
-        "✕",
-      ),
+      weight,
+      removeButton(`Remove ${item.name}`, () => {
+        row.remove();
+        items.delete(row);
+        onChange();
+      }),
+      amount.node,
     );
-    items.set(row, item);
+    items.set(row, { item, amount });
     list.append(row);
-    onChange();
+    changed();
   };
-  initial.forEach(addItem);
+  initial.forEach((item) => addItem(item));
   const node = h(
     "fieldset",
     {},
@@ -534,23 +730,24 @@ function itemsEditor(initial, onChange = () => {}, onEdit = null) {
       placeholder: "Search foods to add",
       search: searchFoods,
       row: foodRow,
-      // A food's default serving is how much goes in; 100 g without one.
-      onPick: (f) =>
-        addItem({
-          food_id: f.id,
-          name: f.name,
-          source: f.source,
-          grams: f.servings?.[0]?.grams ?? 100,
-          per100: f.per100,
-        }),
+      onPick: (f) => addItem(itemOf(f), null),
     }),
   );
+  // Each item as read back: its grams, and the serving and quantity they
+  // came from (null for grams).
   const rows = () =>
-    [...items].map(([row, item]) => ({
+    [...items.values()].map(({ item, amount }) => ({
       ...item,
-      grams: Number(row.querySelector("input").value) || 0,
+      serving: null,
+      quantity: null,
+      ...amount.body(),
+      grams: amount.grams() || 0,
     }));
-  const value = () => rows().map(({ food_id, grams }) => ({ food_id, grams }));
+  const value = () =>
+    [...items.values()].map(({ item, amount }) => ({
+      food_id: item.food_id,
+      ...amount.body(),
+    }));
   return { node, value, parts: rows, named: rows };
 }
 
@@ -578,44 +775,60 @@ function draftOf(params) {
   return { path, kept };
 }
 
-// Leave for an ingredient's food, keeping the unsaved editor as a draft and
-// coming back to it. Nothing is lost, so the editor (`shell()`) doesn't ask.
+// A draft's items with their foods as they are now (one was likely just
+// edited: a new serving, new values), each amount as it was left. A food
+// that can't be read (offline) stays as the draft had it.
+const current = (items) =>
+  Promise.all(
+    items.map((item) =>
+      get(`/foods/${item.food_id}`).then(
+        (f) => ({ ...item, ...itemOf(f) }),
+        () => item,
+      ),
+    ),
+  );
+
+// Leave for an ingredient's food, keeping the unsaved editor as a draft that
+// its Save or Back returns to. Nothing lost, the editor (`shell()`) won't ask.
 const editIngredient = (path, value, shell) => (item) => {
+  const back = `${path}?draft=1`;
   draft.keep(path, value());
   shell().markClean();
-  location.hash = href.food(
-    { id: item.food_id, source: item.source },
-    `${path}?draft=1`,
-  );
+  history.replaceState(history.state, "", back);
+  location.hash = href.food({ id: item.food_id, kind: item.kind }, back);
 };
 
 export async function recipeEditor(id, params) {
   const isNew = id === "new";
   const { path, kept } = draftOf(params);
-  const loaded = isNew
-    ? {
-        name: "",
-        cooked_g: null,
-        items: [],
-        servings: [],
-        archived: false,
-      }
-    : await get(`/recipes/${id}`);
-  const recipe = kept ? { ...loaded, ...kept } : loaded;
-  const name = h("input", {
-    name: "name",
-    value: recipe.name,
-    required: true,
-    maxLength: meta.limits.name,
+  const [loaded, usage] = await Promise.all([
+    isNew
+      ? {
+          name: "",
+          cooked_g: null,
+          items: [],
+          servings: [],
+          archived: false,
+        }
+      : get(`/recipes/${id}`),
+    isNew ? null : usageOf(id),
+  ]);
+  const recipe = kept
+    ? { ...loaded, ...kept, items: await current(kept.items) }
+    : loaded;
+  const name = nameInput({ max: meta.limits.name, value: recipe.name });
+  const cooked = num({
+    name: "cooked_g",
+    value: recipe.cooked_g ?? "",
+    min: POSITIVE,
   });
-  const cooked = num({ name: "cooked_g", value: recipe.cooked_g ?? "" });
-  const instructions = h("textarea", {
-    name: "instructions",
-    maxLength: meta.limits.instructions,
+  const notes = h("textarea", {
+    name: "notes",
+    maxLength: meta.limits.notes,
     rows: 4,
-    placeholder: "Optional: how you make it",
+    placeholder: "Optional: how you make it, or anything",
   });
-  instructions.value = recipe.instructions ?? "";
+  notes.value = recipe.notes ?? "";
   const category = categorySelect(recipe.category);
   const makes = num({
     name: "makes",
@@ -629,9 +842,10 @@ export async function recipeEditor(id, params) {
     const n = numberOrNull(makes);
     return n ? weight() / n : null;
   };
-  const weightText = h("p", {});
+  const weighs = h("p", {});
   // Live: per 100 g as the server will store it, and the whole recipe.
   const panel = nutritionPanel();
+  let targets = null;
   let items = null;
   let servings = null;
   const weight = () =>
@@ -642,15 +856,28 @@ export async function recipeEditor(id, params) {
     const parts = items.parts();
     const total = parts.reduce((t, p) => t + p.grams, 0);
     cooked.placeholder = String(Math.round(total));
-    weightText.textContent = `Weighs ${qty(weight(), "g")} ${numberOrNull(cooked) ? "cooked" : "(its ingredients)"}.`;
+    weighs.textContent = `Weighs ${qty(weight(), "g")} ${numberOrNull(cooked) ? "cooked" : "(its ingredients)"}.`;
     servings?.refresh();
-    panel.paint([
-      { label: "Per 100 g", values: recipePer100(parts, numberOrNull(cooked)) },
+    const per100 = recipePer100(parts, numberOrNull(cooked));
+    const known = recipeKnown(parts, numberOrNull(cooked));
+    panel.paint(
+      [
+        { label: PER_100G, values: per100, known },
+        {
+          label: `Whole recipe (${qty(weight(), "g")})`,
+          ...wholeOf(parts, known, weight()),
+        },
+      ],
       {
-        label: `Whole recipe (${qty(weight(), "g")})`,
-        values: summed(parts.map((p) => scaled(p.per100, p.grams))),
+        per100,
+        known,
+        drink: Boolean(recipe.drink) || category.value === DRINK,
+        basis: PER_100G,
+        grams: portion(),
+        targets,
+        estimated: weightGuessed({ items: parts }),
       },
-    ]);
+    );
   };
   const state = () => ({
     name: name.value,
@@ -658,7 +885,7 @@ export async function recipeEditor(id, params) {
     makes: numberOrNull(makes),
     items: items.named(),
     servings: servings.value(),
-    instructions: instructions.value,
+    notes: notes.value,
     archived: recipe.archived,
     category: category.value || null,
     rev: recipe.rev,
@@ -670,13 +897,31 @@ export async function recipeEditor(id, params) {
   );
   servings = servingsEditor(recipe.servings, weight, portion);
   repaint();
+  withTargets((t) => {
+    targets = t;
+    repaint();
+  });
+  // What its values and portions come from, and that as saved. A restored
+  // draft may differ from what's saved already: counted as changed.
+  const makeup = () =>
+    JSON.stringify([items.value(), numberOrNull(cooked), numberOrNull(makes)]);
+  const loadedMakeup = kept ? null : makeup();
+  const send = saveOnce("/recipes");
+  const removing = isNew
+    ? { secondary: [], remove: null }
+    : removal(
+        loaded,
+        usage,
+        (change) => send(body(change), loaded.id),
+        () => shell,
+      );
   const body = (change = {}) => ({
     name: name.value,
     cooked_g: numberOrNull(cooked),
     makes: numberOrNull(makes),
     items: items.value(),
     servings: servings.value(),
-    instructions: instructions.value,
+    notes: notes.value,
     archived: recipe.archived,
     category: category.value || null,
     ...(isNew ? {} : { rev: loaded.rev }),
@@ -684,6 +929,7 @@ export async function recipeEditor(id, params) {
   });
   const shell = editor({
     title: isNew ? "New recipe" : loaded.name,
+    action: isNew ? null : await favoriteStar(loaded),
     back:
       safeBack(params.get("back")) ??
       (params.get("day")
@@ -702,7 +948,7 @@ export async function recipeEditor(id, params) {
         : null,
       field("Name", name),
       items.node,
-      weightText,
+      weighs,
       // Cooking changes weight (water boils off or soaks in): only a weighed
       // dish says by how much, so this stays out of the way until then.
       h(
@@ -710,14 +956,14 @@ export async function recipeEditor(id, params) {
         { class: "fold", open: Boolean(recipe.cooked_g) },
         h("summary", {}, "Weighed it after cooking?"),
         field("Weight after cooking (g)", cooked, {
-          hint: "Per 100 g then counts the cooked dish. Clear it to use the ingredients' total again.",
+          hint: `${PER_100G} then counts the cooked dish. Clear it to use the ingredients' total again.`,
         }),
       ),
       field("Makes (portions)", makes, {
         hint: `Adds a ${PORTION} serving: the recipe's weight ÷ portions.`,
       }),
       servings.node,
-      field("Instructions", instructions, {
+      field("Notes", notes, {
         hint: "Shown when you log it. Line breaks are kept.",
       }),
       field("Category", category, {
@@ -725,20 +971,26 @@ export async function recipeEditor(id, params) {
       }),
     ],
     state: () => [items.value(), servings.value()],
+    remove: removing.remove,
     secondary: isNew
       ? []
       : [
-          archiveButton(
-            recipe,
-            (change) => api("PUT", `/recipes/${id}`, body(change)),
-            () => shell,
-          ),
+          ...removing.secondary,
+          copyForm("/recipes", body, () => shell, href.food),
           mergeLink(id),
         ],
-    save: () =>
-      isNew
-        ? api("POST", "/recipes", body())
-        : api("PUT", `/recipes/${id}`, body()),
+    save: async () => {
+      if (isNew) return send(body());
+      if (
+        !(await confirmChange(id, loaded.name, {
+          changed: makeup() !== loadedMakeup,
+          gone: goneServings(loaded.servings, servings.value()),
+          recipe: true,
+        }))
+      )
+        return;
+      return send(body(), loaded.id);
+    },
     after: (saved) => returnTo(params, saved, (x) => href.recipe(x.id)),
     aside: panel.node,
     unsaved: Boolean(kept),
@@ -753,28 +1005,38 @@ export async function mealEditor(id, params) {
   const isNew = id === "new";
   const { path, kept } = draftOf(params);
   const loaded = isNew ? { name: "", items: [] } : await get(`/meals/${id}`);
-  const meal = kept ? { ...loaded, ...kept } : loaded;
-  const name = h("input", {
-    name: "name",
-    value: meal.name,
-    required: true,
-    maxLength: meta.limits.name,
-  });
+  // Opened from a copy on the log screen (`?back=`), saving returns there.
+  const back = safeBack(params.get("back"));
+  const meal = kept
+    ? { ...loaded, ...kept, items: await current(kept.items) }
+    : loaded;
+  const name = nameInput({ max: meta.limits.name, value: meal.name });
   // Live: what one logging of the meal adds up to.
   const panel = nutritionPanel();
+  let targets = null;
   let items = null;
   const repaint = () => {
     if (!items) return;
     const parts = items.parts();
-    panel.paint([
+    const total = parts.reduce((t, p) => t + p.grams, 0);
+    // A meal is graded as food, never as a drink (ADR 0017).
+    const known = recipeKnown(parts, null);
+    panel.paint(
+      [
+        {
+          label: `Total (${qty(total, "g")})`,
+          ...wholeOf(parts, known, total),
+        },
+      ],
       {
-        label: `Total (${qty(
-          parts.reduce((t, p) => t + p.grams, 0),
-          "g",
-        )})`,
-        values: summed(parts.map((p) => scaled(p.per100, p.grams))),
+        per100: recipePer100(parts, null),
+        known,
+        drink: false,
+        grams: total,
+        targets,
+        estimated: weightGuessed({ items: parts }),
       },
-    ]);
+    );
   };
   items = itemsEditor(
     meal.items,
@@ -786,9 +1048,20 @@ export async function mealEditor(id, params) {
     ),
   );
   repaint();
+  withTargets((t) => {
+    targets = t;
+    repaint();
+  });
+  const body = (change = {}) => ({
+    name: name.value,
+    items: items.value(),
+    ...(isNew ? {} : { rev: loaded.rev }),
+    ...change,
+  });
+  const send = saveOnce("/meals");
   const shell = editor({
     title: isNew ? "New meal" : loaded.name,
-    back: href.foods(),
+    back: back ?? href.foods(),
     body: [
       kept
         ? h(
@@ -801,22 +1074,23 @@ export async function mealEditor(id, params) {
       items.node,
     ],
     state: () => items.value(),
-    save: () => {
-      const body = {
-        name: name.value,
-        items: items.value(),
-        ...(isNew ? {} : { rev: loaded.rev }),
-      };
-      return isNew
-        ? api("POST", "/meals", body)
-        : api("PUT", `/meals/${id}`, body);
-    },
-    after: (saved) => href.meal(saved.id),
+    secondary: isNew
+      ? []
+      : [
+          copyForm(
+            "/meals",
+            body,
+            () => shell,
+            (copy) => href.meal(copy.id),
+          ),
+        ],
+    save: () => send(body(), isNew ? null : loaded.id),
+    after: (saved) => back ?? href.meal(saved.id),
     remove: isNew
       ? null
       : {
           ask: `Delete ${loaded.name}?`,
-          detail: "Foods already logged from it stay in the diary.",
+          detail: "Foods already logged from it stay in the Diary.",
           run: () => api("DELETE", `/meals/${id}`),
           after: href.foods(),
           done: `Deleted ${loaded.name}`,

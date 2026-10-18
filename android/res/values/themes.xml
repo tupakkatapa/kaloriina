@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Follows the system's light or dark mode, so the WebView's
+     prefers-color-scheme matches it and the page picks the same theme as in
+     the browser. The window shows the page's background behind the system
+     bars (edge to edge) and before the first paint. -->
+<resources>
+    <style name="Kaloriina" parent="@android:style/Theme.DeviceDefault.DayNight">
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:windowLightStatusBar">@bool/light_bars</item>
+        <item name="android:windowLightNavigationBar">@bool/light_bars</item>
+    </style>
+
+    <!-- The web app has its own header: no action bar over it. -->
+    <style name="Kaloriina.Main">
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+</resources>

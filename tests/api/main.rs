@@ -3,18 +3,26 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-mod activity;
+mod activities;
 mod backups;
 mod check_ins;
 mod contract;
 mod cronometer;
+mod daily;
+mod device;
 mod entries;
+mod feedback;
+mod google_health;
 mod habits;
+mod hooks;
+mod labels;
 mod library;
 mod openscale;
+mod photos;
 mod plans;
 mod reports;
-mod sessions;
+mod security;
+mod stats;
 mod targets;
 mod transfer;
 mod water;
@@ -46,6 +54,32 @@ async fn app_with_stub(stub: Router) -> Router {
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, stub).await.unwrap() });
     app_with_off(&format!("http://{addr}"))
+}
+
+/// Health Connect's raw sleep session `id` from `start` to `end` (UTC), with
+/// `stages` (start, end, Health Connect's type), as the phone keeps it raw:
+/// what the server makes nights and naps of.
+fn hc_sleep(id: &str, start: &str, end: &str, stages: &[(&str, &str, i64)]) -> Value {
+    let stages: Vec<Value> = stages
+        .iter()
+        .map(|(a, b, t)| json!({ "start_time": a, "end_time": b, "type": t }))
+        .collect();
+    json!({ "kind": "SleepSession", "id": id, "start": start, "end": end,
+            "data": { "start_time": start, "start_zone_offset": "Z", "end_time": end,
+                      "end_zone_offset": "Z", "stages": stages } })
+}
+
+/// Post `records` to profile `pid` as the phone's records page.
+async fn hc_records(app: &Router, pid: i64, records: Value) -> Value {
+    let (status, res) = common::call(
+        app,
+        "POST",
+        &format!("/api/profiles/{pid}/sync/health/records"),
+        Some(json!({ "device": "Pixel 9", "records": records })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    res
 }
 
 /// Log `grams` of `food_id` today and return the created entry.
@@ -84,7 +118,7 @@ async fn search(app: &Router, query: &str) -> (StatusCode, Value) {
 }
 
 /// The foods a fresh instance has: the plain Water migration 25 seeds
-/// (there is no Fineli water to default to).
+/// (there is no Fineli water to default to) and 36's Creatine monohydrate.
 async fn assert_only_seeded_foods(app: &Router) {
     let (_, foods) = search(app, "").await;
     let names: Vec<&str> = foods
@@ -93,15 +127,38 @@ async fn assert_only_seeded_foods(app: &Router) {
         .iter()
         .map(|f| f["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["Water"], "{foods}");
+    assert_eq!(names, ["Creatine monohydrate", "Water"], "{foods}");
 }
 
-/// PUT `body` at `uri` with the `rev` a GET of `uri` reads now, as a client
-/// saving what it just loaded does.
-async fn put_with_rev(app: &Router, uri: &str, mut body: Value) -> (StatusCode, Value) {
-    let (_, current) = call(app, "GET", uri, None).await;
-    body["rev"] = current["rev"].clone();
-    call(app, "PUT", uri, Some(body)).await
+/// What `uri` reads now. A habit has no GET of its own: the list's.
+async fn read_one(app: &Router, uri: &str) -> Value {
+    let (status, one) = call(app, "GET", uri, None).await;
+    if status == StatusCode::OK {
+        return one;
+    }
+    let (list, id) = uri.rsplit_once('/').unwrap();
+    let id: i64 = id.parse().unwrap();
+    let (_, all) = call(app, "GET", list, None).await;
+    all.as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["id"] == id)
+        .unwrap()
+        .clone()
+}
+
+/// PUT `body`'s fields over what `uri` reads now, at its `rev`: the
+/// whole entity with edits on top, as a client saving what it just loaded
+/// does (a PUT replaces).
+async fn put_with_rev(app: &Router, uri: &str, body: Value) -> (StatusCode, Value) {
+    let mut current = read_one(app, uri).await;
+    let rev = current["rev"].clone();
+    current
+        .as_object_mut()
+        .unwrap()
+        .extend(body.as_object().unwrap().clone());
+    current["rev"] = rev;
+    call(app, "PUT", uri, Some(current)).await
 }
 
 /// Replace profile `pid`'s targets (`[{metric, value}]`) at its current rev.
@@ -117,15 +174,15 @@ async fn put_targets(app: &Router, pid: i64, targets: Value) -> (StatusCode, Val
     .await
 }
 
-/// A "Porridge" recipe (60 g of new "Oats") with `instructions`: the answer.
-async fn porridge(app: &Router, instructions: Value) -> (StatusCode, Value) {
+/// A "Porridge" recipe (60 g of new "Oats") with `notes`: the answer.
+async fn porridge(app: &Router, notes: Value) -> (StatusCode, Value) {
     let oats = create_food(app, "Oats", json!({ "energy": 380.0 })).await;
     call(
         app,
         "POST",
         "/api/recipes",
         Some(
-            json!({ "name": "Porridge", "cooked_g": null, "instructions": instructions,
+            json!({ "name": "Porridge", "cooked_g": null, "notes": notes,
                      "items": [{ "food_id": oats, "grams": 60.0 }] }),
         ),
     )

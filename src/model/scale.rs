@@ -13,36 +13,94 @@ use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 
 use super::prelude::*;
-use super::sneaky;
+use super::{Provenance, sneaky};
 
-/// The only scale source so far; the column leaves room for another.
+/// openScale's source key; Health Connect readings use `health_connect`.
 pub const OPENSCALE: &str = "openscale";
 
 text_enum! {
     /// Where a day's weight came from: typed here, or a sync source (the
-    /// names `sync_state.source` uses). Export files from before say
-    /// `"scale"` for openScale.
+    /// names `sync_state.source` uses). A typed weight beats openScale's,
+    /// which beats Health Connect's ([`Provenance`]).
     #[derive(Default)]
     pub enum WeightSource {
         #[default]
-        Manual = "manual",
-        #[serde(alias = "scale")]
+        Hand = "hand",
         OpenScale = "openscale",
+        HealthConnect = "health_connect",
     }
 }
-/// One weigh-in as stored. Percentages are `None` when the scale sent
+/// One weigh-in as stored: openScale's, or Health Connect's
+/// (`health_connect`, another app's). Values are `None` when the scale sent
 /// none (openScale sends 0).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ScaleReading {
-    pub source: String,
+    /// `openscale` or `health_connect`.
+    pub source: WeightSource,
     /// Epoch milliseconds, UTC.
     pub taken_at: i64,
-    /// Local day, in the server's time zone.
+    /// Local day: the server's time zone (openScale), the phone's (Health
+    /// Connect).
     pub day: String,
     pub weight: f64,
     pub body_fat: Option<f64>,
     pub water: Option<f64>,
     pub muscle: Option<f64>,
+    pub bone_kg: Option<f64>,
+    /// Lean body mass.
+    pub lbm_kg: Option<f64>,
+    /// Basal metabolic rate, kcal a day.
+    pub bmr_kcal: Option<f64>,
+}
+
+/// Without a night, a day's weigh-in counts from this local hour: one before
+/// it was taken before that night's sleep.
+pub const WEIGH_IN_FROM_HOUR: i8 = 4;
+
+/// When `day`'s weigh-in may be taken from (epoch ms): its night's wake time
+/// `wake` ("HH:MM", local), else [`WEIGH_IN_FROM_HOUR`], in `tz`; `None`
+/// when `day` or `wake` doesn't read.
+#[must_use]
+pub fn woke_at(day: &str, wake: Option<&str>, tz: &TimeZone) -> Option<i64> {
+    let (h, m) = match wake {
+        Some(w) => {
+            let (h, m) = w.split_once(':')?;
+            (h.parse().ok()?, m.parse().ok()?)
+        }
+        None => (WEIGH_IN_FROM_HOUR, 0),
+    };
+    let at = day.parse::<Date>().ok()?.at(h, m, 0, 0);
+    Some(at.to_zoned(tz.clone()).ok()?.timestamp().as_millisecond())
+}
+
+/// The reading that stands for a day (`readings`, that day's): the first taken
+/// from `woke` ([`woke_at`]: the morning weight), the better source first
+/// ([`Provenance`]: openScale's before Health Connect's). With the day's
+/// `night` known, one taken before its wake time is the evening before's, so a
+/// day with only such readings has no morning weight; without a night there's
+/// no evidence of when sleep was, so the day's earliest reading stands rather
+/// than none.
+#[must_use]
+pub fn day_reading(
+    readings: &[ScaleReading],
+    woke: Option<i64>,
+    night: bool,
+) -> Option<&ScaleReading> {
+    let first = |after: Option<i64>| {
+        readings
+            .iter()
+            .filter(|r| after.is_none_or(|w| r.taken_at >= w))
+            .min_by_key(|r| (Provenance::from(r.source), r.taken_at))
+    };
+    first(woke).or_else(|| if night { None } else { first(None) })
+}
+
+/// A reading as listed: whether it is its day's weight ([`day_reading`]).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ShownReading {
+    #[serde(flatten)]
+    pub reading: ScaleReading,
+    pub chosen: bool,
 }
 
 /// A reading as it arrived, with whom it belongs to in openScale.
@@ -53,12 +111,14 @@ pub struct Incoming {
     /// openScale's id: per installation, reused after a reinstall.
     pub source_id: Option<i64>,
     pub reading: ScaleReading,
+    /// The measurement as sent (JSON), every value of it.
+    pub raw: String,
 }
 
 /// What one webhook item asks for.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScaleOp {
-    Upsert(Incoming),
+    Upsert(Box<Incoming>),
     Delete { user: i64, taken_at: i64 },
     Clear { user: i64 },
 }
@@ -176,7 +236,7 @@ impl ScalePost {
                     serde_json::from_str::<Map<String, Value>>(item.get())
                         .ok()
                         .and_then(|m| incoming(&m, tz, latest))
-                        .map(ScaleOp::Upsert),
+                        .map(|i| ScaleOp::Upsert(Box::new(i))),
                 );
             }
             return Ok(post);
@@ -187,7 +247,9 @@ impl ScalePost {
             .filter_map(|(k, v)| Some((k, serde_json::from_str(v.get()).ok()?)))
             .collect();
         match event {
-            "insert" | "update" => push(incoming(&obj, tz, latest).map(ScaleOp::Upsert)),
+            "insert" | "update" => {
+                push(incoming(&obj, tz, latest).map(|i| ScaleOp::Upsert(Box::new(i))));
+            }
             "delete" => push(
                 user(&obj)
                     .zip(taken_at(&obj))
@@ -218,6 +280,18 @@ fn percent(m: &Map<String, Value>, key: &str) -> Option<f64> {
     m.get(key)
         .and_then(Value::as_f64)
         .filter(|v| *v > 0.0 && *v <= 100.0)
+}
+
+/// A value of `values[]` (openScale's every measurement, by key) in
+/// `0 < v <= max`; 0 is "none".
+fn measured(m: &Map<String, Value>, key: &str, max: f64) -> Option<f64> {
+    m.get("values")?
+        .as_array()?
+        .iter()
+        .find(|v| v.get("key").and_then(Value::as_str) == Some(key))?
+        .get("value")?
+        .as_f64()
+        .filter(|v| *v > 0.0 && *v <= max)
 }
 
 /// The display name, as a label: control characters dropped, trimmed,
@@ -251,14 +325,18 @@ fn incoming(m: &Map<String, Value>, tz: &TimeZone, latest: Date) -> Option<Incom
         user,
         username: username(m),
         source_id: m.get("id").and_then(Value::as_i64),
+        raw: Value::Object(m.clone()).to_string(),
         reading: ScaleReading {
-            source: OPENSCALE.to_owned(),
+            source: WeightSource::OpenScale,
             taken_at: ts.as_millisecond(),
             day: day.to_string(),
             weight,
             body_fat: percent(m, "body_fat"),
             water: percent(m, "water"),
             muscle: percent(m, "muscle"),
+            bone_kg: measured(m, "bone", BONE_KG_MAX),
+            lbm_kg: measured(m, "lbm", BODY_KG_MAX),
+            bmr_kcal: measured(m, "bmr", BMR_KCAL_MAX),
         },
     })
 }
@@ -301,6 +379,61 @@ mod tests {
             "0 and over 100 are no reading"
         );
         assert_eq!(i.username.as_deref(), Some("Alex"));
+    }
+
+    fn weighed(at: &str, weight: f64) -> ScaleReading {
+        ScaleReading {
+            source: WeightSource::OpenScale,
+            taken_at: at.parse::<Timestamp>().unwrap().as_millisecond(),
+            day: "2026-07-10".to_owned(),
+            weight,
+            body_fat: None,
+            water: None,
+            muscle: None,
+            bone_kg: None,
+            lbm_kg: None,
+            bmr_kcal: None,
+        }
+    }
+
+    /// Jul 10, 78.6 kg at 00:26 before that night's sleep, 77.35 kg at
+    /// 10:00 after it: the day's weight is the morning's.
+    #[test]
+    fn the_days_weight_is_the_first_after_waking() {
+        let tz = helsinki();
+        let day = [
+            weighed("2026-07-09T21:26:00Z", 78.6),
+            weighed("2026-07-10T07:00:00Z", 77.35),
+            weighed("2026-07-10T15:00:00Z", 77.9),
+        ];
+        let woke = woke_at("2026-07-10", Some("09:30"), &tz);
+        assert_eq!(woke, Some(1_783_665_000_000));
+        assert_close!(day_reading(&day, woke, true).unwrap().weight, 77.35);
+        // No night: from 04:00.
+        let dawn = woke_at("2026-07-10", None, &tz);
+        assert_close!(day_reading(&day, dawn, false).unwrap().weight, 77.35);
+        // Only a reading before that night's sleep: no morning weight.
+        assert_eq!(day_reading(&day[..1], woke, true), None);
+        // Without a night, nothing says it was before sleep: it stands.
+        assert_close!(day_reading(&day[..1], dawn, false).unwrap().weight, 78.6);
+        // openScale's before Health Connect's.
+        let mut phone = weighed("2026-07-10T06:50:00Z", 77.0);
+        phone.source = WeightSource::HealthConnect;
+        let both = [phone, day[1].clone()];
+        assert_close!(day_reading(&both, woke, true).unwrap().weight, 77.35);
+        assert_eq!(woke_at("2026-07-10", Some("nonsense"), &tz), None);
+    }
+
+    /// A wake time the clock skips (03:30 on the night daylight
+    /// saving time starts in Helsinki) is still an instant: the one after
+    /// the gap, 04:30 EEST.
+    #[test]
+    fn a_wake_time_in_the_spring_gap_is_an_instant() {
+        let at = woke_at("2026-03-29", Some("03:30"), &helsinki());
+        assert_eq!(
+            at.map(|ms| Timestamp::from_millisecond(ms).unwrap().to_string()),
+            Some("2026-03-29T01:30:00Z".to_owned())
+        );
     }
 
     #[test]

@@ -1,0 +1,143 @@
+{
+  "why": "One rule, two implementations: src/model/coverage.rs (recipe_cover, share) and src/db/foods.rs (recipe_per100) own it; web/coverage.mjs (recipeKnown, recipePer100, coverage) mirrors it for the editor's live panel. cargo and node both read this file. A part is {per100, grams, drink?, known?, borne?}; with no water value and not a drink, all its grams are dry matter. Expected values are worked out by hand in each `why`.",
+  "recipes": [
+    {
+      "name": "spice",
+      "why": "Oats 50 g, milk 200 g, spice 50 g, all dry: 300 g of dry matter over 300 g is 100 per 100 g. Energy is on oats and milk (250 of 300), iron on oats (50 of 300), protein on the spice (50 of 300).",
+      "parts": [
+        { "per100": { "energy": 380, "iron": 4 }, "grams": 50 },
+        { "per100": { "energy": 40 }, "grams": 200 },
+        { "per100": { "protein": 10 }, "grams": 50 }
+      ],
+      "cooked_g": null,
+      "per100": {
+        "energy": 90,
+        "iron": 0.6666666666666666,
+        "protein": 1.6666666666666667
+      },
+      "known": {
+        "energy": 0.8333333333333334,
+        "iron": 0.16666666666666666,
+        "protein": 0.16666666666666666,
+        "dry": 100
+      }
+    },
+    {
+      "name": "cooked",
+      "why": "Oats (90 g dry a 100 g) and milk (10 g dry) 100 g each, cooked to 150 g: 100 g of dry matter over 150 g is 66.67 per 100 g; iron is on the oats' 90 of it. Cooking takes 50 g of water: 100 - 50 = 50 g in 150 g.",
+      "parts": [
+        { "per100": { "energy": 380, "iron": 4, "water": 10 }, "grams": 100 },
+        { "per100": { "energy": 40, "water": 90 }, "grams": 100 }
+      ],
+      "cooked_g": 150,
+      "per100": {
+        "energy": 280,
+        "iron": 2.6666666666666665,
+        "water": 33.333333333333336
+      },
+      "known": { "iron": 0.9, "dry": 66.66666666666667 }
+    },
+    {
+      "name": "subDry",
+      "why": "A sub-recipe of 10 g dry a 100 g whose iron is half known, and a dry food, 100 g each: (10 + 100) / 2 = 55 dry; iron is behind half of the sub-recipe's 10, 2.5 of 55. Mutant C8 (the sub-recipe's own dry ignored) reads 0.25.",
+      "parts": [
+        {
+          "per100": { "energy": 200, "iron": 1 },
+          "known": { "iron": 0.5, "dry": 10 },
+          "grams": 100
+        },
+        { "per100": { "energy": 100 }, "grams": 100 }
+      ],
+      "cooked_g": null,
+      "per100": { "energy": 150, "iron": 0.5 },
+      "known": { "iron": 0.045454545454545456, "dry": 55 }
+    },
+    {
+      "name": "juice",
+      "why": "A juice (a drink without a water value: 100 - 10 - 1 = 89 g water, 11 g dry) 200 g, and bread (40 g water, 60 g dry) 100 g: (22 + 60) / 3 = 27.33 dry. Fibre and iron are the juice's 7.33 of it, water the bread's 20. Mutant C11 (the drink flag ignored) counts the juice as all dry.",
+      "parts": [
+        {
+          "per100": { "net_carbs": 10, "fiber": 1, "iron": 0.1 },
+          "grams": 200,
+          "drink": true
+        },
+        { "per100": { "net_carbs": 50, "water": 40 }, "grams": 100 }
+      ],
+      "cooked_g": null,
+      "per100": {
+        "net_carbs": 23.333333333333332,
+        "fiber": 0.6666666666666666,
+        "iron": 0.06666666666666667,
+        "water": 13.333333333333334
+      },
+      "known": {
+        "fiber": 0.2682926829268293,
+        "iron": 0.2682926829268293,
+        "water": 0.7317073170731707,
+        "dry": 27.333333333333332
+      }
+    },
+    {
+      "name": "coffee",
+      "why": "Two coffees of 200 g (2 g dry a 100 g), both able to hold caffeine (borne 100), one saying how much: caffeine is weighed by what could hold it, half of it known. Dry matter is 2 a 100 g.",
+      "parts": [
+        {
+          "per100": { "water": 98 },
+          "grams": 200,
+          "drink": true,
+          "borne": { "caffeine": 100 }
+        },
+        {
+          "per100": { "caffeine": 40, "water": 98 },
+          "grams": 200,
+          "drink": true,
+          "borne": { "caffeine": 100 }
+        }
+      ],
+      "cooked_g": null,
+      "per100": { "water": 98, "caffeine": 20 },
+      "known": { "caffeine": 0.5, "dry": 2 }
+    },
+    {
+      "name": "allWater",
+      "why": "Only water: no dry matter, so nothing can be unknown and no key is listed. Mutant C9 (a share of nothing as 0) lists water and iron as unknown.",
+      "parts": [
+        { "per100": { "water": 100 }, "grams": 500, "drink": true },
+        { "per100": { "water": 100, "iron": 0 }, "grams": 500, "drink": true }
+      ],
+      "cooked_g": null,
+      "per100": { "water": 100, "iron": 0 },
+      "known": { "dry": 0 }
+    }
+  ],
+  "shares": [
+    {
+      "why": "A key `known` lists is its share.",
+      "total": { "iron": 1, "caffeine": 10 },
+      "known": { "iron": 0.25, "dry": 400 },
+      "key": "iron",
+      "share": 0.25
+    },
+    {
+      "why": "A key of the total `known` doesn't list is known in full.",
+      "total": { "iron": 1, "caffeine": 10 },
+      "known": { "iron": 0.25, "dry": 400 },
+      "key": "caffeine",
+      "share": 1
+    },
+    {
+      "why": "A key the total lacks is not known at all.",
+      "total": { "iron": 1, "caffeine": 10 },
+      "known": { "iron": 0.25, "dry": 400 },
+      "key": "zinc",
+      "share": 0
+    },
+    {
+      "why": "A borne key the total lacks: nothing that could hold it was eaten, a known none.",
+      "total": { "iron": 1, "caffeine": 10 },
+      "known": { "iron": 0.25, "dry": 400 },
+      "key": "alcohol",
+      "share": 1
+    }
+  ]
+}

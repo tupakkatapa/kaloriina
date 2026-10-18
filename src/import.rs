@@ -1,40 +1,24 @@
 //! Cronometer export import.
 //!
 //! `servings.csv` carries no nutrients, so its rows become name/amount-only
-//! entries; nutrients come from the per-group rows of `dailysummary.csv`.
+//! entries; nutrients come from `dailysummary.csv`, per group (or per day,
+//! when the diary isn't split by meal).
 //! Both imports replace whole days, so re-running with a newer export is safe.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
 
 use rusqlite::Connection;
-use serde::Serialize;
 
 use crate::db;
 use crate::error::Error;
 use crate::model::{
-    DayTotal, ImportedEntry, LABEL_MAX, NAME_MAX, PLANNED, ProfileId, is_date, text,
+    DayTotal, EATEN, ImportedEntry, LABEL_MAX, NAME_MAX, PLANNED, ProfileId, is_date, text,
 };
 use crate::nutrients::{Nutrients, REGISTRY};
 
-/// What an import wrote.
-#[derive(Debug, Serialize)]
-pub struct Report {
-    /// Entries from `servings.csv`.
-    pub entries: usize,
-    /// Days either file covers; each one's imported history was replaced.
-    pub days: usize,
-    pub summary: Option<SummaryReport>,
-}
-
-/// Outcome of a `dailysummary.csv` import.
-#[derive(Debug, Serialize)]
-pub struct SummaryReport {
-    pub days: usize,
-    pub groups: usize,
-    /// Days whose group rows don't add up to the export's `Total` row.
-    pub mismatched_days: Vec<String>,
-}
+use crate::model::import::Summary;
+pub use crate::model::import::{Parsed, Report, SummaryReport};
 
 /// The export writes amounts as `20.00 g` or `1.00 x 330.0 ml`; drop the
 /// trailing zeros so they read `20 g`, `1 x 330 ml`.
@@ -52,13 +36,15 @@ fn tidy_amount(amount: &str) -> String {
         .join(" ")
 }
 
-/// The export's "Remaining" group is called "Planned" here.
+/// The export's "Remaining" group is called "Planned" here, and
+/// "Consumed" "Eaten".
 fn group_name(name: &str) -> String {
-    if name == "Remaining" {
-        PLANNED.to_owned()
-    } else {
-        name.to_owned()
+    match name {
+        "Remaining" => PLANNED,
+        "Consumed" => EATEN,
+        other => other,
     }
+    .to_owned()
 }
 
 /// Index of column `name`; the error names the export the file should be.
@@ -107,50 +93,37 @@ pub fn profile_for(conn: &Connection, name: Option<&str>) -> Result<ProfileId, E
     }
 }
 
+/// Read both export files, without a connection: the server parses them
+/// off the database lock, then writes them ([`db::cronometer_apply`]).
+///
+/// # Errors
+/// Malformed CSV, unknown columns, bad values: `Invalid`, blamed on field
+/// `servings` or `summary`, naming the file and line.
+pub fn read(servings: Option<impl Read>, summary: Option<impl Read>) -> Result<Parsed, Error> {
+    Ok(Parsed {
+        servings: servings
+            .map(read_servings)
+            .transpose()
+            .map_err(|e| blame(e, "servings", "servings.csv"))?,
+        summary: summary
+            .map(read_summary)
+            .transpose()
+            .map_err(|e| blame(e, "summary", "dailysummary.csv"))?,
+    })
+}
+
 /// Read both export files, then write them in one transaction: a bad file
 /// leaves the database as it was.
 ///
 /// # Errors
-/// Malformed CSV, unknown columns, bad values: `Invalid`, blamed on field
-/// `servings` or `summary`, naming the file and line. Nothing is written
-/// then.
+/// As [`read`]; nothing is written then.
 pub fn import(
     conn: &mut Connection,
     profile: ProfileId,
     servings: Option<impl Read>,
     summary: Option<impl Read>,
 ) -> Result<Report, Error> {
-    let servings = servings
-        .map(read_servings)
-        .transpose()
-        .map_err(|e| blame(e, "servings", "servings.csv"))?;
-    let summary = summary
-        .map(read_summary)
-        .transpose()
-        .map_err(|e| blame(e, "summary", "dailysummary.csv"))?;
-    let tx = db::write(conn)?;
-    if let Some(rows) = &servings {
-        db::imported_entries_replace(&tx, profile, rows)?;
-    }
-    if let Some(s) = &summary {
-        db::day_totals_replace(&tx, profile, &s.days, &s.rows)?;
-    }
-    tx.commit()?;
-    let rows = servings.unwrap_or_default();
-    let days: BTreeSet<&str> = rows
-        .iter()
-        .map(|r| r.day.as_str())
-        .chain(
-            summary
-                .iter()
-                .flat_map(|s| s.days.iter().map(String::as_str)),
-        )
-        .collect();
-    Ok(Report {
-        entries: rows.len(),
-        days: days.len(),
-        summary: summary.map(|s| s.report),
-    })
+    db::cronometer_apply(conn, profile, read(servings, summary)?)
 }
 
 /// A file's error as bad input in `field`: the CSV reader's own errors
@@ -185,13 +158,6 @@ fn read_servings(reader: impl Read) -> Result<Vec<ImportedEntry>, Error> {
         });
     }
     Ok(rows)
-}
-
-/// A parsed `dailysummary.csv`.
-struct Summary {
-    days: Vec<String>,
-    rows: Vec<DayTotal>,
-    report: SummaryReport,
 }
 
 fn parse_nutrients(
@@ -229,6 +195,11 @@ const EXPORT_COLUMNS: [(&str, &str); 61] = [
     ("B6 (Pyridoxine) (mg)", "b6"),
     ("B12 (Cobalamin) (µg)", "b12"),
     ("Folate (µg)", "folate"),
+    // µg RAE, where the app keeps RE (EFSA, as Fineli's is converted). The
+    // export has no retinol or carotenoid split to convert it by, but RAE
+    // never exceeds RE (carotenoids count half), and an imported total is
+    // known only for energy and the macros (db::diary IMPORT_KNOWN): it
+    // reads as a floor or "–", never as the day's RE.
     ("Vitamin A (µg)", "vitamin_a"),
     ("Vitamin C (mg)", "vitamin_c"),
     ("Vitamin D (IU)", "vitamin_d"),
@@ -335,11 +306,12 @@ fn mismatched(groups: &Nutrients, total: &Nutrients) -> bool {
 fn read_summary(reader: impl Read) -> Result<Summary, Error> {
     let mut rdr = csv::Reader::from_reader(reader);
     let headers = rdr.headers()?.clone();
-    let (date, group) = (
-        column(&headers, "Date", "dailysummary.csv")?,
-        column(&headers, "Group", "dailysummary.csv")?,
-    );
-    let cols = nutrient_columns(&headers, &[date, group])?;
+    let date = column(&headers, "Date", "dailysummary.csv")?;
+    // Without `Group` (a diary not split by meal) each row is the day's
+    // total, eaten: there are no groups to check against it.
+    let group = headers.iter().position(|h| h == "Group");
+    let known: Vec<usize> = [Some(date), group].into_iter().flatten().collect();
+    let cols = nutrient_columns(&headers, &known)?;
 
     let mut days = Vec::new();
     let mut rows = Vec::new();
@@ -353,14 +325,15 @@ fn read_summary(reader: impl Read) -> Result<Summary, Error> {
         if n.is_empty() {
             continue;
         }
-        if &r[group] == "Total" {
-            totals.insert(day, n);
-        } else {
-            rows.push(DayTotal {
+        match group.map(|g| &r[g]) {
+            Some("Total") => {
+                totals.insert(day, n);
+            }
+            g => rows.push(DayTotal {
                 day,
-                group: group_name(&r[group]),
+                group: g.map_or_else(|| EATEN.to_owned(), group_name),
                 nutrients: n,
-            });
+            }),
         }
     }
     days.sort();
@@ -380,9 +353,12 @@ mod tests {
 
     #[test]
     fn every_nutrient_has_exactly_one_export_column() {
+        // Except creatine and derived ones: the export has no column for them.
+        assert!(REGISTRY.iter().any(|n| n.key == "creatine"));
         for n in &REGISTRY {
             let hits = EXPORT_COLUMNS.iter().filter(|(_, k)| *k == n.key).count();
-            assert_eq!(hits, 1, "{}", n.key);
+            let exported = n.key != "creatine" && !n.derived();
+            assert_eq!(hits, usize::from(exported), "{}", n.key);
         }
         let headers: std::collections::HashSet<_> = EXPORT_COLUMNS.iter().map(|(h, _)| h).collect();
         assert_eq!(headers.len(), EXPORT_COLUMNS.len(), "headers are unique");

@@ -1,6 +1,7 @@
 { rustPlatform
 , lib
 , cacert
+, tzdata
 }:
 let
   manifest = (lib.importTOML ./Cargo.toml).package;
@@ -12,6 +13,7 @@ rustPlatform.buildRustPackage {
   src = lib.sourceByRegex ./. [
     "^Cargo.toml$"
     "^Cargo.lock$"
+    "^build.rs$"
     "^src.*$"
     "^tests.*$"
     "^web.*$"
@@ -24,8 +26,11 @@ rustPlatform.buildRustPackage {
   # The HTTP client needs CA roots (even for the plain-HTTP stub servers the
   # tests use); the sandbox has none. Without them the server would still run,
   # with barcode lookup off.
+  # Zone-aware tests (sleep nights) need a time zone database; the sandbox
+  # has none.
   preCheck = ''
     export SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt
+    export TZDIR=${tzdata}/share/zoneinfo
   '';
 
   meta = {

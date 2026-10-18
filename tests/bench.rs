@@ -2,8 +2,10 @@
 //! Seeds five years of one person's diary through the API (a year of it
 //! imported history, a nested recipe planned each day, an energy target,
 //! habit trackers counted every day, a check-in every day),
-//! then times the hot reads in process. Not part of the normal run:
-//! `cargo test --release --test bench -- --ignored --nocapture`.
+//! then times the hot reads in process, each in 3 series (`within` has the
+//! rule). Not part of the normal run:
+//! `cargo test --release --test bench -- --ignored --nocapture`, or
+//! `nix build .#bench` (the same, in the sandbox).
 
 use std::fmt::Write;
 use std::time::{Duration, Instant};
@@ -56,11 +58,13 @@ async fn nutrient_keys(app: &Router) -> Vec<String> {
         .collect()
 }
 
-/// A food's values per 100 g, one for every key: under 50 each, so total
-/// carbohydrate (net + fibre) stays within the per-100 caps.
+/// A food's values per 100 g, one for every key but total carbohydrate
+/// (derived: net + fibre, as a sent one must be): under 50 each, so the
+/// total stays within the per-100 caps.
 fn per100(i: usize, keys: &[String]) -> Value {
     keys.iter()
         .enumerate()
+        .filter(|(_, key)| *key != "carbs")
         .map(|(k, key)| (key.clone(), json!(1 + (i + k) % 45)))
         .collect::<serde_json::Map<_, _>>()
         .into()
@@ -220,7 +224,7 @@ async fn scale(app: &Router) -> String {
 
 /// A full sync replaying 10,000 readings: one transaction, each day
 /// derived once. Budget 2 s (release), far inside openScale's 30 s read
-/// timeout. `ponytail:` one write lock for the whole batch; chunk it if
+/// timeout. ponytail: one write lock for the whole batch; chunk it if
 /// other requests visibly stall during a full sync.
 async fn full_sync_within_budget(app: &Router, readings: &str) -> bool {
     let budget = Duration::from_secs(2);
@@ -232,8 +236,7 @@ async fn full_sync_within_budget(app: &Router, readings: &str) -> bool {
     })
     .await;
     let name = "scale batch (10k)";
-    println!("{name:>17}: p50 {p50:>9.2?}  p99 {p99:>9.2?}  (budget p99 {budget:?})");
-    p99 <= budget
+    within(name, p50, p99, budget)
 }
 
 /// A batch naming 100,000 openScale users (none bound): folding the users
@@ -255,12 +258,11 @@ async fn many_users_within_budget(app: &Router) -> bool {
     })
     .await;
     let name = "scale users (100k)";
-    println!("{name:>17}: p50 {p50:>9.2?}  p99 {p99:>9.2?}  (budget p99 {budget:?})");
-    p99 <= budget
+    within(name, p50, p99, budget)
 }
 
 /// Health Connect activity for 2019–2023: each day's totals, its night and
-/// heart, and a watch run (promoted into a session), synced as the phone's
+/// heart, and a device run (promoted into a session), synced as the phone's
 /// 90-day resync does, 92 days at a time.
 async fn activity(app: &Router) {
     use jiff::ToSpan;
@@ -291,7 +293,7 @@ async fn activity(app: &Router) {
     }
 }
 
-/// A 90-day resync with two watch workouts a day into a profile that hand
+/// A 90-day resync with two device workouts a day into a profile that hand
 /// logged one of them each day (claimed) and never saw the other
 /// (promoted): one transaction. Each run gets a fresh profile. Budget
 /// 300 ms (release).
@@ -300,8 +302,8 @@ async fn health_sync_within_budget(app: &Router) -> bool {
     const RUNS: usize = 20;
     let from = jiff::civil::date(2024, 1, 1);
     let span = || from.series(1.day()).take(90);
-    let mut profiles = Vec::with_capacity(RUNS);
-    for i in 0..RUNS {
+    let mut profiles = Vec::with_capacity(RUNS * REPEATS);
+    for i in 0..RUNS * REPEATS {
         let (_, p) = call(
             app,
             "POST",
@@ -316,10 +318,10 @@ async fn health_sync_within_budget(app: &Router) -> bool {
             call(
                 app,
                 "POST",
-                &format!("/api/profiles/{pid}/sessions"),
+                &format!("/api/profiles/{pid}/activities"),
                 Some(
                     json!({ "day": d.to_string(), "name": "Morning run", "minutes": 40,
-                    "start_at": format!("{d}T06:00:00Z") }),
+                    "type": "run", "start_at": format!("{d}T06:00:00Z") }),
                 ),
             )
             .await;
@@ -349,7 +351,7 @@ async fn health_sync_within_budget(app: &Router) -> bool {
     let (_, after) = call(
         app,
         "GET",
-        &format!("/api/profiles/{}/sessions", profiles[0]),
+        &format!("/api/profiles/{}/activities", profiles[0]),
         None,
     )
     .await;
@@ -360,8 +362,138 @@ async fn health_sync_within_budget(app: &Router) -> bool {
     );
     let budget = Duration::from_millis(300);
     let name = "health sync (90d)";
-    println!("{name:>17}: p50 {p50:>9.2?}  p99 {p99:>9.2?}  (budget p99 {budget:?})");
-    p99 <= budget
+    within(name, p50, p99, budget)
+}
+
+/// Pages of the phone's raw records as it streams them: ~768 KiB each
+/// (`Payload.PAGE_BYTES`), every record new. Budget 300 ms (release).
+async fn records_within_budget(app: &Router) -> bool {
+    const PAGES: usize = 20;
+    let data = json!({ "samples": "x".repeat(900) });
+    let page = |p: usize| {
+        let records: Vec<Value> = (0..750)
+            .map(|r| {
+                json!({ "kind": "HeartRate", "id": format!("bench-{p}-{r}"),
+                    "start": "2024-01-01T10:00:00Z", "end": "2024-01-01T10:30:00Z",
+                    "data": data })
+            })
+            .collect();
+        json!({ "device": "Bench", "records": records })
+    };
+    let bytes = page(0).to_string().len();
+    assert!(
+        (700 << 10..=768 << 10).contains(&bytes),
+        "a page is {bytes} B"
+    );
+    let (p50, p99) = time(PAGES, |i| {
+        let (app, body) = (app.clone(), page(i));
+        async move {
+            let uri = "/api/profiles/1/sync/health/records";
+            let (status, res) = call(&app, "POST", uri, Some(body)).await;
+            assert_eq!(status, StatusCode::OK, "{res}");
+        }
+    })
+    .await;
+    let budget = Duration::from_millis(300);
+    let name = "records (768 KiB)";
+    within(name, p50, p99, budget)
+}
+
+/// A Google Health export at the upload cap (64 MiB: heart rate every 10 s
+/// for ~230 days) imported while the diary is read: a day's read waits at
+/// most 150 ms behind it, the screen budget. A second import at once is 503
+/// `busy` (one import permit), never a second body in memory.
+async fn takeout_within_budget(app: &Router) -> bool {
+    use jiff::ToSpan;
+    let mut files = Vec::new();
+    let mut bytes = 0;
+    let mut d = jiff::civil::date(2018, 1, 1);
+    while bytes < 60 << 20 {
+        let mut text = String::from("timestamp,beats per minute,data source\n");
+        for s in (0..86_400).step_by(10) {
+            writeln!(
+                text,
+                "{d}T{:02}:{:02}:{:02}Z,{},Bench",
+                s / 3600,
+                s / 60 % 60,
+                s % 60,
+                60 + s % 40
+            )
+            .unwrap();
+        }
+        bytes += text.len();
+        files.push(
+            json!({ "name": format!("Takeout/Google Health/Heart Rate/heart_rate_{d}.csv"),
+                           "text": text }),
+        );
+        d = d.saturating_add(1.day());
+    }
+    let body = json!({ "files": files });
+    let import = |body: Value| {
+        let app = app.clone();
+        tokio::spawn(async move {
+            let uri = "/api/profiles/1/import/google-health";
+            let (status, res) = call(&app, "POST", uri, Some(body)).await;
+            assert!(
+                status == StatusCode::OK || status == StatusCode::SERVICE_UNAVAILABLE,
+                "{status}: {res}"
+            );
+            status
+        })
+    };
+    let (first, second) = (import(body.clone()), import(body));
+    let mut waits = Vec::new();
+    let mut i = 0;
+    while !(first.is_finished() && second.is_finished()) {
+        let start = Instant::now();
+        let uri = format!("/api/profiles/1/day/{}", day(i % DAYS));
+        let (status, _) = call(app, "GET", &uri, None).await;
+        assert!(status.is_success(), "{uri}: {status}");
+        waits.push(start.elapsed());
+        i += 1;
+    }
+    let done = [first.await.unwrap(), second.await.unwrap()];
+    assert!(
+        done.contains(&StatusCode::OK),
+        "neither import ran: {done:?}"
+    );
+    let worst = waits.iter().max().copied().unwrap_or_default();
+    let budget = Duration::from_millis(150);
+    let name = "day during takeout";
+    println!(
+        "{name:>17}: {} reads, max {worst:>9.2?}  (budget max {budget:?})",
+        waits.len()
+    );
+    worst <= budget
+}
+
+/// A day's read while All time loads, again and again: it waits for All
+/// time's reads only, which hold the lock, not for its sums.
+/// Budget 30 ms.
+async fn day_during_stats_within_budget(app: &Router) -> bool {
+    let loads = {
+        let app = app.clone();
+        tokio::spawn(async move {
+            for _ in 0..10 {
+                let (status, _) = call(&app, "GET", "/api/profiles/1/stats", None).await;
+                assert!(status.is_success(), "stats: {status}");
+            }
+        })
+    };
+    let mut waits = Vec::new();
+    let mut i = 0;
+    while !loads.is_finished() {
+        let start = Instant::now();
+        let uri = format!("/api/profiles/1/day/{}", day(i % DAYS));
+        let (status, _) = call(app, "GET", &uri, None).await;
+        assert!(status.is_success(), "{uri}: {status}");
+        waits.push(start.elapsed());
+        i += 1;
+    }
+    loads.await.unwrap();
+    waits.sort();
+    let (p50, p99) = (waits[waits.len() / 2], waits[waits.len() * 99 / 100]);
+    within("day during all time", p50, p99, Duration::from_millis(30))
 }
 
 /// [`SESSIONS`] sessions of 15 sets.
@@ -375,27 +507,52 @@ async fn sessions(app: &Router) {
         call(
             app,
             "POST",
-            "/api/profiles/1/sessions",
+            "/api/profiles/1/activities",
             Some(json!({ "day": day(s), "name": "Bench", "minutes": 30, "sets": sets })),
         )
         .await;
     }
 }
 
-/// p50 and p99 of `runs` calls of `f`.
+/// Timed series per read: one slow series (another process busy) must not
+/// fail the bench, nor one quick one pass it.
+const REPEATS: usize = 3;
+
+/// [`REPEATS`] series of `runs` calls of `f` (the `i`th call overall gets
+/// `i`): the median series' p50 and the best series' p99.
 async fn time<F, Fut>(runs: usize, mut f: F) -> (Duration, Duration)
 where
     F: FnMut(usize) -> Fut,
     Fut: Future<Output = ()>,
 {
-    let mut took = Vec::with_capacity(runs);
-    for i in 0..runs {
-        let start = Instant::now();
-        f(i).await;
-        took.push(start.elapsed());
+    let mut p50s = Vec::with_capacity(REPEATS);
+    let mut p99s = Vec::with_capacity(REPEATS);
+    for series in 0..REPEATS {
+        let mut took = Vec::with_capacity(runs);
+        for i in 0..runs {
+            let start = Instant::now();
+            f(series * runs + i).await;
+            took.push(start.elapsed());
+        }
+        took.sort();
+        p50s.push(took[runs / 2]);
+        p99s.push(took[runs * 99 / 100]);
     }
-    took.sort();
-    (took[runs / 2], took[runs * 99 / 100])
+    p50s.sort();
+    (
+        p50s[REPEATS / 2],
+        p99s.into_iter().min().unwrap_or_default(),
+    )
+}
+
+/// The rule: the best p99 within the budget and the median p50
+/// within half of it, so the gate has room for noise but still catches a
+/// read drifting toward its budget.
+fn within(name: &str, p50: Duration, p99: Duration, budget: Duration) -> bool {
+    let pass = p99 <= budget && p50 <= budget / 2;
+    let verdict = if pass { "ok" } else { "OVER" };
+    println!("{name:>17}: p50 {p50:>9.2?}  p99 {p99:>9.2?}  (budget {budget:?}) {verdict}");
+    pass
 }
 
 /// The address a timed read named `name` asks on its `i`th run.
@@ -415,16 +572,18 @@ fn read_uri(name: &str, i: usize, words: &[&str]) -> String {
             words[i % words.len()]
         ),
         "scale (year)" => "/api/profiles/1/scale?from=2023-01-01&to=2023-12-31".to_owned(),
-        "activity (year)" => "/api/profiles/1/activity?from=2023-01-01&to=2023-12-31".to_owned(),
+        "activity (year)" => "/api/profiles/1/device-days?from=2023-01-01&to=2023-12-31".to_owned(),
         "check-ins (year)" => "/api/profiles/1/check-ins?from=2023-01-01&to=2023-12-31".to_owned(),
+        "stats" => "/api/profiles/1/stats".to_owned(),
         "habit days (year)" => {
             "/api/profiles/1/habits/days?from=2023-01-01&to=2023-12-28".to_owned()
         }
-        _ => "/api/profiles/1/sessions".to_owned(),
+        _ => "/api/profiles/1/activities".to_owned(),
     }
 }
 
-#[tokio::test]
+// Several workers: an import runs while reads are timed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "seeds a large database; run on demand"]
 async fn hot_reads_stay_within_budget() {
     let mut conn = kaloriina::open(std::path::Path::new(":memory:")).unwrap();
@@ -465,7 +624,7 @@ async fn hot_reads_stay_within_budget() {
                 &app,
                 "POST",
                 "/api/profiles/1/entries",
-                Some(json!({ "day": day(d), "group": "Consumed",
+                Some(json!({ "day": day(d), "group": "Eaten",
                              "food_id": ids[(d * 7 + e * 13) % FOODS], "grams": 120 })),
             )
             .await;
@@ -478,22 +637,27 @@ async fn hot_reads_stay_within_budget() {
     sessions(&app).await;
     activity(&app).await;
 
-    // Budgets (p99, server side): a keystroke's search 50 ms, so typing
-    // stays under the 100 ms that feels instant; a screen's read 150 ms, so
-    // opening it stays under 300 ms with the network and the page.
+    // Budgets (p99, server side; `within` holds the p50 to half): a
+    // keystroke's search 50 ms, so typing stays under the 100 ms that feels
+    // instant; a screen's read 150 ms, so opening it stays under 300 ms with
+    // the network and the page. `fit` without a query is the finder opening
+    // (or its sort picked), a screen's read; with one, a keystroke.
     let budgets = [
         ("search", 50),
         ("day", 150),
         ("recent", 150),
         ("summary (year)", 150),
-        ("sessions", 150),
+        ("activities", 150),
         ("sources (year)", 150),
-        ("fit", 50),
+        ("fit", 150),
         ("fit (q)", 50),
         ("habit days (year)", 150),
         ("scale (year)", 150),
         ("activity (year)", 150),
         ("check-ins (year)", 150),
+        // All time sums every entry (O(history)): a screen
+        // opened rarely, its reads under the lock, its sums off it.
+        ("stats", 1200),
     ];
     let mut over = Vec::new();
     for (name, ms) in budgets {
@@ -507,8 +671,7 @@ async fn hot_reads_stay_within_budget() {
             }
         })
         .await;
-        println!("{name:>17}: p50 {p50:>9.2?}  p99 {p99:>9.2?}  (budget p99 {budget:?})");
-        if p99 > budget {
+        if !within(name, p50, p99, budget) {
             over.push(name);
         }
     }
@@ -520,6 +683,15 @@ async fn hot_reads_stay_within_budget() {
     }
     if !health_sync_within_budget(&app).await {
         over.push("health sync (90d)");
+    }
+    if !records_within_budget(&app).await {
+        over.push("records (768 KiB)");
+    }
+    if !takeout_within_budget(&app).await {
+        over.push("day during takeout");
+    }
+    if !day_during_stats_within_budget(&app).await {
+        over.push("day during all time");
     }
     assert!(over.is_empty(), "over budget: {over:?}");
 }

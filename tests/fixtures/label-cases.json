@@ -1,0 +1,2638 @@
+[
+  {
+    "name": "nothing known",
+    "per100": {},
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "energy only",
+    "per100": {
+      "energy": 250
+    },
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "protein 20 % of energy",
+    "per100": {
+      "energy": 100,
+      "protein": 5
+    },
+    "verdict": null,
+    "subs": ["high_protein"],
+    "why": []
+  },
+  {
+    "name": "protein just under 20 %",
+    "per100": {
+      "energy": 100,
+      "protein": 4.99
+    },
+    "verdict": null,
+    "subs": ["source_protein"],
+    "why": []
+  },
+  {
+    "name": "protein 12 % of energy",
+    "per100": {
+      "energy": 100,
+      "protein": 3
+    },
+    "verdict": null,
+    "subs": ["source_protein"],
+    "why": []
+  },
+  {
+    "name": "protein just under 12 %",
+    "per100": {
+      "energy": 100,
+      "protein": 2.99
+    },
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "energy-free: no protein claim",
+    "per100": {
+      "energy": 4,
+      "protein": 1
+    },
+    "verdict": null,
+    "subs": ["low_energy"],
+    "why": []
+  },
+  {
+    "name": "protein without energy",
+    "per100": {
+      "protein": 30
+    },
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "fibre 6 g",
+    "per100": {
+      "energy": 300,
+      "fiber": 6
+    },
+    "verdict": null,
+    "subs": ["high_fiber"],
+    "why": []
+  },
+  {
+    "name": "fibre just under 6 g, a source",
+    "per100": {
+      "energy": 300,
+      "fiber": 5.99
+    },
+    "verdict": null,
+    "subs": ["source_fiber"],
+    "why": []
+  },
+  {
+    "name": "fibre 3 g per 100 kcal",
+    "per100": {
+      "energy": 100,
+      "fiber": 3
+    },
+    "verdict": null,
+    "subs": ["high_fiber"],
+    "why": []
+  },
+  {
+    "name": "fibre under 3 g per 100 kcal",
+    "per100": {
+      "energy": 100,
+      "fiber": 2.99
+    },
+    "verdict": null,
+    "subs": ["source_fiber"],
+    "why": []
+  },
+  {
+    "name": "fibre 3 g",
+    "per100": {
+      "energy": 250,
+      "fiber": 3
+    },
+    "verdict": null,
+    "subs": ["source_fiber"],
+    "why": []
+  },
+  {
+    "name": "fibre 1.5 g per 100 kcal",
+    "per100": {
+      "energy": 160,
+      "fiber": 2.4
+    },
+    "verdict": null,
+    "subs": ["source_fiber"],
+    "why": []
+  },
+  {
+    "name": "fibre under both",
+    "per100": {
+      "energy": 300,
+      "fiber": 2.99
+    },
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "low calorie at 40",
+    "per100": {
+      "energy": 40
+    },
+    "verdict": null,
+    "subs": ["low_energy"],
+    "why": []
+  },
+  {
+    "name": "over 40 kcal",
+    "per100": {
+      "energy": 40.01
+    },
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "drink: low calorie at 20",
+    "drink": true,
+    "per100": {
+      "energy": 20
+    },
+    "verdict": null,
+    "subs": ["low_energy"],
+    "why": []
+  },
+  {
+    "name": "drink: over 20 kcal",
+    "drink": true,
+    "per100": {
+      "energy": 20.01
+    },
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "low fat at 3 g",
+    "per100": {
+      "energy": 100,
+      "fat": 3
+    },
+    "verdict": null,
+    "subs": ["low_fat"],
+    "why": []
+  },
+  {
+    "name": "over 3 g fat",
+    "per100": {
+      "energy": 100,
+      "fat": 3.01
+    },
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "drink: low fat at 1.5 g",
+    "drink": true,
+    "per100": {
+      "energy": 100,
+      "fat": 1.5
+    },
+    "verdict": "unhealthy",
+    "subs": ["low_fat"],
+    "why": ["energy"]
+  },
+  {
+    "name": "drink: over 1.5 g fat",
+    "drink": true,
+    "per100": {
+      "energy": 100,
+      "fat": 1.51
+    },
+    "verdict": "unhealthy",
+    "subs": [],
+    "why": ["energy"]
+  },
+  {
+    "name": "low sat. fat at 1.5 g and 10 % of energy",
+    "per100": {
+      "energy": 200,
+      "saturated": 1.5
+    },
+    "verdict": null,
+    "subs": ["low_saturated"],
+    "why": []
+  },
+  {
+    "name": "low sat. fat grams but over 10 % of energy",
+    "per100": {
+      "energy": 100,
+      "saturated": 1.5
+    },
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "over 1.5 g sat. fat",
+    "per100": {
+      "energy": 200,
+      "saturated": 1.51
+    },
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "sat. fat without energy",
+    "per100": {
+      "saturated": 1
+    },
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "drink: low sat. fat at 0.75 g",
+    "drink": true,
+    "per100": {
+      "energy": 100,
+      "saturated": 0.75
+    },
+    "verdict": "unhealthy",
+    "subs": ["low_saturated"],
+    "why": ["energy"]
+  },
+  {
+    "name": "drink: over 0.75 g sat. fat",
+    "drink": true,
+    "per100": {
+      "energy": 100,
+      "saturated": 0.76
+    },
+    "verdict": "unhealthy",
+    "subs": [],
+    "why": ["energy"]
+  },
+  {
+    "name": "low sugar at 5 g",
+    "per100": {
+      "energy": 100,
+      "sugars": 5
+    },
+    "verdict": null,
+    "subs": ["low_sugars"],
+    "why": []
+  },
+  {
+    "name": "over 5 g sugar",
+    "per100": {
+      "energy": 100,
+      "sugars": 5.01
+    },
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "drink: low sugar at 2.5 g",
+    "drink": true,
+    "per100": {
+      "energy": 100,
+      "sugars": 2.5
+    },
+    "verdict": "unhealthy",
+    "subs": ["low_sugars"],
+    "why": ["sugars", "energy"]
+  },
+  {
+    "name": "drink: over 2.5 g sugar",
+    "drink": true,
+    "per100": {
+      "energy": 100,
+      "sugars": 2.51
+    },
+    "verdict": "unhealthy",
+    "subs": [],
+    "why": ["sugars", "energy"]
+  },
+  {
+    "name": "low salt at 0.3 g (120 mg sodium)",
+    "per100": {
+      "energy": 100,
+      "sodium": 120
+    },
+    "verdict": null,
+    "subs": ["low_sodium"],
+    "why": []
+  },
+  {
+    "name": "over 0.3 g salt",
+    "per100": {
+      "energy": 100,
+      "sodium": 120.01
+    },
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "drink: low salt at 0.3 g too",
+    "drink": true,
+    "per100": {
+      "energy": 100,
+      "sodium": 120
+    },
+    "verdict": "unhealthy",
+    "subs": ["low_sodium"],
+    "why": ["energy"]
+  },
+  {
+    "name": "ALA 0.3 g, per 100 kcal too",
+    "per100": {
+      "energy": 50,
+      "ala": 0.3
+    },
+    "verdict": null,
+    "subs": ["source_omega_3"],
+    "why": []
+  },
+  {
+    "name": "ALA just under 0.3 g",
+    "per100": {
+      "energy": 50,
+      "ala": 0.29
+    },
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "ALA 0.3 g but not per 100 kcal",
+    "per100": {
+      "energy": 200,
+      "ala": 0.3
+    },
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "ALA in an energy-free food",
+    "per100": {
+      "energy": 0,
+      "ala": 0.3
+    },
+    "verdict": null,
+    "subs": ["low_energy", "source_omega_3"],
+    "why": []
+  },
+  {
+    "name": "EPA+DHA 40 mg",
+    "per100": {
+      "energy": 50,
+      "epa": 0.02,
+      "dha": 0.02
+    },
+    "verdict": null,
+    "subs": ["source_omega_3"],
+    "why": []
+  },
+  {
+    "name": "EPA+DHA just under 40 mg",
+    "per100": {
+      "energy": 50,
+      "epa": 0.02,
+      "dha": 0.0199
+    },
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "vitamin C 15 % of NRV",
+    "per100": {
+      "energy": 50,
+      "vitamin_c": 12
+    },
+    "verdict": null,
+    "subs": ["source_vitamin_c"],
+    "why": []
+  },
+  {
+    "name": "vitamin C just under 15 %",
+    "per100": {
+      "energy": 50,
+      "vitamin_c": 11.99
+    },
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "vitamin C 30 % of NRV",
+    "per100": {
+      "energy": 50,
+      "vitamin_c": 24
+    },
+    "verdict": null,
+    "subs": ["high_vitamin_c"],
+    "why": []
+  },
+  {
+    "name": "vitamin C just under 30 %",
+    "per100": {
+      "energy": 50,
+      "vitamin_c": 23.99
+    },
+    "verdict": null,
+    "subs": ["source_vitamin_c"],
+    "why": []
+  },
+  {
+    "name": "drink: vitamin C 7.5 % of NRV",
+    "drink": true,
+    "per100": {
+      "energy": 50,
+      "vitamin_c": 6
+    },
+    "verdict": null,
+    "subs": ["source_vitamin_c"],
+    "why": []
+  },
+  {
+    "name": "drink: vitamin C just under 7.5 %",
+    "drink": true,
+    "per100": {
+      "energy": 50,
+      "vitamin_c": 5.99
+    },
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "drink: vitamin C 15 % of NRV",
+    "drink": true,
+    "per100": {
+      "energy": 50,
+      "vitamin_c": 12
+    },
+    "verdict": null,
+    "subs": ["high_vitamin_c"],
+    "why": []
+  },
+  {
+    "name": "vitamin D in IU (NRV 5 µg = 200 IU)",
+    "per100": {
+      "energy": 50,
+      "vitamin_d": 30
+    },
+    "verdict": null,
+    "subs": ["source_vitamin_d"],
+    "why": []
+  },
+  {
+    "name": "calcium 30 % of NRV",
+    "per100": {
+      "energy": 50,
+      "calcium": 240
+    },
+    "verdict": null,
+    "subs": ["high_calcium"],
+    "why": []
+  },
+  {
+    "name": "fat at the red line",
+    "per100": {
+      "energy": 300,
+      "fat": 17.5
+    },
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "high fat",
+    "per100": {
+      "energy": 300,
+      "fat": 17.51
+    },
+    "verdict": null,
+    "subs": ["high_fat"],
+    "why": []
+  },
+  {
+    "name": "drink: fat at the red line",
+    "drink": true,
+    "per100": {
+      "energy": 300,
+      "fat": 8.75
+    },
+    "verdict": "unhealthy",
+    "subs": [],
+    "why": ["energy"]
+  },
+  {
+    "name": "drink: high fat",
+    "drink": true,
+    "per100": {
+      "energy": 300,
+      "fat": 8.76
+    },
+    "verdict": "unhealthy",
+    "subs": ["high_fat"],
+    "why": ["energy"]
+  },
+  {
+    "name": "sat. fat at the red line",
+    "per100": {
+      "energy": 300,
+      "saturated": 5
+    },
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "high sat. fat",
+    "per100": {
+      "energy": 300,
+      "saturated": 5.01
+    },
+    "verdict": null,
+    "subs": ["high_saturated"],
+    "why": []
+  },
+  {
+    "name": "drink: sat. fat at the red line",
+    "drink": true,
+    "per100": {
+      "energy": 300,
+      "saturated": 2.5
+    },
+    "verdict": "unhealthy",
+    "subs": [],
+    "why": ["saturated", "energy"]
+  },
+  {
+    "name": "drink: high sat. fat",
+    "drink": true,
+    "per100": {
+      "energy": 300,
+      "saturated": 2.51
+    },
+    "verdict": "unhealthy",
+    "subs": ["high_saturated"],
+    "why": ["saturated", "energy"]
+  },
+  {
+    "name": "sugar at the red line",
+    "per100": {
+      "energy": 300,
+      "sugars": 22.5
+    },
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "high sugar",
+    "per100": {
+      "energy": 300,
+      "sugars": 22.51
+    },
+    "verdict": null,
+    "subs": ["high_sugars"],
+    "why": []
+  },
+  {
+    "name": "drink: sugar at the red line",
+    "drink": true,
+    "per100": {
+      "energy": 300,
+      "sugars": 11.25
+    },
+    "verdict": "unhealthy",
+    "subs": [],
+    "why": ["sugars", "energy"]
+  },
+  {
+    "name": "drink: high sugar",
+    "drink": true,
+    "per100": {
+      "energy": 300,
+      "sugars": 11.26
+    },
+    "verdict": "unhealthy",
+    "subs": ["high_sugars"],
+    "why": ["sugars", "energy"]
+  },
+  {
+    "name": "salt at the red line (1.5 g)",
+    "per100": {
+      "energy": 300,
+      "sodium": 600
+    },
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "high salt",
+    "per100": {
+      "energy": 300,
+      "sodium": 600.01
+    },
+    "verdict": null,
+    "subs": ["high_sodium"],
+    "why": []
+  },
+  {
+    "name": "drink: salt at the red line (0.75 g)",
+    "drink": true,
+    "per100": {
+      "energy": 300,
+      "sodium": 300
+    },
+    "verdict": "unhealthy",
+    "subs": [],
+    "why": ["sodium", "energy"]
+  },
+  {
+    "name": "drink: high salt",
+    "drink": true,
+    "per100": {
+      "energy": 300,
+      "sodium": 300.01
+    },
+    "verdict": "unhealthy",
+    "subs": ["high_sodium"],
+    "why": ["sodium", "energy"]
+  },
+  {
+    "name": "a negative makes it unhealthy, positives still listed",
+    "per100": {
+      "energy": 400,
+      "protein": 25,
+      "fat": 20
+    },
+    "verdict": null,
+    "subs": ["high_protein", "high_fat"],
+    "why": []
+  },
+  {
+    "name": "food thresholds for a food",
+    "per100": {
+      "energy": 30,
+      "sugars": 11.3
+    },
+    "verdict": null,
+    "subs": ["low_energy"],
+    "why": []
+  },
+  {
+    "name": "drink thresholds for the same values",
+    "drink": true,
+    "per100": {
+      "energy": 30,
+      "sugars": 11.3
+    },
+    "verdict": "unhealthy",
+    "subs": ["high_sugars"],
+    "why": ["sugars", "energy"]
+  },
+  {
+    "name": "an alcoholic drink makes no claim",
+    "drink": true,
+    "per100": {
+      "energy": 43,
+      "alcohol": 4,
+      "fat": 0,
+      "sugars": 0.3,
+      "sodium": 4
+    },
+    "verdict": "unhealthy",
+    "subs": [],
+    "why": ["alcohol"]
+  },
+  {
+    "name": "an alcoholic drink is still judged",
+    "drink": true,
+    "per100": {
+      "energy": 300,
+      "alcohol": 20,
+      "sugars": 30
+    },
+    "verdict": "unhealthy",
+    "subs": ["high_sugars"],
+    "why": ["alcohol"]
+  },
+  {
+    "name": "1.2 % ABV still claims",
+    "drink": true,
+    "per100": {
+      "energy": 10,
+      "alcohol": 0.95
+    },
+    "verdict": null,
+    "subs": ["low_energy"],
+    "why": []
+  },
+  {
+    "name": "water",
+    "drink": true,
+    "per100": {
+      "energy": 0,
+      "water": 100
+    },
+    "verdict": null,
+    "subs": ["low_energy"],
+    "why": []
+  },
+  {
+    "name": "skimmed milk",
+    "drink": true,
+    "per100": {
+      "energy": 34,
+      "protein": 3.4,
+      "fat": 0.1,
+      "saturated": 0.06,
+      "sugars": 4.8,
+      "sodium": 40,
+      "calcium": 120
+    },
+    "verdict": "healthy",
+    "subs": [
+      "high_protein",
+      "low_fat",
+      "low_saturated",
+      "low_sodium",
+      "high_calcium"
+    ],
+    "why": ["sugars", "energy", "protein"]
+  },
+  {
+    "name": "healthy needs all four lights known",
+    "per100": {
+      "energy": 100,
+      "protein": 5,
+      "fat": 1,
+      "saturated": 0.2,
+      "sugars": 2,
+      "sodium": 50
+    },
+    "verdict": "healthy",
+    "subs": [
+      "high_protein",
+      "low_fat",
+      "low_saturated",
+      "low_sugars",
+      "low_sodium"
+    ],
+    "why": ["protein"]
+  },
+  {
+    "name": "salt not given: no verdict (Mexicana pizza)",
+    "per100": {
+      "energy": 249.5,
+      "protein": 11.9,
+      "fat": 10
+    },
+    "verdict": null,
+    "subs": ["source_protein"],
+    "why": []
+  },
+  {
+    "name": "a red still makes it unhealthy with a light unknown",
+    "per100": {
+      "energy": 250,
+      "sodium": 920
+    },
+    "verdict": null,
+    "subs": ["high_sodium"],
+    "why": []
+  },
+  {
+    "name": "recipe: sugars from 25 % of the energy prove no Low sugar (recipe 274)",
+    "per100": {
+      "energy": 230,
+      "protein": 6,
+      "fat": 9,
+      "saturated": 3,
+      "sugars": 0.05,
+      "sodium": 300
+    },
+    "known": {
+      "sugars": 57.7
+    },
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "recipe: a floor over the red is a red",
+    "per100": {
+      "energy": 230,
+      "fat": 5,
+      "saturated": 1,
+      "sugars": 2,
+      "sodium": 700
+    },
+    "known": {
+      "sodium": 100
+    },
+    "verdict": null,
+    "subs": ["low_saturated", "low_sugars", "high_sodium"],
+    "why": []
+  },
+  {
+    "name": "recipe: a floor proves a Source of",
+    "per100": {
+      "energy": 230,
+      "calcium": 164.8
+    },
+    "known": {
+      "calcium": 50
+    },
+    "verdict": null,
+    "subs": ["source_calcium"],
+    "why": []
+  },
+  {
+    "name": "recipe: sugars at 80 % of the energy are known",
+    "per100": {
+      "energy": 100,
+      "protein": 5,
+      "fat": 1,
+      "saturated": 0.2,
+      "sugars": 2,
+      "sodium": 50
+    },
+    "known": {
+      "sugars": 80
+    },
+    "verdict": "healthy",
+    "subs": [
+      "high_protein",
+      "low_fat",
+      "low_saturated",
+      "low_sugars",
+      "low_sodium"
+    ],
+    "why": ["protein"]
+  },
+  {
+    "name": "recipe: energy partly known proves no share of energy",
+    "per100": {
+      "energy": 100,
+      "protein": 5
+    },
+    "known": {
+      "energy": 50
+    },
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "trans fat counts with saturates for Low sat. fat",
+    "per100": {
+      "energy": 400,
+      "saturated": 1.2,
+      "trans_fats": 0.4
+    },
+    "verdict": null,
+    "subs": [],
+    "why": []
+  },
+  {
+    "name": "saturates and trans at 1.5 g together",
+    "per100": {
+      "energy": 400,
+      "saturated": 1.1,
+      "trans_fats": 0.4
+    },
+    "verdict": null,
+    "subs": ["low_saturated"],
+    "why": []
+  },
+  {
+    "name": "score: the owner's fermented pickles (live 7): salt, but fruit & veg: OK",
+    "per100": {
+      "energy": 12.0,
+      "net_carbs": 1.4,
+      "sugars": 0.0,
+      "fat": 0.1,
+      "saturated": 0.0,
+      "protein": 1.0,
+      "sodium": 1200.0
+    },
+    "fruit_veg": 1.0,
+    "verdict": "ok",
+    "subs": [
+      "high_protein",
+      "low_energy",
+      "low_fat",
+      "low_saturated",
+      "low_sugars",
+      "high_sodium"
+    ],
+    "why": ["sodium", "fruit_veg"]
+  },
+  {
+    "name": "score: the same pickles outside Fruit and vegetables: Unhealthy",
+    "per100": {
+      "energy": 12.0,
+      "net_carbs": 1.4,
+      "sugars": 0.0,
+      "fat": 0.1,
+      "saturated": 0.0,
+      "protein": 1.0,
+      "sodium": 1200.0
+    },
+    "verdict": "unhealthy",
+    "subs": [
+      "high_protein",
+      "low_energy",
+      "low_fat",
+      "low_saturated",
+      "low_sugars",
+      "high_sodium"
+    ],
+    "why": ["sodium"]
+  },
+  {
+    "name": "score: Fineli hapankurkku: OK",
+    "per100": {
+      "energy": 10.236615679,
+      "alcohol": 0.0,
+      "water": 97.0,
+      "net_carbs": 1.26,
+      "carbs": 1.89,
+      "sugars": 1.26,
+      "starch": 0.0,
+      "fiber": 0.63,
+      "insoluble_fiber": 0.63,
+      "fat": 0.1,
+      "saturated": 0.0164,
+      "monounsaturated": 0.0017,
+      "polyunsaturated": 0.037,
+      "trans_fats": 0.0,
+      "cholesterol": 0.0,
+      "omega_3": 0.0236,
+      "ala": 0.023596,
+      "epa": 0.0,
+      "dha": 0.0,
+      "epa_dha": 0.0,
+      "omega_6": 0.013,
+      "la": 0.013458,
+      "aa": 0.0,
+      "protein": 0.58,
+      "tryptophan": 0.009,
+      "vitamin_a": 20.25,
+      "b1": 0.036,
+      "b2": 0.081,
+      "b3": 0.33,
+      "b6": 0.04,
+      "b12": 0.0,
+      "folate": 8.68,
+      "vitamin_c": 7.2,
+      "vitamin_d": 0.0,
+      "vitamin_e": 0.036,
+      "vitamin_k": 13.5,
+      "sodium": 1163.24,
+      "potassium": 200.7,
+      "calcium": 20.34,
+      "magnesium": 12.089,
+      "phosphorus": 28.5,
+      "iron": 0.173,
+      "zinc": 0.083,
+      "copper": 0.0356,
+      "manganese": 0.09,
+      "selenium": 0.453
+    },
+    "fruit_veg": 1.0,
+    "verdict": "ok",
+    "subs": [
+      "high_protein",
+      "high_fiber",
+      "low_energy",
+      "low_fat",
+      "low_saturated",
+      "low_sugars",
+      "source_vitamin_k",
+      "high_sodium"
+    ],
+    "why": ["sodium", "fruit_veg"]
+  },
+  {
+    "name": "score: Fineli sauerkraut: Healthy",
+    "per100": {
+      "energy": 31.67543021,
+      "alcohol": 0.0,
+      "water": 88.91,
+      "net_carbs": 5.186,
+      "carbs": 7.585,
+      "sugars": 5.041,
+      "starch": 0.14,
+      "fiber": 2.399,
+      "insoluble_fiber": 1.1,
+      "fat": 0.101,
+      "saturated": 0.0239,
+      "monounsaturated": 0.0072,
+      "polyunsaturated": 0.076,
+      "trans_fats": 0.0,
+      "cholesterol": 0.0,
+      "omega_3": 0.0428,
+      "ala": 0.042844,
+      "epa": 0.0,
+      "dha": 0.0,
+      "epa_dha": 0.0,
+      "omega_6": 0.031,
+      "la": 0.030396,
+      "aa": 0.0,
+      "protein": 1.09,
+      "tryptophan": 0.0188,
+      "vitamin_a": 63.734,
+      "b1": 0.0645,
+      "b2": 0.047,
+      "b3": 0.698,
+      "b6": 0.14,
+      "b12": 0.0,
+      "folate": 26.82,
+      "vitamin_c": 32.68,
+      "vitamin_d": 0.0,
+      "vitamin_e": 0.065,
+      "vitamin_k": 34.0,
+      "sodium": 341.98,
+      "potassium": 231.21,
+      "calcium": 35.7,
+      "magnesium": 9.791,
+      "phosphorus": 26.2,
+      "iron": 0.205,
+      "zinc": 0.112,
+      "copper": 0.015,
+      "manganese": 0.2248,
+      "selenium": 8.711
+    },
+    "fruit_veg": 1.0,
+    "verdict": "healthy",
+    "subs": [
+      "source_protein",
+      "high_fiber",
+      "low_energy",
+      "low_fat",
+      "low_saturated",
+      "high_vitamin_c",
+      "high_vitamin_k",
+      "source_selenium"
+    ],
+    "why": ["sodium", "fruit_veg"]
+  },
+  {
+    "name": "score: kimchi (USDA FDC 2024 values): Healthy",
+    "per100": {
+      "energy": 15,
+      "fat": 0.5,
+      "saturated": 0.07,
+      "sugars": 1.06,
+      "sodium": 498,
+      "fiber": 1.6,
+      "protein": 1.1
+    },
+    "fruit_veg": 1.0,
+    "verdict": "healthy",
+    "subs": [
+      "high_protein",
+      "high_fiber",
+      "low_energy",
+      "low_fat",
+      "low_saturated",
+      "low_sugars"
+    ],
+    "why": ["sodium", "fruit_veg"]
+  },
+  {
+    "name": "score: Coca-Cola (live 214, saturates not given but fat 0): Unhealthy",
+    "per100": {
+      "energy": 42.0,
+      "caffeine": 9.6,
+      "net_carbs": 10.6,
+      "sugars": 10.6,
+      "fat": 0.0,
+      "protein": 0.0,
+      "sodium": 0.0
+    },
+    "drink": true,
+    "verdict": "unhealthy",
+    "subs": ["low_fat", "low_sodium"],
+    "why": ["sugars", "energy"]
+  },
+  {
+    "name": "score: Coca-Cola Zero, sweetened: OK",
+    "per100": {
+      "energy": 1.4,
+      "caffeine": 9.6,
+      "net_carbs": 0.0,
+      "sugars": 0.0,
+      "fat": 0.0,
+      "protein": 0.0,
+      "sodium": 8.0
+    },
+    "drink": true,
+    "sweetened": true,
+    "verdict": "ok",
+    "subs": ["low_energy", "low_fat", "low_sugars", "low_sodium"],
+    "why": ["sweeteners"]
+  },
+  {
+    "name": "score: sparkling water, unsweetened: Healthy",
+    "drink": true,
+    "per100": {
+      "energy": 0,
+      "fat": 0,
+      "saturated": 0,
+      "sugars": 0,
+      "sodium": 5
+    },
+    "verdict": "healthy",
+    "subs": [
+      "low_energy",
+      "low_fat",
+      "low_saturated",
+      "low_sugars",
+      "low_sodium"
+    ],
+    "why": []
+  },
+  {
+    "name": "score: energy drink with sugar: Unhealthy",
+    "per100": {
+      "energy": 49.163479924,
+      "alcohol": 0.0,
+      "water": 87.96,
+      "net_carbs": 11.7,
+      "carbs": 11.7,
+      "sugars": 11.992,
+      "starch": 0.0,
+      "fiber": 0.0,
+      "insoluble_fiber": 0.0,
+      "fat": 0.0,
+      "saturated": 0.0,
+      "monounsaturated": 0.0,
+      "polyunsaturated": 0.0,
+      "trans_fats": 0.0,
+      "cholesterol": 0.0,
+      "omega_3": 0.0,
+      "ala": 0.0,
+      "epa": 0.0,
+      "dha": 0.0,
+      "epa_dha": 0.0,
+      "omega_6": 0.0,
+      "la": 0.0,
+      "aa": 0.0,
+      "protein": 0.4,
+      "tryptophan": 0.0,
+      "vitamin_a": 0.0,
+      "b1": 0.0,
+      "b2": 0.4,
+      "b3": 8.0,
+      "b6": 1.5,
+      "b12": 1.5,
+      "folate": 0.0,
+      "vitamin_c": 0.0,
+      "vitamin_d": 0.0,
+      "vitamin_e": 0.0,
+      "vitamin_k": 0.0,
+      "sodium": 0.93,
+      "potassium": 0.16,
+      "calcium": 2.67,
+      "magnesium": 0.008,
+      "phosphorus": 0.0,
+      "iron": 0.005,
+      "zinc": 0.001,
+      "copper": 0.0008,
+      "manganese": 0.0013,
+      "selenium": 0.084
+    },
+    "drink": true,
+    "verdict": "unhealthy",
+    "subs": [
+      "low_fat",
+      "low_saturated",
+      "low_sodium",
+      "high_b2",
+      "high_b3",
+      "high_b6",
+      "high_b12",
+      "high_sugars"
+    ],
+    "why": ["sugars", "energy"]
+  },
+  {
+    "name": "score: energy drink, artificially sweetened: OK",
+    "per100": {
+      "energy": 3.250478011,
+      "alcohol": 0.0,
+      "water": 99.2,
+      "net_carbs": 0.4,
+      "carbs": 0.4,
+      "sugars": 0.1,
+      "starch": 0.3,
+      "fiber": 0.0,
+      "insoluble_fiber": 0.0,
+      "fat": 0.0,
+      "saturated": 0.0,
+      "monounsaturated": 0.0,
+      "polyunsaturated": 0.0,
+      "trans_fats": 0.0,
+      "cholesterol": 0.0,
+      "omega_3": 0.0,
+      "ala": 0.0,
+      "epa": 0.0,
+      "dha": 0.0,
+      "epa_dha": 0.0,
+      "omega_6": 0.0,
+      "la": 0.0,
+      "aa": 0.0,
+      "protein": 0.4,
+      "vitamin_a": 0.0,
+      "b1": 0.0,
+      "b2": 0.6,
+      "b3": 8.0,
+      "b6": 2.0,
+      "b12": 2.0,
+      "folate": 0.0,
+      "vitamin_c": 0.0,
+      "vitamin_d": 0.0,
+      "vitamin_e": 0.0,
+      "vitamin_k": 0.0,
+      "sodium": 40.0,
+      "phosphorus": 0.0,
+      "zinc": 0.0
+    },
+    "drink": true,
+    "sweetened": true,
+    "verdict": "ok",
+    "subs": [
+      "low_energy",
+      "low_fat",
+      "low_saturated",
+      "low_sugars",
+      "low_sodium",
+      "high_b2",
+      "high_b3",
+      "high_b6",
+      "high_b12"
+    ],
+    "why": ["sweeteners"]
+  },
+  {
+    "name": "score: farmed salmon fillet: Healthy",
+    "per100": {
+      "energy": 226.001434034,
+      "alcohol": 0.0,
+      "water": 62.75,
+      "net_carbs": 0.0,
+      "carbs": 0.0,
+      "sugars": 0.0,
+      "starch": 0.0,
+      "fiber": 0.0,
+      "insoluble_fiber": 0.0,
+      "fat": 16.37,
+      "saturated": 2.3078,
+      "monounsaturated": 8.0502,
+      "polyunsaturated": 4.656,
+      "trans_fats": 0.1131,
+      "cholesterol": 66.7,
+      "omega_3": 2.3091,
+      "ala": 0.795526,
+      "epa": 0.456408,
+      "dha": 0.668925,
+      "epa_dha": 1.125333,
+      "omega_6": 2.1521,
+      "la": 2.055088,
+      "aa": 0.035758,
+      "protein": 20.0,
+      "tryptophan": 0.24,
+      "vitamin_a": 4.72,
+      "b1": 0.23,
+      "b2": 0.13,
+      "b3": 11.208,
+      "b6": 0.75,
+      "b12": 4.0,
+      "folate": 16.0,
+      "vitamin_c": 0.0,
+      "vitamin_d": 267.6,
+      "vitamin_e": 2.23,
+      "vitamin_k": 3.96,
+      "sodium": 43.0,
+      "potassium": 390.0,
+      "calcium": 16.0,
+      "magnesium": 25.0,
+      "phosphorus": 240.0,
+      "iron": 0.4,
+      "zinc": 0.369,
+      "copper": 0.062,
+      "manganese": 0.005,
+      "selenium": 11.55
+    },
+    "verdict": "healthy",
+    "subs": [
+      "high_protein",
+      "low_sugars",
+      "low_sodium",
+      "source_omega_3",
+      "source_b1",
+      "high_b3",
+      "high_b6",
+      "high_b12",
+      "high_vitamin_d",
+      "source_vitamin_e",
+      "source_potassium",
+      "high_phosphorus",
+      "source_selenium"
+    ],
+    "why": ["saturated", "energy", "protein"]
+  },
+  {
+    "name": "score: oat flakes: Healthy",
+    "per100": {
+      "energy": 382.148661568,
+      "alcohol": 0.0,
+      "water": 7.79,
+      "net_carbs": 59.99,
+      "carbs": 69.99,
+      "sugars": 1.19,
+      "starch": 58.8,
+      "fiber": 10.0,
+      "insoluble_fiber": 4.6,
+      "fat": 7.24,
+      "saturated": 1.2599,
+      "monounsaturated": 2.7416,
+      "polyunsaturated": 2.709,
+      "trans_fats": 0.0,
+      "cholesterol": 0.0,
+      "omega_3": 0.09,
+      "ala": 0.08982,
+      "epa": 0.0,
+      "dha": 0.0,
+      "epa_dha": 0.0,
+      "omega_6": 2.619,
+      "la": 2.61892,
+      "aa": 0.0,
+      "protein": 13.6,
+      "tryptophan": 0.21,
+      "vitamin_a": 0.0,
+      "b1": 0.33,
+      "b2": 0.09,
+      "b3": 4.307,
+      "b6": 0.13,
+      "b12": 0.0,
+      "folate": 43.6,
+      "vitamin_c": 0.0,
+      "vitamin_d": 0.0,
+      "vitamin_e": 0.85,
+      "vitamin_k": 2.1,
+      "sodium": 1.0,
+      "potassium": 414.0,
+      "calcium": 47.0,
+      "magnesium": 142.0,
+      "phosphorus": 471.0,
+      "iron": 4.7,
+      "zinc": 3.6,
+      "copper": 0.45,
+      "manganese": 4.1,
+      "selenium": 12.0
+    },
+    "verdict": "healthy",
+    "subs": [
+      "source_protein",
+      "high_fiber",
+      "low_saturated",
+      "low_sugars",
+      "low_sodium",
+      "high_b1",
+      "source_b3",
+      "source_folate",
+      "source_potassium",
+      "high_magnesium",
+      "high_phosphorus",
+      "high_iron",
+      "high_zinc",
+      "high_copper",
+      "high_manganese",
+      "source_selenium"
+    ],
+    "why": ["energy", "fiber", "protein"]
+  },
+  {
+    "name": "score: wholegrain rye bread: Healthy",
+    "per100": {
+      "energy": 231.845124283,
+      "alcohol": 0.0,
+      "water": 40.59,
+      "net_carbs": 40.991,
+      "carbs": 54.651,
+      "sugars": 1.305,
+      "starch": 39.69,
+      "fiber": 13.66,
+      "insoluble_fiber": 7.92,
+      "fat": 1.336,
+      "saturated": 0.1621,
+      "monounsaturated": 0.1834,
+      "polyunsaturated": 0.616,
+      "trans_fats": 0.0,
+      "cholesterol": 0.0,
+      "omega_3": 0.0815,
+      "ala": 0.081452,
+      "epa": 0.0,
+      "dha": 0.0,
+      "epa_dha": 0.0,
+      "omega_6": 0.535,
+      "la": 0.534528,
+      "aa": 0.0,
+      "protein": 6.74,
+      "tryptophan": 0.0775,
+      "vitamin_a": 0.67,
+      "b1": 0.1751,
+      "b2": 0.117,
+      "b3": 1.4,
+      "b6": 0.12,
+      "b12": 0.0,
+      "folate": 29.04,
+      "vitamin_c": 0.0,
+      "vitamin_d": 0.0,
+      "vitamin_e": 0.704,
+      "vitamin_k": 4.071,
+      "sodium": 465.38,
+      "potassium": 313.89,
+      "calcium": 25.43,
+      "magnesium": 67.626,
+      "phosphorus": 219.5,
+      "iron": 2.308,
+      "zinc": 2.047,
+      "copper": 0.2726,
+      "manganese": 1.3848,
+      "selenium": 3.478
+    },
+    "verdict": "healthy",
+    "subs": [
+      "high_fiber",
+      "low_fat",
+      "low_saturated",
+      "low_sugars",
+      "source_b1",
+      "source_potassium",
+      "source_magnesium",
+      "high_phosphorus",
+      "source_iron",
+      "source_zinc",
+      "source_copper",
+      "high_manganese"
+    ],
+    "why": ["sodium", "energy", "fiber", "protein"]
+  },
+  {
+    "name": "score: Emmental (no cheese rule): Unhealthy",
+    "per100": {
+      "energy": 378.556405354,
+      "alcohol": 0.0,
+      "water": 36.6,
+      "net_carbs": 0.0,
+      "carbs": 0.0,
+      "sugars": 0.0,
+      "starch": 0.0,
+      "fiber": 0.0,
+      "insoluble_fiber": 0.0,
+      "fat": 30.0,
+      "saturated": 18.9273,
+      "monounsaturated": 7.3624,
+      "polyunsaturated": 0.8457,
+      "trans_fats": 1.1046,
+      "cholesterol": 76.1,
+      "omega_3": 0.1308,
+      "ala": 0.130816,
+      "epa": 0.0,
+      "dha": 0.0,
+      "epa_dha": 0.0,
+      "omega_6": 0.5312,
+      "la": 0.456376,
+      "aa": 0.0,
+      "protein": 27.88,
+      "tryptophan": 0.4,
+      "vitamin_a": 255.55,
+      "b1": 0.019,
+      "b2": 0.3,
+      "b3": 6.78,
+      "b6": 0.06,
+      "b12": 2.0,
+      "folate": 20.0,
+      "vitamin_c": 0.0,
+      "vitamin_d": 9.2,
+      "vitamin_e": 0.54,
+      "vitamin_k": 9.1,
+      "sodium": 300.0,
+      "potassium": 70.0,
+      "calcium": 939.0,
+      "magnesium": 34.0,
+      "phosphorus": 550.0,
+      "iron": 0.23,
+      "zinc": 4.12,
+      "copper": 1.259,
+      "manganese": 0.059,
+      "selenium": 19.294
+    },
+    "verdict": "unhealthy",
+    "subs": [
+      "high_protein",
+      "low_sugars",
+      "high_vitamin_a",
+      "source_b2",
+      "high_b3",
+      "high_b12",
+      "high_calcium",
+      "high_phosphorus",
+      "high_zinc",
+      "high_copper",
+      "high_selenium",
+      "high_fat",
+      "high_saturated"
+    ],
+    "why": ["saturated", "energy"]
+  },
+  {
+    "name": "score: butter (fats table): Unhealthy",
+    "per100": {
+      "energy": 727.0291587,
+      "alcohol": 0.0,
+      "water": 15.01,
+      "net_carbs": 0.8,
+      "carbs": 0.8,
+      "sugars": 0.8,
+      "starch": 0.0,
+      "fiber": 0.0,
+      "insoluble_fiber": 0.0,
+      "fat": 81.3,
+      "saturated": 52.78,
+      "monounsaturated": 19.39,
+      "polyunsaturated": 2.57,
+      "trans_fats": 1.97,
+      "cholesterol": 178.0,
+      "omega_3": 0.36,
+      "ala": 0.36,
+      "epa": 0.0,
+      "dha": 0.0,
+      "epa_dha": 0.0,
+      "omega_6": 1.27,
+      "la": 1.04,
+      "aa": 0.0,
+      "protein": 1.19,
+      "tryptophan": 0.006,
+      "vitamin_a": 744.22,
+      "b1": 0.0,
+      "b2": 0.03,
+      "b3": 0.1,
+      "b6": 0.0,
+      "b12": 0.0,
+      "folate": 3.0,
+      "vitamin_c": 0.0,
+      "vitamin_d": 13.0,
+      "vitamin_e": 1.51,
+      "vitamin_k": 18.4,
+      "sodium": 592.0,
+      "potassium": 18.0,
+      "calcium": 24.0,
+      "magnesium": 2.6,
+      "phosphorus": 34.0,
+      "iron": 0.18,
+      "zinc": 0.08,
+      "copper": 0.011,
+      "manganese": 0.01,
+      "selenium": 0.5
+    },
+    "verdict": "unhealthy",
+    "subs": [
+      "low_sugars",
+      "high_vitamin_a",
+      "source_vitamin_k",
+      "high_fat",
+      "high_saturated"
+    ],
+    "why": ["saturated", "sodium"]
+  },
+  {
+    "name": "score: olive oil (fats table, no fruit & veg credit): OK",
+    "per100": {
+      "energy": 884.321223709,
+      "alcohol": 0.0,
+      "water": 0.0,
+      "net_carbs": 0.0,
+      "carbs": 0.0,
+      "sugars": 0.0,
+      "starch": 0.0,
+      "fiber": 0.0,
+      "insoluble_fiber": 0.0,
+      "fat": 100.0,
+      "saturated": 14.0125,
+      "monounsaturated": 68.3845,
+      "polyunsaturated": 10.9301,
+      "trans_fats": 0.0,
+      "cholesterol": 0.0,
+      "omega_3": 0.5435,
+      "ala": 0.543505,
+      "epa": 0.0,
+      "dha": 0.0,
+      "epa_dha": 0.0,
+      "omega_6": 10.3666,
+      "la": 10.36656,
+      "aa": 0.0,
+      "protein": 0.0,
+      "tryptophan": 0.0,
+      "vitamin_a": 4.08,
+      "b1": 0.0,
+      "b2": 0.0,
+      "b3": 0.0,
+      "b6": 0.0,
+      "b12": 0.0,
+      "folate": 0.0,
+      "vitamin_c": 0.0,
+      "vitamin_d": 0.0,
+      "vitamin_e": 11.91,
+      "vitamin_k": 30.0,
+      "sodium": 0.0,
+      "potassium": 0.0,
+      "calcium": 0.0,
+      "magnesium": 0.0,
+      "phosphorus": 0.0,
+      "iron": 0.0,
+      "zinc": 0.0,
+      "copper": 0.0,
+      "manganese": 0.0,
+      "selenium": 0.0
+    },
+    "verdict": "ok",
+    "subs": [
+      "low_sugars",
+      "low_sodium",
+      "high_vitamin_e",
+      "high_vitamin_k",
+      "high_fat",
+      "high_saturated"
+    ],
+    "why": ["saturated"]
+  },
+  {
+    "name": "score: rapeseed oil (fats table): Healthy",
+    "per100": {
+      "energy": 900,
+      "fat": 100,
+      "saturated": 7,
+      "sugars": 0,
+      "sodium": 0
+    },
+    "verdict": "healthy",
+    "subs": ["low_sugars", "low_sodium", "high_fat", "high_saturated"],
+    "why": ["saturated"]
+  },
+  {
+    "name": "score: cashews (fats table): Healthy",
+    "per100": {
+      "energy": 574.223231358,
+      "alcohol": 0.0,
+      "water": 5.2,
+      "net_carbs": 18.8,
+      "carbs": 22.3,
+      "sugars": 4.6,
+      "starch": 14.2,
+      "fiber": 3.5,
+      "insoluble_fiber": 1.9,
+      "fat": 46.35,
+      "saturated": 7.785,
+      "monounsaturated": 23.797,
+      "polyunsaturated": 7.844,
+      "trans_fats": 0.0,
+      "cholesterol": 0.0,
+      "omega_3": 0.062,
+      "ala": 0.062,
+      "epa": 0.0,
+      "dha": 0.0,
+      "epa_dha": 0.0,
+      "omega_6": 7.782,
+      "la": 7.782,
+      "aa": 0.0,
+      "protein": 20.0,
+      "tryptophan": 0.287,
+      "vitamin_a": 0.0,
+      "b1": 0.2,
+      "b2": 0.2,
+      "b3": 5.993,
+      "b6": 0.4,
+      "b12": 0.0,
+      "folate": 69.2,
+      "vitamin_c": 0.0,
+      "vitamin_d": 0.0,
+      "vitamin_e": 0.9,
+      "vitamin_k": 7.0,
+      "sodium": 10.0,
+      "potassium": 565.0,
+      "calcium": 45.0,
+      "magnesium": 260.0,
+      "phosphorus": 490.0,
+      "iron": 6.0,
+      "zinc": 5.6,
+      "copper": 2.22,
+      "manganese": 0.84,
+      "selenium": 11.0
+    },
+    "verdict": "healthy",
+    "subs": [
+      "source_protein",
+      "source_fiber",
+      "low_sugars",
+      "low_sodium",
+      "source_b1",
+      "high_b3",
+      "source_b6",
+      "high_folate",
+      "source_potassium",
+      "high_magnesium",
+      "high_phosphorus",
+      "high_iron",
+      "high_zinc",
+      "high_copper",
+      "high_manganese",
+      "source_selenium",
+      "high_fat",
+      "high_saturated"
+    ],
+    "why": ["saturated", "protein"]
+  },
+  {
+    "name": "score: salted cashews: OK",
+    "per100": {
+      "energy": 574.223231358,
+      "alcohol": 0.0,
+      "water": 8.35,
+      "net_carbs": 18.8,
+      "carbs": 22.3,
+      "sugars": 4.6,
+      "starch": 14.2,
+      "fiber": 3.5,
+      "insoluble_fiber": 1.9,
+      "fat": 46.35,
+      "saturated": 7.785,
+      "monounsaturated": 23.797,
+      "polyunsaturated": 7.844,
+      "trans_fats": 0.0,
+      "cholesterol": 0.0,
+      "omega_3": 0.062,
+      "ala": 0.062,
+      "epa": 0.0,
+      "dha": 0.0,
+      "epa_dha": 0.0,
+      "omega_6": 7.782,
+      "la": 7.782,
+      "aa": 0.0,
+      "protein": 20.0,
+      "tryptophan": 0.45,
+      "vitamin_a": 0.0,
+      "b1": 0.2,
+      "b2": 0.2,
+      "b3": 8.715,
+      "b6": 0.4,
+      "b12": 0.0,
+      "folate": 69.2,
+      "vitamin_c": 0.0,
+      "vitamin_d": 0.0,
+      "vitamin_e": 0.9,
+      "vitamin_k": 7.0,
+      "sodium": 285.6,
+      "potassium": 565.0,
+      "calcium": 45.0,
+      "magnesium": 260.0,
+      "phosphorus": 490.0,
+      "iron": 6.0,
+      "zinc": 5.6,
+      "copper": 2.22,
+      "manganese": 0.84,
+      "selenium": 11.0
+    },
+    "verdict": "ok",
+    "subs": [
+      "source_protein",
+      "source_fiber",
+      "low_sugars",
+      "source_b1",
+      "high_b3",
+      "source_b6",
+      "high_folate",
+      "source_potassium",
+      "high_magnesium",
+      "high_phosphorus",
+      "high_iron",
+      "high_zinc",
+      "high_copper",
+      "high_manganese",
+      "source_selenium",
+      "high_fat",
+      "high_saturated"
+    ],
+    "why": ["saturated", "sodium"]
+  },
+  {
+    "name": "score: potato crisps: Unhealthy",
+    "per100": {
+      "energy": 521.154397706,
+      "alcohol": 0.0,
+      "water": 4.89,
+      "net_carbs": 47.6,
+      "carbs": 52.3,
+      "sugars": 0.6,
+      "starch": 47.0,
+      "fiber": 4.7,
+      "insoluble_fiber": 3.7,
+      "fat": 33.0,
+      "saturated": 4.6851,
+      "monounsaturated": 12.1732,
+      "polyunsaturated": 11.7031,
+      "trans_fats": 0.0,
+      "cholesterol": 2.01,
+      "omega_3": 2.0144,
+      "ala": 2.0144,
+      "epa": 0.0,
+      "dha": 0.0,
+      "epa_dha": 0.0,
+      "omega_6": 9.6887,
+      "la": 9.6887,
+      "aa": 0.0,
+      "protein": 5.31,
+      "tryptophan": 0.046,
+      "vitamin_a": 3.74,
+      "b1": 0.21,
+      "b2": 0.07,
+      "b3": 4.95,
+      "b6": 0.62,
+      "b12": 0.0,
+      "folate": 41.0,
+      "vitamin_c": 3.0,
+      "vitamin_d": 0.0,
+      "vitamin_e": 5.19,
+      "vitamin_k": 10.0,
+      "sodium": 560.0,
+      "potassium": 1190.0,
+      "calcium": 28.0,
+      "magnesium": 56.0,
+      "phosphorus": 158.0,
+      "iron": 1.8,
+      "zinc": 0.8,
+      "copper": 0.22,
+      "manganese": 0.0,
+      "selenium": 3.8
+    },
+    "verdict": "unhealthy",
+    "subs": [
+      "source_fiber",
+      "low_sugars",
+      "source_omega_3",
+      "source_b1",
+      "high_b3",
+      "high_b6",
+      "source_folate",
+      "high_vitamin_e",
+      "high_potassium",
+      "source_phosphorus",
+      "source_copper",
+      "high_fat"
+    ],
+    "why": ["sodium", "energy", "fiber"]
+  },
+  {
+    "name": "score: bilberries: Healthy",
+    "per100": {
+      "energy": 64.744263862,
+      "alcohol": 0.0,
+      "water": 85.106,
+      "net_carbs": 10.182,
+      "carbs": 13.482,
+      "sugars": 8.391,
+      "starch": 1.79,
+      "fiber": 3.3,
+      "insoluble_fiber": 2.6,
+      "fat": 1.059,
+      "saturated": 0.0406,
+      "monounsaturated": 0.055,
+      "polyunsaturated": 0.2398,
+      "trans_fats": 0.0,
+      "cholesterol": 0.0,
+      "omega_3": 0.1168,
+      "ala": 0.116832,
+      "epa": 0.0,
+      "dha": 0.0,
+      "epa_dha": 0.0,
+      "omega_6": 0.123,
+      "la": 0.123012,
+      "aa": 0.0,
+      "protein": 0.821,
+      "tryptophan": 0.01,
+      "vitamin_a": 7.84,
+      "b1": 0.133,
+      "b2": 0.014,
+      "b3": 0.567,
+      "b6": 0.06,
+      "b12": 0.0,
+      "folate": 11.2,
+      "vitamin_c": 7.16,
+      "vitamin_d": 0.0,
+      "vitamin_e": 1.85,
+      "vitamin_k": 9.0,
+      "sodium": 2.0,
+      "potassium": 110.0,
+      "calcium": 19.0,
+      "magnesium": 9.0,
+      "phosphorus": 20.0,
+      "iron": 0.6,
+      "zinc": 0.15,
+      "copper": 0.08,
+      "manganese": 4.6,
+      "selenium": 0.1
+    },
+    "fruit_veg": 1.0,
+    "verdict": "healthy",
+    "subs": [
+      "high_fiber",
+      "low_fat",
+      "low_saturated",
+      "low_sodium",
+      "source_vitamin_e",
+      "high_manganese"
+    ],
+    "why": ["sugars", "fruit_veg"]
+  },
+  {
+    "name": "score: AB yoghurt with a fruit layer, 13 g sugars: OK",
+    "per100": {
+      "energy": 94.077437859,
+      "alcohol": 0.0,
+      "water": 80.12,
+      "net_carbs": 13.088,
+      "carbs": 13.262,
+      "sugars": 13.075,
+      "starch": 0.01,
+      "fiber": 0.174,
+      "insoluble_fiber": 0.14,
+      "fat": 3.293,
+      "saturated": 2.126,
+      "monounsaturated": 0.7028,
+      "polyunsaturated": 0.078,
+      "trans_fats": 0.0889,
+      "cholesterol": 10.16,
+      "omega_3": 0.0131,
+      "ala": 0.013058,
+      "epa": 0.0,
+      "dha": 0.0,
+      "epa_dha": 0.0,
+      "omega_6": 0.047,
+      "la": 0.044345,
+      "aa": 0.0,
+      "protein": 2.63,
+      "tryptophan": 0.0385,
+      "vitamin_a": 29.686,
+      "b1": 0.0304,
+      "b2": 0.16,
+      "b3": 0.761,
+      "b6": 0.05,
+      "b12": 0.34,
+      "folate": 6.35,
+      "vitamin_c": 2.31,
+      "vitamin_d": 1.2,
+      "vitamin_e": 0.121,
+      "vitamin_k": 1.094,
+      "sodium": 39.52,
+      "potassium": 150.62,
+      "calcium": 107.1,
+      "magnesium": 10.764,
+      "phosphorus": 79.0,
+      "iron": 0.106,
+      "zinc": 0.393,
+      "copper": 0.0125,
+      "manganese": 0.0447,
+      "selenium": 2.528
+    },
+    "verdict": "ok",
+    "subs": ["low_sodium"],
+    "why": ["sugars", "saturated"]
+  },
+  {
+    "name": "score: blood sausage: OK",
+    "per100": {
+      "energy": 216.505736138,
+      "alcohol": 0.0,
+      "water": 53.26,
+      "net_carbs": 18.568,
+      "carbs": 23.856,
+      "sugars": 0.508,
+      "starch": 18.06,
+      "fiber": 5.288,
+      "insoluble_fiber": 3.68,
+      "fat": 10.283,
+      "saturated": 3.719,
+      "monounsaturated": 4.1669,
+      "polyunsaturated": 1.502,
+      "trans_fats": 0.0044,
+      "cholesterol": 24.3,
+      "omega_3": 0.1445,
+      "ala": 0.122383,
+      "epa": 0.003296,
+      "dha": 0.003122,
+      "epa_dha": 0.006418,
+      "omega_6": 1.309,
+      "la": 1.259642,
+      "aa": 0.028201,
+      "protein": 9.74,
+      "tryptophan": 0.126,
+      "vitamin_a": 12.118,
+      "b1": 0.3357,
+      "b2": 0.107,
+      "b3": 3.52,
+      "b6": 0.2,
+      "b12": 0.29,
+      "folate": 13.66,
+      "vitamin_c": 0.15,
+      "vitamin_d": 4.72,
+      "vitamin_e": 0.531,
+      "vitamin_k": 2.688,
+      "sodium": 677.05,
+      "potassium": 246.06,
+      "calcium": 18.24,
+      "magnesium": 40.902,
+      "phosphorus": 162.3,
+      "iron": 7.505,
+      "zinc": 1.454,
+      "copper": 0.1643,
+      "manganese": 0.7448,
+      "selenium": 7.328
+    },
+    "verdict": "ok",
+    "subs": [
+      "source_protein",
+      "source_fiber",
+      "low_sugars",
+      "high_b1",
+      "source_b3",
+      "source_phosphorus",
+      "high_iron",
+      "source_copper",
+      "high_manganese",
+      "high_sodium"
+    ],
+    "why": ["saturated", "sodium", "fiber"]
+  },
+  {
+    "name": "score: chicken bacon (processed meat): Unhealthy",
+    "per100": {
+      "energy": 158.0,
+      "net_carbs": 0.6,
+      "carbs": 0.9,
+      "sugars": 0.5,
+      "fiber": 0.3,
+      "fat": 9.7,
+      "saturated": 2.5,
+      "protein": 17.0,
+      "sodium": 840.0
+    },
+    "verdict": "unhealthy",
+    "subs": ["high_protein", "low_sugars", "high_sodium"],
+    "why": ["saturated", "sodium"]
+  },
+  {
+    "name": "score: protein bar, average 30 % protein: Unhealthy",
+    "per100": {
+      "energy": 405.810229446,
+      "alcohol": 0.0,
+      "water": 8.55,
+      "net_carbs": 47.705,
+      "carbs": 51.705,
+      "sugars": 47.705,
+      "starch": 0.0,
+      "fiber": 4.0,
+      "insoluble_fiber": 0.24,
+      "fat": 10.48,
+      "saturated": 5.7209,
+      "monounsaturated": 2.6501,
+      "polyunsaturated": 0.312,
+      "trans_fats": 0.4218,
+      "cholesterol": 7.76,
+      "omega_3": 0.0296,
+      "ala": 0.029577,
+      "epa": 0.0,
+      "dha": 0.0,
+      "epa_dha": 0.0,
+      "omega_6": 0.2824,
+      "la": 0.282429,
+      "aa": 0.0,
+      "protein": 27.38,
+      "tryptophan": 0.4394,
+      "vitamin_a": 21.528,
+      "b1": 0.014,
+      "b2": 0.098,
+      "b3": 0.514,
+      "b6": 0.02,
+      "b12": 0.0,
+      "folate": 1.4,
+      "vitamin_c": 0.0,
+      "vitamin_d": 0.0,
+      "vitamin_e": 0.296,
+      "vitamin_k": 2.62,
+      "sodium": 266.01,
+      "potassium": 757.75,
+      "calcium": 610.86,
+      "magnesium": 15.9,
+      "phosphorus": 66.7,
+      "iron": 0.452,
+      "zinc": 0.362,
+      "copper": 64.0404,
+      "manganese": 0.085,
+      "selenium": 0.89
+    },
+    "verdict": "unhealthy",
+    "subs": [
+      "high_protein",
+      "source_fiber",
+      "high_potassium",
+      "high_calcium",
+      "high_copper",
+      "high_saturated",
+      "high_sugars"
+    ],
+    "why": ["sugars", "saturated"]
+  },
+  {
+    "name": "score: protein bar with fibre: Healthy",
+    "per100": {
+      "energy": 285.740917782,
+      "alcohol": 0.0,
+      "water": 20.28,
+      "net_carbs": 3.576,
+      "carbs": 37.576,
+      "sugars": 3.548,
+      "starch": 0.03,
+      "fiber": 34.0,
+      "insoluble_fiber": 0.22,
+      "fat": 8.121,
+      "saturated": 2.5867,
+      "monounsaturated": 3.749,
+      "polyunsaturated": 1.442,
+      "trans_fats": 0.0,
+      "cholesterol": 4.08,
+      "omega_3": 0.3059,
+      "ala": 0.30588,
+      "epa": 0.0,
+      "dha": 0.0,
+      "epa_dha": 0.0,
+      "omega_6": 1.091,
+      "la": 1.090869,
+      "aa": 0.0,
+      "protein": 33.06,
+      "tryptophan": 0.5995,
+      "vitamin_a": 0.242,
+      "b1": 0.0054,
+      "b2": 0.015,
+      "b3": 0.18,
+      "b6": 0.0,
+      "b12": 0.55,
+      "folate": 1.23,
+      "vitamin_c": 0.45,
+      "vitamin_d": 0.0,
+      "vitamin_e": 1.216,
+      "vitamin_k": 4.413,
+      "sodium": 150.2,
+      "potassium": 422.5,
+      "calcium": 327.31,
+      "magnesium": 9.39,
+      "phosphorus": 16.0,
+      "iron": 0.182,
+      "zinc": 0.087,
+      "copper": 0.0398,
+      "manganese": 0.0802,
+      "selenium": 0.11
+    },
+    "verdict": "healthy",
+    "subs": [
+      "high_protein",
+      "high_fiber",
+      "low_sugars",
+      "source_b12",
+      "source_potassium",
+      "high_calcium"
+    ],
+    "why": ["saturated", "energy", "fiber", "protein"]
+  },
+  {
+    "name": "score: milk chocolate: Unhealthy",
+    "per100": {
+      "energy": 538.410611855,
+      "alcohol": 0.0,
+      "water": 2.0,
+      "net_carbs": 49.806,
+      "carbs": 51.406,
+      "sugars": 49.806,
+      "starch": 0.0,
+      "fiber": 1.6,
+      "insoluble_fiber": 1.21,
+      "fat": 33.0,
+      "saturated": 17.0345,
+      "monounsaturated": 9.0085,
+      "polyunsaturated": 0.91,
+      "trans_fats": 0.0449,
+      "cholesterol": 6.1,
+      "omega_3": 0.0679,
+      "ala": 0.067886,
+      "epa": 0.0,
+      "dha": 0.0,
+      "epa_dha": 0.0,
+      "omega_6": 0.8421,
+      "la": 0.842146,
+      "aa": 0.0,
+      "protein": 10.13,
+      "tryptophan": 0.13,
+      "vitamin_a": 107.64,
+      "b1": 0.07,
+      "b2": 0.49,
+      "b3": 2.571,
+      "b6": 0.08,
+      "b12": 0.0,
+      "folate": 7.0,
+      "vitamin_c": 0.0,
+      "vitamin_d": 0.0,
+      "vitamin_e": 0.48,
+      "vitamin_k": 1.1,
+      "sodium": 117.0,
+      "potassium": 450.0,
+      "calcium": 400.0,
+      "magnesium": 60.0,
+      "phosphorus": 300.0,
+      "iron": 2.0,
+      "zinc": 1.8,
+      "copper": 320.0,
+      "manganese": 0.26,
+      "selenium": 4.0
+    },
+    "verdict": "unhealthy",
+    "subs": [
+      "low_sodium",
+      "high_b2",
+      "source_b3",
+      "source_potassium",
+      "high_calcium",
+      "source_magnesium",
+      "high_phosphorus",
+      "source_zinc",
+      "high_copper",
+      "high_fat",
+      "high_saturated",
+      "high_sugars"
+    ],
+    "why": ["sugars", "saturated"]
+  },
+  {
+    "name": "score: beer, 4.5 % ABV: Unhealthy, for its alcohol",
+    "drink": true,
+    "per100": {
+      "energy": 43,
+      "alcohol": 3.6,
+      "fat": 0,
+      "sugars": 0.3,
+      "sodium": 4
+    },
+    "verdict": "unhealthy",
+    "subs": [],
+    "why": ["alcohol"]
+  },
+  {
+    "name": "edge: food score 2 is Healthy (salt 0.5 g)",
+    "per100": {
+      "energy": 30,
+      "fat": 0.5,
+      "saturated": 0.1,
+      "sugars": 1,
+      "sodium": 200
+    },
+    "verdict": "healthy",
+    "subs": ["low_energy", "low_fat", "low_saturated", "low_sugars"],
+    "why": ["sodium"]
+  },
+  {
+    "name": "edge: food score 3 is OK (salt 0.7 g)",
+    "per100": {
+      "energy": 30,
+      "fat": 0.5,
+      "saturated": 0.1,
+      "sugars": 1,
+      "sodium": 280
+    },
+    "verdict": "ok",
+    "subs": ["low_energy", "low_fat", "low_saturated", "low_sugars"],
+    "why": ["sodium"]
+  },
+  {
+    "name": "edge: salt exactly 0.6 g is 2 points, not 3",
+    "per100": {
+      "energy": 30,
+      "fat": 0.5,
+      "saturated": 0.1,
+      "sugars": 1,
+      "sodium": 240
+    },
+    "verdict": "healthy",
+    "subs": ["low_energy", "low_fat", "low_saturated", "low_sugars"],
+    "why": ["sodium"]
+  },
+  {
+    "name": "edge: food score 10 is OK",
+    "per100": {
+      "energy": 30,
+      "fat": 0.5,
+      "saturated": 0.1,
+      "sugars": 4,
+      "sodium": 800
+    },
+    "verdict": "ok",
+    "subs": [
+      "low_energy",
+      "low_fat",
+      "low_saturated",
+      "low_sugars",
+      "high_sodium"
+    ],
+    "why": ["sodium"]
+  },
+  {
+    "name": "edge: food score 11 is Unhealthy",
+    "per100": {
+      "energy": 30,
+      "fat": 0.5,
+      "saturated": 0.1,
+      "sugars": 4,
+      "sodium": 840
+    },
+    "verdict": "unhealthy",
+    "subs": [
+      "low_energy",
+      "low_fat",
+      "low_saturated",
+      "low_sugars",
+      "high_sodium"
+    ],
+    "why": ["sodium"]
+  },
+  {
+    "name": "edge: salt exactly 3.0 g is 14 points",
+    "per100": {
+      "energy": 30,
+      "fat": 0.5,
+      "saturated": 0.1,
+      "sugars": 4,
+      "sodium": 1200
+    },
+    "fruit_veg": 1.0,
+    "verdict": "ok",
+    "subs": [
+      "low_energy",
+      "low_fat",
+      "low_saturated",
+      "low_sugars",
+      "high_sodium"
+    ],
+    "why": ["sodium", "fruit_veg"]
+  },
+  {
+    "name": "edge: salt just over 3.0 g is 15 points",
+    "per100": {
+      "energy": 30,
+      "fat": 0.5,
+      "saturated": 0.1,
+      "sugars": 4,
+      "sodium": 1201
+    },
+    "fruit_veg": 1.0,
+    "verdict": "unhealthy",
+    "subs": [
+      "low_energy",
+      "low_fat",
+      "low_saturated",
+      "low_sugars",
+      "high_sodium"
+    ],
+    "why": ["sodium", "fruit_veg"]
+  },
+  {
+    "name": "edge: drink score 6 is OK",
+    "drink": true,
+    "per100": {
+      "energy": 20,
+      "fat": 0,
+      "saturated": 0,
+      "sodium": 0,
+      "sugars": 6.5
+    },
+    "verdict": "ok",
+    "subs": ["low_energy", "low_fat", "low_saturated", "low_sodium"],
+    "why": ["sugars"]
+  },
+  {
+    "name": "edge: drink score 7 is Unhealthy",
+    "drink": true,
+    "per100": {
+      "energy": 20,
+      "fat": 0,
+      "saturated": 0,
+      "sodium": 0,
+      "sugars": 7.5
+    },
+    "verdict": "unhealthy",
+    "subs": ["low_energy", "low_fat", "low_saturated", "low_sodium"],
+    "why": ["sugars"]
+  },
+  {
+    "name": "edge: fat 40 g reads the fats table",
+    "per100": {
+      "energy": 380,
+      "fat": 40,
+      "saturated": 4,
+      "sugars": 0,
+      "sodium": 0
+    },
+    "verdict": "healthy",
+    "subs": ["low_sugars", "low_sodium", "high_fat"],
+    "why": ["saturated"]
+  },
+  {
+    "name": "edge: fat under 40 g reads the general table",
+    "per100": {
+      "energy": 380,
+      "fat": 39.9,
+      "saturated": 4,
+      "sugars": 0,
+      "sodium": 0
+    },
+    "verdict": "ok",
+    "subs": ["low_sugars", "low_sodium", "high_fat"],
+    "why": ["saturated", "energy"]
+  },
+  {
+    "name": "edge: N 10 counts protein",
+    "per100": {
+      "energy": 30,
+      "fat": 0.5,
+      "saturated": 0.1,
+      "sugars": 4,
+      "sodium": 800,
+      "protein": 20
+    },
+    "verdict": "ok",
+    "subs": [
+      "high_protein",
+      "low_energy",
+      "low_fat",
+      "low_saturated",
+      "low_sugars",
+      "high_sodium"
+    ],
+    "why": ["sodium", "protein"]
+  },
+  {
+    "name": "edge: N 11 drops protein",
+    "per100": {
+      "energy": 30,
+      "fat": 0.5,
+      "saturated": 0.1,
+      "sugars": 4,
+      "sodium": 840,
+      "protein": 20
+    },
+    "verdict": "unhealthy",
+    "subs": [
+      "high_protein",
+      "low_energy",
+      "low_fat",
+      "low_saturated",
+      "low_sugars",
+      "high_sodium"
+    ],
+    "why": ["sodium"]
+  },
+  {
+    "name": "edge: fruit & veg 70 % is 2 points",
+    "per100": {
+      "energy": 30,
+      "fat": 0.5,
+      "saturated": 0.1,
+      "sugars": 1,
+      "sodium": 280
+    },
+    "fruit_veg": 0.7,
+    "verdict": "healthy",
+    "subs": ["low_energy", "low_fat", "low_saturated", "low_sugars"],
+    "why": ["sodium", "fruit_veg"]
+  },
+  {
+    "name": "coverage: saturates read as 0 at fat 1 g",
+    "per100": {
+      "energy": 40,
+      "fat": 1,
+      "sugars": 2,
+      "sodium": 10
+    },
+    "verdict": "healthy",
+    "subs": ["low_energy", "low_fat", "low_sugars", "low_sodium"],
+    "why": []
+  },
+  {
+    "name": "coverage: saturates unknown over fat 1 g: no verdict",
+    "per100": {
+      "energy": 40,
+      "fat": 1.1,
+      "sugars": 2,
+      "sodium": 10
+    },
+    "verdict": null,
+    "subs": ["low_energy", "low_fat", "low_sugars", "low_sodium"],
+    "why": []
+  },
+  {
+    "name": "coverage: given negatives that reach the line prove Unhealthy (salt unknown)",
+    "per100": {
+      "energy": 500,
+      "fat": 30,
+      "saturated": 12,
+      "sugars": 40
+    },
+    "verdict": "unhealthy",
+    "subs": ["high_fat", "high_saturated", "high_sugars"],
+    "why": ["sugars", "saturated"]
+  },
+  {
+    "name": "coverage: given negatives under the line prove nothing",
+    "per100": {
+      "energy": 100,
+      "fat": 1,
+      "saturated": 0.2,
+      "sugars": 2
+    },
+    "verdict": null,
+    "subs": ["low_fat", "low_saturated", "low_sugars"],
+    "why": []
+  },
+  {
+    "name": "coverage: a food's fat unknown: no table, no verdict",
+    "per100": {
+      "energy": 500,
+      "saturated": 12,
+      "sugars": 60,
+      "sodium": 2000
+    },
+    "verdict": null,
+    "subs": ["high_saturated", "high_sugars", "high_sodium"],
+    "why": []
+  },
+  {
+    "name": "coverage: a drink needs no fat to be proven Unhealthy",
+    "drink": true,
+    "per100": {
+      "energy": 48,
+      "sugars": 12
+    },
+    "verdict": "unhealthy",
+    "subs": ["high_sugars"],
+    "why": ["sugars", "energy"]
+  },
+  {
+    "name": "recipe: floors that reach the line prove Unhealthy",
+    "per100": {
+      "energy": 230,
+      "fat": 5,
+      "saturated": 1,
+      "sugars": 40,
+      "sodium": 700
+    },
+    "known": {
+      "sodium": 100
+    },
+    "verdict": "unhealthy",
+    "subs": ["low_saturated", "high_sugars", "high_sodium"],
+    "why": ["sugars", "sodium"]
+  }
+]

@@ -2,13 +2,13 @@
 
 use super::prelude::*;
 use super::{scale_chosen, write_targets};
-use crate::model::{WeightSource, day_so_far};
+use crate::model::{Provenance, WeightSource, day_so_far};
 
-/// `latest_weight_kg` is the latest weigh-in up to `?1` (the latest day a client
-/// may call today): `NULL` without one.
+/// `latest_weight_kg` is the latest weigh-in up to `?1` (the latest day a
+/// client may call today): `NULL` without one.
 const PROFILE_COLS: &str = "id, name, sex, birth_date, height_cm, activity, goal_kg_per_week, rev, \
      (SELECT kg FROM weight WHERE profile_id = profile.id AND day <= ?1 \
-         ORDER BY day DESC LIMIT 1)";
+         ORDER BY day DESC LIMIT 1), goal_date, latitude";
 
 fn profile_row(r: &Row) -> rusqlite::Result<Profile> {
     Ok(Profile {
@@ -20,6 +20,8 @@ fn profile_row(r: &Row) -> rusqlite::Result<Profile> {
             height_cm: r.get(4)?,
             activity: r.get(5)?,
             goal_kg_per_week: r.get(6)?,
+            goal_date: r.get(9)?,
+            latitude: r.get(10)?,
         },
         rev: r.get(7)?,
         latest_weight_kg: r.get(8)?,
@@ -78,18 +80,26 @@ pub fn profile_insert(
     targets: &[Target],
 ) -> Result<Profile, Error> {
     let tx = write(conn)?;
+    if let Some(earlier) = super::foods::created_before(&tx, "profile", input.uid.as_deref())? {
+        return Ok(written(profile_get(&tx, ProfileId(earlier))?));
+    }
     name_free(&tx, &input.name, None)?;
     let b = &input.body;
     tx.execute(
-        "INSERT INTO profile (name, sex, birth_date, height_cm, activity, goal_kg_per_week)
-         VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO profile
+             (name, sex, birth_date, height_cm, activity, goal_kg_per_week, goal_date,
+              latitude, uid)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             input.name,
             b.sex,
             b.birth_date,
             b.height_cm,
             b.activity,
-            b.goal_kg_per_week
+            b.goal_kg_per_week,
+            b.goal_date,
+            b.latitude,
+            input.uid
         ],
     )?;
     let id = ProfileId(tx.last_insert_rowid());
@@ -112,7 +122,7 @@ pub fn profile_update(
     let b = &input.body;
     tx.execute(
         "UPDATE profile SET name = ?2, sex = ?3, birth_date = ?4, height_cm = ?5,
-             activity = ?6, goal_kg_per_week = ?7
+             activity = ?6, goal_kg_per_week = ?7, goal_date = ?8, latitude = ?9
          WHERE id = ?1",
         params![
             id,
@@ -121,7 +131,9 @@ pub fn profile_update(
             b.birth_date,
             b.height_cm,
             b.activity,
-            b.goal_kg_per_week
+            b.goal_kg_per_week,
+            b.goal_date,
+            b.latitude
         ],
     )?;
     let profile = written(profile_get(&tx, id)?);
@@ -146,7 +158,7 @@ pub fn profile_delete(conn: &mut Connection, id: ProfileId) -> Result<(), Error>
     Ok(())
 }
 
-// --------------------------------------------------------------- weights
+// ------------------------------------------------------------- weights
 
 /// A profile's weights in `[from, to]` (either end open), oldest first.
 pub fn weight_list(
@@ -155,11 +167,11 @@ pub fn weight_list(
     from: Option<&str>,
     to: Option<&str>,
 ) -> Result<Vec<Weight>, Error> {
-    let mut stmt = conn.prepare_cached(
+    let mut stmt = conn.prepare_cached(&format!(
         "SELECT day, kg FROM weight
-         WHERE profile_id = ?1 AND (?2 IS NULL OR day >= ?2) AND (?3 IS NULL OR day <= ?3)
-         ORDER BY day",
-    )?;
+         WHERE {IN_RANGE}
+         ORDER BY day"
+    ))?;
     Ok(stmt
         .query_map(params![profile, from, to], |r| {
             Ok(Weight {
@@ -183,7 +195,8 @@ pub fn weight_source(
 }
 
 /// Write `day`'s weight as from `source`, set at `set_at` (epoch ms): for
-/// a typed weight, when it was typed.
+/// a typed weight, when it was typed. The same weight from the same source
+/// again keeps its time.
 fn weight_put(
     tx: &Connection,
     pid: ProfileId,
@@ -194,37 +207,47 @@ fn weight_put(
 ) -> Result<(), Error> {
     tx.prepare_cached(
         "INSERT INTO weight (profile_id, day, kg, source, set_at) VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT (profile_id, day) DO UPDATE SET kg = ?3, source = ?4, set_at = ?5",
+         ON CONFLICT (profile_id, day) DO UPDATE SET kg = ?3, source = ?4, set_at = ?5
+         WHERE kg IS NOT ?3 OR source IS NOT ?4 OR source = 'hand'",
     )?
     .execute(params![pid, day, kg, source, set_at])?;
     Ok(())
 }
 
 /// Derive `day`'s weight again from its readings and what is stored, at
-/// `now`:
-/// - the earliest reading sets a day without a weight, or an openScale one;
-/// - it takes over a typed weight only when taken after it was typed (one
-///   typed before typing times were kept never);
-/// - no reading left removes an openScale weight, never a typed one.
+/// `now`, by [`Provenance`]:
+/// - the chosen reading ([`scale_chosen`]: the first after the night's wake
+///   time in `tz`, the better source first) sets a day without a weight,
+///   or a synced one;
+/// - a typed weight outranks every reading, but typed later wins: a
+///   reading from your own scale ([`TAKES_OVER_TYPED`]) taken after the
+///   weight was typed takes the day (one typed before typing times were
+///   kept never); one from further down (Health Connect's) never does;
+/// - no reading left removes a synced weight, never a typed one.
 pub(super) fn day_weight_refresh(
     tx: &Connection,
     pid: ProfileId,
     day: &str,
     now: i64,
+    tz: &TimeZone,
 ) -> Result<(), Error> {
-    let chosen = scale_chosen(tx, pid, day)?;
+    let chosen = scale_chosen(tx, pid, day, tz)?;
     let row: Option<(WeightSource, Option<i64>)> = tx
         .prepare_cached("SELECT source, set_at FROM weight WHERE profile_id = ? AND day = ?")?
         .query_row(params![pid, day], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()?;
+    let typed = |s: WeightSource| Provenance::from(s) == Provenance::Hand;
     match (chosen, row) {
-        (Some(r), None | Some((WeightSource::OpenScale, _))) => {
-            weight_put(tx, pid, day, r.weight, WeightSource::OpenScale, now)?;
+        (Some(r), None) => weight_put(tx, pid, day, r.weight, r.source, now)?,
+        (Some(r), Some((stored, _))) if !typed(stored) => {
+            weight_put(tx, pid, day, r.weight, r.source, now)?;
         }
-        (Some(r), Some((WeightSource::Manual, Some(set_at)))) if r.taken_at > set_at => {
-            weight_put(tx, pid, day, r.weight, WeightSource::OpenScale, now)?;
+        (Some(r), Some((_, Some(set_at))))
+            if r.taken_at > set_at && Provenance::from(r.source) <= TAKES_OVER_TYPED =>
+        {
+            weight_put(tx, pid, day, r.weight, r.source, now)?;
         }
-        (None, Some((WeightSource::OpenScale, _))) => {
+        (None, Some((stored, _))) if !typed(stored) => {
             tx.prepare_cached("DELETE FROM weight WHERE profile_id = ? AND day = ?")?
                 .execute(params![pid, day])?;
         }
@@ -232,6 +255,11 @@ pub(super) fn day_weight_refresh(
     }
     Ok(())
 }
+
+/// The lowest-ranked source whose later reading takes a typed weight's day:
+/// a scale you stood on after typing. A phone's copy of another app's
+/// weigh-in never does.
+const TAKES_OVER_TYPED: Provenance = Provenance::OpenScale;
 
 /// A weight typed by hand at `set_at`: only a weigh-in taken after that
 /// takes the day over, at once if one is stored already.
@@ -241,9 +269,10 @@ fn weight_write(
     day: &str,
     kg: f64,
     set_at: i64,
+    tz: &TimeZone,
 ) -> Result<(), Error> {
-    weight_put(tx, profile, day, kg, WeightSource::Manual, set_at)?;
-    day_weight_refresh(tx, profile, day, set_at)
+    weight_put(tx, profile, day, kg, WeightSource::Hand, set_at)?;
+    day_weight_refresh(tx, profile, day, set_at, tz)
 }
 
 /// Log `kg` for `day` (replacing that day's), typed at `set_at`; answers
@@ -255,9 +284,10 @@ pub fn weight_set(
     day: &str,
     kg: f64,
     set_at: i64,
+    tz: &TimeZone,
 ) -> Result<Weight, Error> {
     let tx = write(conn)?;
-    weight_write(&tx, profile, day, kg, set_at)?;
+    weight_write(&tx, profile, day, kg, set_at, tz)?;
     let weight = written(weight_list(&tx, profile, Some(day), Some(day))?.pop());
     tx.commit()?;
     Ok(weight)
@@ -270,6 +300,7 @@ pub fn weight_delete(
     profile: ProfileId,
     day: &str,
     now: i64,
+    tz: &TimeZone,
 ) -> Result<(), Error> {
     let tx = write(conn)?;
     match weight_source(&tx, profile, day)? {
@@ -280,18 +311,24 @@ pub fn weight_delete(
                 "this weight is from the scale: delete the reading in openScale",
             ));
         }
-        Some(WeightSource::Manual) => {}
+        Some(WeightSource::HealthConnect) => {
+            return Err(Error::conflict(
+                Conflict::ScaleWeight,
+                "this weight is from Health Connect: delete it there",
+            ));
+        }
+        Some(WeightSource::Hand) => {}
     }
     tx.execute(
         "DELETE FROM weight WHERE profile_id = ? AND day = ?",
         params![profile, day],
     )?;
-    day_weight_refresh(&tx, profile, day, now)?;
+    day_weight_refresh(&tx, profile, day, now, tz)?;
     tx.commit()?;
     Ok(())
 }
 
-// ------------------------------------------------------------ water food
+// ---------------------------------------------------------- water food
 
 /// The food a profile's "+ Water" logs: its own pick while not archived,
 /// else Fineli water (`Vesi`, `Vesi, …`, `Vesijohtovesi`; the shortest
@@ -342,6 +379,14 @@ pub fn water_food_set(
         "UPDATE profile SET water_food_id = ?2 WHERE id = ?1",
         params![profile, food_id],
     )?;
+    // The water food is a drink, unless you said otherwise.
+    if let Some(id) = food_id {
+        tx.execute(
+            "UPDATE food SET drink = 1 WHERE id = ? AND NOT drink_set",
+            [id],
+        )?;
+        super::foods::derive(&tx, id)?;
+    }
     let food = water_food_get(&tx, profile)?;
     tx.commit()?;
     Ok(food)

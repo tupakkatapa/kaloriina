@@ -1,0 +1,6 @@
+{
+  "page_bytes": 786432,
+  "health_bytes_max": 1048576,
+  "health_record_bytes_max": 524288,
+  "flag_text_bytes_max": 200
+}

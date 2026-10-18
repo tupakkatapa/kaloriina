@@ -18,6 +18,7 @@ mod db;
 mod dri;
 mod error;
 pub mod fineli;
+pub mod google_health;
 pub mod import;
 pub mod model;
 mod nutrients;
@@ -26,7 +27,8 @@ mod off;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-pub use api::{newest_backup, router};
+pub use api::{newest_backup, router, stale_backup};
+pub use db::{derived_current, feedback_list, feedback_pull};
 pub use error::Error;
 pub use model::ProfileId;
 pub use rusqlite::Connection;
@@ -40,6 +42,13 @@ pub struct AppState {
     pub http: Option<reqwest::Client>,
     /// Open Food Facts base URL; overridable for tests.
     pub off_url: String,
+    /// Outbound hooks' client (ADR 0024): plain HTTP allowed (Home
+    /// Assistant runs on the LAN), redirects never followed, never a
+    /// link-local or unspecified address. Without TLS roots only `http://`
+    /// hooks go.
+    pub hooks: reqwest::Client,
+    /// How long a hook call may take: 5 s; overridable for tests.
+    pub hook_timeout: std::time::Duration,
     /// Host names served besides loopback ones (e.g. the HTTPS proxy's name).
     /// Requests naming any other host are refused: DNS rebinding defence.
     pub allowed_hosts: Vec<String>,
@@ -48,6 +57,13 @@ pub struct AppState {
     /// Where the backup job writes its copies (`--backup-dir`), for
     /// `/api/backups`; `None` when backups are off.
     pub backup_dir: Option<std::path::PathBuf>,
+    /// One import at a time (a profile file, Cronometer, Google Health):
+    /// each may hold 64 MiB and its parsed tree, and two don't fit the
+    /// service's memory. Held until the import's work ends.
+    pub imports: Arc<tokio::sync::Semaphore>,
+    /// The database file's directory, for its disk's free space; `None`
+    /// in memory.
+    pub data_dir: Option<std::path::PathBuf>,
 }
 
 impl AppState {
@@ -62,13 +78,22 @@ impl AppState {
             .build()
             .inspect_err(|e| tracing::error!(error = %e, "barcode lookup disabled: no TLS roots"))
             .ok();
+        let data_dir = conn
+            .path()
+            .filter(|p| !p.is_empty())
+            .and_then(|p| Path::new(p).parent())
+            .map(Path::to_path_buf);
         Self {
             db: Arc::new(Mutex::new(conn)),
             http,
+            hooks: api::hook_client(),
+            hook_timeout: api::HOOK_TIMEOUT,
             off_url,
             allowed_hosts: Vec::new(),
             tz: jiff::tz::TimeZone::UTC,
             backup_dir: None,
+            imports: Arc::new(tokio::sync::Semaphore::new(1)),
+            data_dir,
         }
     }
 

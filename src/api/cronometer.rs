@@ -25,6 +25,7 @@ struct Files {
 async fn cronometer(
     State(s): State<AppState>,
     Path(pid): Path<ProfileId>,
+    permit: ImportPermit,
     Json(files): Json<Files>,
 ) -> Res<import::Report> {
     if files.servings.is_none() && files.summary.is_none() {
@@ -32,13 +33,17 @@ async fn cronometer(
             "choose servings.csv, dailysummary.csv or both",
         ));
     }
-    let report = on_profile(&s, pid, move |conn| {
-        import::import(
-            conn,
-            pid,
+    let db = s.db.clone();
+    let report = import_work(permit, move || {
+        // Up to 64 MiB of CSV: read off the lock, which only the write takes.
+        let parsed = import::read(
             files.servings.as_deref().map(str::as_bytes),
             files.summary.as_deref().map(str::as_bytes),
-        )
+        )?;
+        drop(files);
+        let mut conn = db.lock().unwrap_or_else(PoisonError::into_inner);
+        owner(&conn, pid)?;
+        db::cronometer_apply(&mut conn, pid, parsed)
     })
     .await?;
     Ok(Json(report))

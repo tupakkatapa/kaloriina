@@ -31,6 +31,8 @@ test('line: "Mood 4 · Energy 3 · Stress 2 · travel", unset scales skipped', (
     "Energy 3 · sick · sore",
   );
   assert.equal(line(c("2026-10-09", 1, null, null)), "Mood 1");
+  // With the scale's top, each reads against it.
+  assert.equal(line(c("2026-10-09", 2, 1, null), 5), "Mood 2/5 · Energy 1/5");
 });
 
 test("stats: mean, count, and the extremes as value and days, linking to the latest", () => {

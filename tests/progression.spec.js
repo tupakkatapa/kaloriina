@@ -1,14 +1,18 @@
 // Progression and planning: last time and new records on a run,
 // next-harder swaps, the mute toggle, EMOM rounds, planned workouts.
 
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import {
-  unique,
-  ownProfile,
+  answer,
   exerciseIds,
-  workout,
-  todayInApp,
+  expectFits,
+  fixedToday,
+  ownProfile,
   starts,
+  todayInApp,
+  unbounded,
+  unique,
+  workout,
 } from "./helpers.js";
 
 // "2030-01-02" `n` days on.
@@ -19,7 +23,7 @@ const toast = (page) => page.locator("#toast");
 
 // A session of profile `pid` through the API.
 async function session(request, pid, data) {
-  const res = await request.post(`/api/profiles/${pid}/sessions`, { data });
+  const res = await request.post(`/api/profiles/${pid}/activities`, { data });
   expect(res.ok()).toBeTruthy();
   return res.json();
 }
@@ -27,13 +31,24 @@ async function session(request, pid, data) {
 const getJson = async (request, path) => (await request.get(path)).json();
 
 // A run of a one-step Push-up workout, done to its finish screen with
-// `reps` (5 planned), after a session of × 8, × 8, × 7 two days ago.
-async function runToFinish(page, request, testInfo, slot, reps = 5) {
+// `reps` (5 planned), after a session of 8, 8, 7 reps two days ago.
+// `extra` goes into the workout as made.
+async function runToFinish(
+  page,
+  request,
+  testInfo,
+  slot,
+  reps = 5,
+  extra = {},
+) {
+  await fixedToday(page);
   const { tag } = unique(slot, testInfo);
   const id = await exerciseIds(request);
   const w = await workout(request, {
     name: `Push ${tag}`,
+    notes: "Elbows in.",
     steps: [{ kind: "exercise", exercise_id: id("Push-up"), reps: 5 }],
+    ...extra,
   });
   const pid = await ownProfile(page, request, `Pusher ${tag}`);
   const push = { exercise_id: id("Push-up"), name: "Push-up" };
@@ -48,9 +63,11 @@ async function runToFinish(page, request, testInfo, slot, reps = 5) {
       { ...push, reps: 7 },
     ],
   });
+  // Last time and the bests from each exercise's history.
+  const reads = unbounded(page);
   await page.goto(`/#/workout/${w.id}/run`);
   await expect(page.locator(".run-last")).toHaveText(
-    /^Last time \(.+\): × 8, × 8, × 7 · 20\skg$/,
+    /^Last time \(.+\): 8, 8, 7 reps · 20\skg$/u,
   );
   for (let i = 5; i < reps; i += 1)
     await page.getByRole("button", { name: "One rep more" }).click();
@@ -58,6 +75,7 @@ async function runToFinish(page, request, testInfo, slot, reps = 5) {
   await expect(
     page.getByRole("heading", { name: "Workout done" }),
   ).toBeVisible();
+  expect(reads).toEqual([]);
   return { w, pid, id };
 }
 
@@ -83,25 +101,131 @@ test("a run shows last time, swaps in a harder variant with Undo, and names the 
 
   await expect(toast(page)).toContainText(`Saved ${w.name} to`);
   await expect(toast(page)).toContainText("next time: Diamond push-up");
-  await expect(toast(page)).toContainText("New record: Push-up × 9");
+  await expect(toast(page)).toContainText("New record: Push-up · 9 reps");
   let now = await getJson(request, `/api/workouts/${w.id}`);
   expect(now.steps).toEqual([
     { kind: "exercise", exercise_id: id("Diamond push-up"), reps: 5 },
   ]);
+  // The swap and its Undo keep the workout's notes.
+  expect(now.notes).toBe("Elbows in.");
   await toast(page).getByRole("button", { name: "Undo" }).click();
   await expect
     .poll(async () => (await getJson(request, `/api/workouts/${w.id}`)).steps)
     .toEqual(w.steps);
+  now = await getJson(request, `/api/workouts/${w.id}`);
+  expect(now.notes).toBe("Elbows in.");
 
   // The session page badges the set that beat the best.
-  const [, done] = await getJson(request, `/api/profiles/${pid}/sessions`);
-  await page.goto(`/#/session/${done.id}`);
+  const [, done] = await getJson(request, `/api/profiles/${pid}/activities`);
+  await page.goto(`/#/activity/${done.id}/edit`);
   await expect(page.locator(".set .badge")).toHaveText(["Record"]);
   // The older session had nothing to beat.
-  now = await getJson(request, `/api/profiles/${pid}/sessions`);
-  await page.goto(`/#/session/${now[0].id}`);
+  now = await getJson(request, `/api/profiles/${pid}/activities`);
+  await page.goto(`/#/activity/${now[0].id}/edit`);
   await expect(page.getByRole("heading", { name: w.name })).toBeVisible();
   await expect(page.locator(".set .badge")).toHaveCount(0);
+});
+
+// The finish screen is the session form: a run as long as a session can be
+// (`activity_minutes`, a day) saves from it, not only by hand.
+test("an 11-hour run saves from Run's finish screen", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { pid } = await runToFinish(page, request, testInfo, 246);
+  await page.getByLabel("Duration (min)").fill("660");
+  await page.getByRole("button", { name: "Save to diary" }).click();
+  await expect(toast(page)).toContainText("Saved Push");
+  const sessions = await getJson(request, `/api/profiles/${pid}/activities`);
+  expect(sessions.map((s) => s.minutes)).toContain(660);
+});
+
+// The swap and its Undo send the workout back whole: an archived one (run
+// from an old plan) stays archived.
+test("a harder swap keeps the workout archived", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { w, id } = await runToFinish(page, request, testInfo, 240, 9, {
+    archived: true,
+  });
+  expect(w.archived).toBe(true);
+  await harderPick(page).selectOption({ label: "Diamond push-up" });
+  await page.getByRole("button", { name: "Save to diary" }).click();
+  await expect(toast(page)).toContainText("next time: Diamond push-up");
+  let now = await getJson(request, `/api/workouts/${w.id}`);
+  expect(now.steps[0].exercise_id).toBe(id("Diamond push-up"));
+  expect(now.archived).toBe(true);
+  await toast(page).getByRole("button", { name: "Undo" }).click();
+  await expect
+    .poll(async () => (await getJson(request, `/api/workouts/${w.id}`)).steps)
+    .toEqual(w.steps);
+  now = await getJson(request, `/api/workouts/${w.id}`);
+  expect(now.archived).toBe(true);
+  expect(now.notes).toBe("Elbows in.");
+});
+
+// A two-step run of profile `pid`'s own Push-up workout, at its first step.
+async function twoStepRun(page, request, testInfo, slot) {
+  const { tag } = unique(slot, testInfo);
+  const id = await exerciseIds(request);
+  const w = await workout(request, {
+    name: `Twice ${tag}`,
+    steps: [
+      { kind: "exercise", exercise_id: id("Push-up"), reps: 5 },
+      { kind: "exercise", exercise_id: id("Pull-up"), reps: 5 },
+    ],
+  });
+  await ownProfile(page, request, `Twice ${tag}`);
+  await page.goto(`/#/workout/${w.id}/run`);
+  await expect(page.locator(".run-where")).toHaveText("Step 1 of 2");
+  return w;
+}
+
+// The app killed mid-run (a phone does it to a backgrounded PWA): a new tab
+// has no session storage, the run is still there.
+test("a run resumes after a new context", async ({
+  page,
+  context,
+  request,
+}, testInfo) => {
+  const w = await twoStepRun(page, request, testInfo, 241);
+  await page.getByRole("button", { name: "Done" }).click();
+  await expect(page.locator(".run-where")).toHaveText("Step 2 of 2");
+  await page.close();
+  const again = await context.newPage();
+  await again.goto(`/#/workout/${w.id}/run`);
+  await expect(again.locator(".run-where")).toHaveText("Step 2 of 2");
+});
+
+// The tabs stay live during a run: leaving goes at once (nothing is lost:
+// the run waits, `runWaiting()`, the Resume banner's source).
+test("leaving a run goes without asking; the run waits", async ({
+  page,
+  request,
+}, testInfo) => {
+  const w = await twoStepRun(page, request, testInfo, 242);
+  const run = `#/workout/${w.id}/run`;
+  await page.locator('.tabs a[data-tab="diary"]').click();
+  await expect(page).toHaveURL(/#\/$/u);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  const waiting = await page.evaluate(async () =>
+    (await import("/screens/run.mjs")).runWaiting(),
+  );
+  expect(waiting).toMatchObject({ id: w.id, name: w.name, finished: false });
+  // Done with it: nothing waits.
+  await page.goto(`/${run}`);
+  await expect(page.locator(".run-where")).toHaveText("Step 1 of 2");
+  await page.getByRole("button", { name: "Finish" }).click();
+  await answer(page, "Finish");
+  await page.getByRole("button", { name: "Don't save" }).click();
+  await answer(page, "Discard");
+  await expect(page).toHaveURL(/#\/activity$/u);
+  expect(
+    await page.evaluate(async () =>
+      (await import("/screens/run.mjs")).runWaiting(),
+    ),
+  ).toBeNull();
 });
 
 test("a workout changed meanwhile isn't swapped: pick again, saved once", async ({
@@ -129,28 +253,28 @@ test("a workout changed meanwhile isn't swapped: pick again, saved once", async 
   now = await getJson(request, `/api/workouts/${w.id}`);
   expect(now.steps[0].exercise_id).toBe(id("Clap push-up"));
   expect(now.name).toBe(`${w.name} v2`);
-  const sessions = await getJson(request, `/api/profiles/${pid}/sessions`);
+  const sessions = await getJson(request, `/api/profiles/${pid}/activities`);
   expect(sessions).toHaveLength(2);
 });
 
-test("a session kept on the device skips the swap and says so", async ({
+test("an activity kept on the device skips the swap and says so", async ({
   page,
   request,
 }, testInfo) => {
   const { w } = await runToFinish(page, request, testInfo, 332);
   await harderPick(page).selectOption({ label: "Archer push-up" });
-  await page.route("**/api/profiles/*/sessions", (route) =>
+  await page.route("**/api/profiles/*/activities", (route) =>
     route.request().method() === "POST" ? route.abort() : route.fallback(),
   );
   await page.getByRole("button", { name: "Save to diary" }).click();
   await expect(toast(page)).toContainText(
-    "Saved on this device; change the workout when online",
+    "Saved in this browser; change the workout when online",
   );
   const now = await getJson(request, `/api/workouts/${w.id}`);
   expect(now.steps).toEqual(w.steps);
 });
 
-test("Sound off stops the beeps, stays off, and keeps the vibration", async ({
+test("the Sound toggle stops the beeps, stays off, and keeps the vibration", async ({
   page,
   request,
 }, testInfo) => {
@@ -197,19 +321,30 @@ test("Sound off stops the beeps, stays off, and keeps the vibration", async ({
   expect(buzzes).toBe(1);
 
   await page.goto(`/#/workout/${w.id}/run?fresh=1`);
-  const sound = page.getByRole("button", { name: "Sound off" });
-  await expect(sound).toHaveAttribute("aria-pressed", "false");
-  await sound.click();
+  // An icon in the header row, pressed while sound is on.
+  const sound = page.getByRole("button", { name: "Sound", exact: true });
   await expect(sound).toHaveAttribute("aria-pressed", "true");
+  await expect(sound).toHaveText("");
+  const [title, toggle] = await Promise.all([
+    page.locator("header.title h1").boundingBox(),
+    sound.boundingBox(),
+  ]);
+  expect(
+    Math.abs(title.y + title.height / 2 - (toggle.y + toggle.height / 2)),
+  ).toBeLessThan(2);
+  await sound.click();
+  await expect(sound).toHaveAttribute("aria-pressed", "false");
   expect(await rest()).toEqual([0, 1]);
-  await expect(page.getByRole("button", { name: "Sound off" })).toHaveCount(0); // the finish screen has no toggle
+  // The finish screen has no toggle.
+  await expect(
+    page.getByRole("button", { name: "Sound", exact: true }),
+  ).toHaveCount(0);
   // Kept on the device.
   await page.reload();
   await page.goto(`/#/workout/${w.id}/run?fresh=1`);
-  await expect(page.getByRole("button", { name: "Sound off" })).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
+  await expect(
+    page.getByRole("button", { name: "Sound", exact: true }),
+  ).toHaveAttribute("aria-pressed", "false");
 });
 
 test("an EMOM repeat is set in the editor and each round waits out its minute", async ({
@@ -229,7 +364,7 @@ test("an EMOM repeat is set in the editor and each round waits out its minute", 
     ],
   });
   await ownProfile(page, request, `Emom ${tag}`);
-  await page.goto(`/#/workout/${w.id}`);
+  await page.goto(`/#/workout/${w.id}/edit`);
   await page.locator('[data-path="0"] > .step-head summary').click();
   await page.getByLabel("Step 1 every (s)").fill("30");
   await expect(page.locator('[data-path="0"] .muted').first()).toHaveText(
@@ -266,6 +401,7 @@ test("a workout is planned on a day from its picker, with Undo", async ({
   page,
   request,
 }, testInfo) => {
+  await fixedToday(page);
   const { tag } = unique(335, testInfo);
   const id = await exerciseIds(request);
   const w = await workout(request, {
@@ -277,7 +413,7 @@ test("a workout is planned on a day from its picker, with Undo", async ({
   await page.goto(`/#/plan/${day}`);
   await page.getByLabel("Search your workouts").fill(tag);
   await page.getByRole("button", { name: w.name }).click();
-  await expect(page).toHaveURL(new RegExp(`#/day/${day}$`));
+  await expect(page).toHaveURL(new RegExp(`#/day/${day}$`, "u"));
   await expect(toast(page)).toContainText(`Planned ${w.name}`);
   const plans = () => getJson(request, `/api/profiles/${pid}/plans`);
   expect((await plans()).map((p) => [p.day, p.workout_id])).toEqual([
@@ -291,6 +427,7 @@ test("a planned workout shows on its day: Start runs it there, ✕ drops it with
   page,
   request,
 }, testInfo) => {
+  await fixedToday(page);
   const { tag } = unique(336, testInfo);
   const id = await exerciseIds(request);
   const w = await workout(request, {
@@ -309,40 +446,181 @@ test("a planned workout shows on its day: Start runs it there, ✕ drops it with
   await plan();
   await page.goto(`/#/day/${day}`);
   const card = page.locator("section.group", {
-    has: page.getByRole("heading", { name: "Log", exact: true }),
+    has: page.getByRole("heading", { name: "Activity", exact: true }),
   });
   const row = card.locator("li.log-row.planned");
-  await expect(row).toHaveText(new RegExp(`^Planned workoutDue ${tag}`));
-  await card.getByRole("button", { name: "+ Log" }).click();
+  await expect(row).toHaveText(new RegExp(`^PlannedDue ${tag}`, "u"));
+  // A day ahead: its + plans.
   await expect(
-    page.getByRole("dialog").getByRole("link", { name: /^Plan a workout/ }),
+    card.getByRole("link", { name: /^Plan a workout on /u }),
   ).toHaveAttribute("href", `#/plan/${day}`);
-  await page.keyboard.press("Escape");
-  await expect(page.getByRole("dialog")).toHaveCount(0);
   // A planned day fits a phone.
-  expect(
-    await page.evaluate(
-      () => document.scrollingElement.scrollWidth <= window.innerWidth,
-    ),
-  ).toBe(true);
+  await expectFits(page);
 
   // ✕ drops it; Undo brings it back.
   await row
     .getByRole("button", { name: `Remove the plan for ${w.name}` })
     .click();
   await expect(row).toHaveCount(0);
-  await expect(card).toContainText("Nothing logged yet. Use + Log.");
+  await expect(card).toContainText("Nothing planned.");
   await toast(page).getByRole("button", { name: "Undo" }).click();
   await expect(row).toHaveCount(1);
   expect(await plans()).toHaveLength(1);
 
-  // Start runs it for that day; saving takes the plan away.
-  await row.getByRole("link", { name: `Start ${w.name}` }).click();
+  // Start shows only today; a run for that day, saved, takes the plan away.
+  await expect(row.getByRole("link", { name: /^Start /u })).toHaveCount(0);
+  await page.goto(`/#/workout/${w.id}/run?day=${day}`);
   await page.getByRole("button", { name: "Done" }).click();
   await expect(page.getByLabel("Day")).toHaveValue(day);
   await page.getByRole("button", { name: "Save to diary" }).click();
-  await expect(page).toHaveURL(new RegExp(`#/day/${day}$`));
+  await expect(page).toHaveURL(new RegExp(`#/day/${day}$`, "u"));
   await expect(row).toHaveCount(0);
   await expect(card.getByRole("link", { name: starts(w.name) })).toBeVisible();
   expect(await plans()).toEqual([]);
+});
+
+// The run kept on this device for workout `id` (run.mjs keptRunOf).
+const kept = (page, id) =>
+  page.evaluate(
+    async (w) => (await import("/screens/run.mjs")).keptRunOf(w),
+    id,
+  );
+
+test("a finished run keeps its time: reopened 10 hours later it still took 1 minute", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { w } = await runToFinish(page, request, testInfo, 1097);
+  const minutes = page.locator("[name=minutes]");
+  await expect(minutes).toHaveValue("1");
+  // Left unsaved overnight, then opened from the Resume banner's Save.
+  await page.clock.fastForward("10:00:00");
+  await page.goto("/#/");
+  await page.goto(`/#/workout/${w.id}/run`);
+  await expect(
+    page.getByRole("heading", { name: "Workout done" }),
+  ).toBeVisible();
+  await expect(minutes).toHaveValue("1");
+  await expect(page.getByText(/^1 set in 1 minute\.$/u)).toBeVisible();
+});
+
+test("Skip on a timed step records nothing held, and never lowers a time held", async ({
+  page,
+  request,
+}, testInfo) => {
+  await fixedToday(page);
+  const { tag } = unique(1098, testInfo);
+  const id = await exerciseIds(request);
+  const w = await workout(request, {
+    name: `Hold ${tag}`,
+    steps: [
+      { kind: "exercise", exercise_id: id("Plank"), seconds: 30 },
+      { kind: "exercise", exercise_id: id("Push-up"), reps: 5 },
+    ],
+  });
+  await ownProfile(page, request, `Hold ${tag}`);
+  await page.goto(`/#/workout/${w.id}/run`);
+  const skip = page.getByRole("button", { name: "Skip", exact: true });
+  // Skipped at once: nothing held, nothing recorded.
+  await skip.click();
+  await expect(page.locator(".run-where")).toHaveText("Step 2 of 2");
+  expect((await kept(page, w.id)).done[0]).toEqual({});
+  // Held 10 s, skipped: 10 s kept.
+  await page.getByRole("button", { name: "Back" }).click();
+  await page.clock.runFor(10_000);
+  await skip.click();
+  await expect(page.locator(".run-where")).toHaveText("Step 2 of 2");
+  expect((await kept(page, w.id)).done[0]).toMatchObject({
+    seconds: 10,
+    reached: true,
+  });
+  // Back onto it and Skip at once: the 10 s stay.
+  await page.getByRole("button", { name: "Back" }).click();
+  await skip.click();
+  await expect(page.locator(".run-where")).toHaveText("Step 2 of 2");
+  expect((await kept(page, w.id)).done[0]).toMatchObject({ seconds: 10 });
+});
+
+test("a weight cleared during a run stays cleared", async ({
+  page,
+  request,
+}, testInfo) => {
+  await fixedToday(page);
+  const { tag } = unique(1099, testInfo);
+  const id = await exerciseIds(request);
+  const w = await workout(request, {
+    name: `Bare ${tag}`,
+    steps: [
+      { kind: "exercise", exercise_id: id("Goblet squat"), reps: 5, kg: 20 },
+      { kind: "exercise", exercise_id: id("Push-up"), reps: 5 },
+    ],
+  });
+  await ownProfile(page, request, `Bare ${tag}`);
+  await page.goto(`/#/workout/${w.id}/run`);
+  const weight = page.getByLabel(/^Weight used/u);
+  await expect(weight).toHaveValue("20");
+  await weight.fill("");
+  await page.getByRole("button", { name: "Done" }).click();
+  await page.getByRole("button", { name: "Back" }).click();
+  await expect(weight).toHaveValue("");
+  await page.getByRole("button", { name: "Done" }).click();
+  await page.getByRole("button", { name: "Done" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Workout done" }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Goblet squat weight (kg)")).toHaveValue("");
+});
+
+test("a workout's notes show above the step after them, and in Next", async ({
+  page,
+  request,
+}, testInfo) => {
+  await fixedToday(page);
+  const { tag } = unique(1100, testInfo);
+  const id = await exerciseIds(request);
+  const w = await workout(request, {
+    name: `Noted ${tag}`,
+    steps: [
+      { kind: "note", name: "Warm-up", text: "5 min easy rowing" },
+      { kind: "exercise", exercise_id: id("Push-up"), reps: 5 },
+      { kind: "note", text: "Slow on the way down" },
+      { kind: "exercise", exercise_id: id("Pull-up"), reps: 5 },
+    ],
+  });
+  await ownProfile(page, request, `Noted ${tag}`);
+  await page.goto(`/#/workout/${w.id}/run`);
+  // Notes count toward no step.
+  await expect(page.locator(".run-where")).toHaveText("Step 1 of 2");
+  await expect(page.locator(".run-note")).toHaveText(
+    "Warm-up · 5 min easy rowing",
+  );
+  await expect(page.locator(".run-what")).toHaveText("Push-up");
+  await expect(page.getByText(/^Next: /u)).toHaveText(
+    "Next: Slow on the way down · Pull-up × 5",
+  );
+  await page.getByRole("button", { name: "Done" }).click();
+  await expect(page.locator(".run-note")).toHaveText("Slow on the way down");
+  await expect(page.locator(".run-what")).toHaveText("Pull-up");
+});
+
+test("a run opens offline once its workout was read: no last time, no error", async ({
+  page,
+  request,
+}, testInfo) => {
+  await fixedToday(page);
+  const { tag } = unique(1103, testInfo);
+  const id = await exerciseIds(request);
+  const w = await workout(request, {
+    name: `Away ${tag}`,
+    steps: [{ kind: "exercise", exercise_id: id("Push-up"), reps: 5 }],
+  });
+  await ownProfile(page, request, `Away ${tag}`);
+  // The exercises' history can't be read (offline, the worker answers
+  // the workout and the exercises from its cache).
+  await page.route("**/api/profiles/*/exercises/*/history", (route) =>
+    route.abort(),
+  );
+  await page.goto(`/#/workout/${w.id}/run`);
+  await expect(page.locator(".run-where")).toHaveText("Step 1 of 1");
+  await expect(page.locator(".run-last")).toHaveText("");
 });

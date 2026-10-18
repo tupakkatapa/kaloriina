@@ -6,8 +6,12 @@ use super::prelude::*;
 pub(super) fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/foods", post(food_create))
-        .route("/api/foods/{id}", get(food_read).put(food_update))
+        .route(
+            "/api/foods/{id}",
+            get(food_read).put(food_update).delete(food_delete),
+        )
         .route("/api/foods/{id}/usage", get(usage))
+        .route("/api/foods/{id}/copy", post(food_copy))
         .route("/api/foods/{id}/merge", post(merge))
         .route("/api/foods/barcode/{code}", post(barcode))
         .route("/api/profiles/{pid}/foods", get(search))
@@ -27,6 +31,7 @@ pub(super) fn routes() -> Router<AppState> {
             "/api/meals/{id}",
             get(meal_read).put(meal_update).delete(meal_delete),
         )
+        .route("/api/meals/{id}/copy", post(meal_copy))
 }
 
 #[derive(Deserialize)]
@@ -43,6 +48,20 @@ struct Search {
     sort: Option<String>,
     /// The day `sort=fit` fits (`YYYY-MM-DD`).
     day: Option<String>,
+}
+
+/// The `label` parameters (repeatable) as vocabulary keys: every food
+/// found has them all.
+fn label_filter(pairs: &[(String, String)]) -> Result<Vec<&'static str>, Error> {
+    pairs
+        .iter()
+        .filter(|(k, _)| k == "label")
+        .map(|(_, v)| {
+            model::find_label(v)
+                .map(|l| l.key.as_str())
+                .ok_or_else(|| Error::invalid_field("label", format!("unknown label “{v}”")))
+        })
+        .collect()
 }
 
 /// Items of a comma list, blanks skipped.
@@ -98,10 +117,10 @@ impl Search {
         }
         let sources = items(self.sources.as_deref())
             .map(|s| {
-                Source::parse(s).ok_or_else(|| {
+                model::FoodScope::parse(s).ok_or_else(|| {
                     Error::invalid_field(
                         "sources",
-                        format!("unknown source “{s}” (use {})", Source::choices()),
+                        format!("unknown source “{s}” (use {})", model::FoodScope::choices()),
                     )
                 })
             })
@@ -135,6 +154,7 @@ impl Search {
             sort,
             profile,
             left: None,
+            labels: Vec::new(),
         })
     }
 }
@@ -172,11 +192,14 @@ async fn search(
     State(s): State<AppState>,
     Path(pid): Path<ProfileId>,
     Query(q): Query<Search>,
+    Query(pairs): Query<Vec<(String, String)>>,
 ) -> Res<Vec<model::Food>> {
     q.query(pid)?;
+    let labels = label_filter(&pairs)?;
     Ok(Json(
         on_profile(&s, pid, move |conn| {
             let mut query = q.query(pid)?;
+            query.labels = labels;
             if let (model::Sort::Fit, Some(day)) = (query.sort, q.day.as_deref()) {
                 query.left = Some(left_on(conn, pid, day)?);
             }
@@ -242,13 +265,58 @@ async fn favorite_remove(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn food_read(State(s): State<AppState>, Path(id): Path<i64>) -> Res<model::Food> {
+/// A food as read; a recipe's with its ingredients (as `GET /recipes/{id}`
+/// lists them), which its log screen shows.
+#[derive(Serialize)]
+struct FoodRead {
+    #[serde(flatten)]
+    food: model::Food,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    items: Option<Vec<model::Item>>,
+}
+
+/// [`FoodRead`] of `food`.
+fn food_read_of(conn: &Connection, food: model::Food) -> Result<FoodRead, Error> {
+    if food.kind != model::FoodKind::Recipe {
+        return Ok(FoodRead { food, items: None });
+    }
+    let id = food.id;
+    let r = db::recipe_get(conn, id)?.ok_or_else(|| Error::not_found("food", id))?;
+    Ok(FoodRead {
+        food: r.food,
+        items: Some(r.items),
+    })
+}
+
+async fn food_read(State(s): State<AppState>, Path(id): Path<i64>) -> Res<FoodRead> {
     Ok(Json(
         on_db(&s, move |conn| {
-            db::food_get(conn, id)?.ok_or_else(|| Error::not_found("food", id))
+            let food = db::food_get(conn, id)?.ok_or_else(|| Error::not_found("food", id))?;
+            food_read_of(conn, food)
         })
         .await?,
     ))
+}
+
+/// A copy of a saved food or recipe: 201 with it, as read.
+async fn food_copy(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+    Json(c): Json<model::CopyInput>,
+) -> Created<FoodRead> {
+    let c = c.checked()?;
+    let copy = on_db(&s, move |conn| {
+        let food = db::food_copy(conn, id, c.uid.as_deref())?;
+        food_read_of(conn, food)
+    })
+    .await?;
+    Ok(created(copy))
+}
+
+/// Delete a food or recipe nothing uses; see `db::food_delete`.
+async fn food_delete(State(s): State<AppState>, Path(id): Path<i64>) -> Result<StatusCode, Error> {
+    on_db(&s, move |conn| db::food_delete(conn, id)).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn food_create(State(s): State<AppState>, Json(f): Json<FoodInput>) -> Created<model::Food> {
@@ -260,7 +328,7 @@ async fn food_create(State(s): State<AppState>, Json(f): Json<FoodInput>) -> Cre
 async fn food_update(
     State(s): State<AppState>,
     Path(id): Path<i64>,
-    Json(f): Json<FoodInput>,
+    Replace(f): Replace<FoodInput>,
 ) -> Res<model::Food> {
     let f = f.checked()?;
     Ok(Json(
@@ -335,7 +403,7 @@ async fn recipe_create(
 async fn recipe_update(
     State(s): State<AppState>,
     Path(id): Path<i64>,
-    Json(r): Json<RecipeInput>,
+    Replace(r): Replace<RecipeInput>,
 ) -> Res<model::Recipe> {
     let r = r.checked()?;
     Ok(Json(
@@ -365,12 +433,23 @@ async fn meal_create(State(s): State<AppState>, Json(m): Json<MealInput>) -> Cre
 async fn meal_update(
     State(s): State<AppState>,
     Path(id): Path<i64>,
-    Json(m): Json<MealInput>,
+    Replace(m): Replace<MealInput>,
 ) -> Res<model::Meal> {
     let m = m.checked()?;
     Ok(Json(
         on_db(&s, move |conn| db::meal_save(conn, Some(id), &m)).await?,
     ))
+}
+
+/// A copy of a saved meal: 201 with it.
+async fn meal_copy(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+    Json(c): Json<model::CopyInput>,
+) -> Created<model::Meal> {
+    let c = c.checked()?;
+    let copy = on_db(&s, move |conn| db::meal_copy(conn, id, c.uid.as_deref())).await?;
+    Ok(created(copy))
 }
 
 async fn meal_delete(State(s): State<AppState>, Path(id): Path<i64>) -> Result<StatusCode, Error> {

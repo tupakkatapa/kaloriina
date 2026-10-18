@@ -11,6 +11,9 @@
 //!   their plain address) are revalidated on every load against an `ETag`
 //!   of their bytes.
 
+use std::ffi::OsStr;
+use std::fmt::Write;
+use std::path::Path;
 use std::sync::OnceLock;
 
 use super::prelude::*;
@@ -54,7 +57,7 @@ fn all_files<'a>(dir: &'a Dir<'a>, out: &mut Vec<(&'a str, &'a [u8])>) {
 }
 
 /// This build's hash over the embedded web files.
-fn build_hash() -> &'static str {
+pub(super) fn build_hash() -> &'static str {
     static HASH: OnceLock<String> = OnceLock::new();
     HASH.get_or_init(|| {
         let mut files = Vec::new();
@@ -71,10 +74,76 @@ fn index() -> &'static str {
             .get_file("index.html")
             .and_then(include_dir::File::contents_utf8)
             .unwrap_or_default();
-        ENTRY_POINTS.iter().fold(html.to_owned(), |html, p| {
+        let html = ENTRY_POINTS.iter().fold(html.to_owned(), |html, p| {
             html.replace(&format!("\"{p}\""), &format!("\"/v/{}{p}\"", build_hash()))
-        })
+        });
+        let mut preload = String::new();
+        for p in static_graph("main.mjs") {
+            let _ = writeln!(
+                preload,
+                "<link rel=\"modulepreload\" href=\"/v/{}/{p}\" />",
+                build_hash()
+            );
+        }
+        html.replacen("</head>", &format!("{preload}</head>"), 1)
     })
+}
+
+/// The modules `entry` imports statically, then theirs, in the order found
+/// (not `entry` itself). From `main.mjs` that is the Diary's graph: the
+/// other screens load by `import()`. Preloading it lets the browser fetch
+/// the whole graph at once instead of one import depth per round trip.
+fn static_graph(entry: &str) -> Vec<String> {
+    let mut found = vec![entry.to_owned()];
+    let mut next = 0;
+    while let Some(path) = found.get(next).cloned() {
+        next += 1;
+        let src = WEB
+            .get_file(&path)
+            .and_then(include_dir::File::contents_utf8)
+            .unwrap_or_default();
+        let dir = path.rsplit_once('/').map_or("", |(dir, _)| dir);
+        for spec in static_imports(src) {
+            let module = resolve(dir, spec);
+            if !found.contains(&module) {
+                found.push(module);
+            }
+        }
+    }
+    found.remove(0);
+    found
+}
+
+/// The relative specifiers in `src`'s `from "…"` and `import "…"` clauses.
+/// A dynamic `import("…")` has a parenthesis before its quote, so it is
+/// not one.
+fn static_imports(src: &str) -> impl Iterator<Item = &str> {
+    ["from \"", "import \""]
+        .into_iter()
+        .flat_map(move |clause| {
+            src.match_indices(clause).filter_map(move |(at, _)| {
+                let rest = &src[at + clause.len()..];
+                let spec = &rest[..rest.find('"')?];
+                let relative = spec.starts_with("./") || spec.starts_with("../");
+                let module = Path::new(spec).extension() == Some(OsStr::new("mjs"));
+                (relative && module).then_some(spec)
+            })
+        })
+}
+
+/// `spec` relative to directory `dir`, both under the web root.
+fn resolve(dir: &str, spec: &str) -> String {
+    let mut parts: Vec<&str> = dir.split('/').filter(|p| !p.is_empty()).collect();
+    for part in spec.split('/') {
+        match part {
+            "." => {}
+            ".." => {
+                parts.pop();
+            }
+            _ => parts.push(part),
+        }
+    }
+    parts.join("/")
 }
 
 /// `body` as `path`'s type, a 304 when the client holds `etag` already.
@@ -168,6 +237,40 @@ mod tests {
             version([("main.mjs", b"a".as_slice()), ("ux.mjs", b"b")]),
             build
         );
+    }
+
+    #[tokio::test]
+    async fn index_preloads_the_diary_graph_only() {
+        let h = build_hash();
+        let (_, _, body) = get("/", None).await;
+        let preloaded =
+            |p: &str| body.contains(&format!("rel=\"modulepreload\" href=\"/v/{h}/{p}\""));
+        // main.mjs's static imports, theirs in turn, and none twice.
+        for p in [
+            "screens/diary.mjs",
+            "nav.mjs",
+            "ui.mjs",
+            "api.mjs",
+            "format.mjs",
+        ] {
+            assert!(preloaded(p), "{p} in {body}");
+        }
+        // Screens that load by import() are not.
+        for p in [
+            "screens/summary.mjs",
+            "screens/foods.mjs",
+            "screens/activity.mjs",
+        ] {
+            assert!(!preloaded(p), "{p} preloaded");
+        }
+        let graph = static_graph("main.mjs");
+        let mut unique = graph.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), graph.len());
+        assert!(graph.iter().all(|p| WEB.get_file(p).is_some()), "{graph:?}");
+        assert_eq!(resolve("screens", "../ui.mjs"), "ui.mjs");
+        assert_eq!(resolve("", "./screens/diary.mjs"), "screens/diary.mjs");
     }
 
     #[tokio::test]

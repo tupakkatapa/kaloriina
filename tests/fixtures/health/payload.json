@@ -6,16 +6,12 @@
     {
       "day": "2026-10-08",
       "active_kcal": 512,
+      "total_kcal": 2480,
       "steps": 9120,
       "resting_hr": 54,
-      "hrv_ms": 42,
-      "asleep_min": 460,
-      "in_bed_min": 475,
-      "bedtime": "23:10",
-      "wake_time": "07:05",
-      "deep_min": 110,
-      "rem_min": 90,
-      "light_min": 260
+      "avg_hr": 68,
+      "min_hr": 48,
+      "max_hr": 141
     }
   ],
   "sessions": [
@@ -27,8 +23,11 @@
       "type": 33,
       "name": "Running",
       "kcal": 120,
+      "kcal_total": null,
       "distance_m": null,
-      "recording_method": 1
+      "recording_method": 1,
+      "avg_hr": null,
+      "max_hr": null
     },
     {
       "key": "a-3",
@@ -38,8 +37,11 @@
       "type": 999,
       "name": "Tempo \"run\"\n\u0001",
       "kcal": null,
+      "kcal_total": null,
       "distance_m": null,
-      "recording_method": 0
+      "recording_method": 0,
+      "avg_hr": null,
+      "max_hr": null
     },
     {
       "key": "a-4",
@@ -47,10 +49,13 @@
       "start_at": "2026-10-05T08:00:00Z",
       "end_at": "2026-10-05T09:00:00Z",
       "type": 999,
-      "name": "Workout",
+      "name": "Activity",
       "kcal": null,
+      "kcal_total": 310,
       "distance_m": null,
-      "recording_method": 0
+      "recording_method": 0,
+      "avg_hr": null,
+      "max_hr": null
     },
     {
       "key": "a-5",
@@ -60,8 +65,28 @@
       "type": 53,
       "name": "Evening walk",
       "kcal": 180,
+      "kcal_total": null,
       "distance_m": 4210,
-      "recording_method": 2
+      "recording_method": 2,
+      "avg_hr": 112,
+      "max_hr": 131
     }
-  ]
+  ],
+  "body": [
+    {
+      "key": "w-1",
+      "day": "2026-10-07",
+      "at": "2026-10-07T05:30:00Z",
+      "kg": 72.45,
+      "body_fat": 18.3,
+      "lbm_kg": null,
+      "bone_kg": null,
+      "bmr_kcal": 1650,
+      "origin": "com.withings.wiscale2"
+    }
+  ],
+  "read": {
+    "SleepSession": ["s-1"],
+    "HeartRateVariabilityRmssd": []
+  }
 }

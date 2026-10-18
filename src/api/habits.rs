@@ -38,7 +38,7 @@ async fn create(
 async fn update(
     State(s): State<AppState>,
     Path((pid, id)): Path<(ProfileId, i64)>,
-    Json(h): Json<HabitInput>,
+    Replace(h): Replace<HabitInput>,
 ) -> Res<model::Habit> {
     let h = h.checked()?;
     Ok(Json(
@@ -55,30 +55,34 @@ async fn delete(
 }
 
 /// Every habit's amounts in the range: the built-ins' (stored units, see
-/// `meta.habits`) and the trackers', by day, built-ins first.
+/// `meta.habits`) and the trackers', by day, built-ins first. The rows are
+/// read under the lock and the built-ins computed after it.
 async fn days(
     State(s): State<AppState>,
     Path(pid): Path<ProfileId>,
     Query(r): Query<Range>,
 ) -> Res<Vec<model::HabitDayRow>> {
     r.checked()?;
-    Ok(Json(
-        on_profile(&s, pid, move |conn| {
-            let (from, to) = (r.from.as_deref(), r.to.as_deref());
-            let mut rows = db::builtin_days(conn, pid, from, to)?;
-            rows.extend(db::habit_days(conn, pid, from, to)?.into_iter().map(|d| {
-                model::HabitDayRow {
-                    habit: d.habit_id.to_string(),
-                    day: d.day,
-                    amount: d.amount,
-                }
-            }));
-            // Stable: within a day, built-ins (registry order) then trackers.
-            rows.sort_by(|a, b| a.day.cmp(&b.day));
-            Ok(rows)
-        })
-        .await?,
-    ))
+    let (inputs, trackers) = on_profile(&s, pid, move |conn| {
+        let (from, to) = (r.from.as_deref(), r.to.as_deref());
+        Ok((
+            db::builtin_inputs(conn, pid, from, to)?,
+            db::habit_days(conn, pid, from, to)?,
+        ))
+    })
+    .await?;
+    let mut rows = tokio::task::spawn_blocking(move || db::builtin_days_of(inputs))
+        .await
+        .map_err(|e| Error::Internal(format!("habit days task failed: {e}")))??;
+    rows.extend(trackers.into_iter().map(|d| model::HabitDayRow {
+        habit: d.habit_id.to_string(),
+        day: d.day,
+        amount: d.amount,
+        known: true,
+    }));
+    // Stable: within a day, built-ins (registry order) then trackers.
+    rows.sort_by(|a, b| a.day.cmp(&b.day));
+    Ok(Json(rows))
 }
 
 /// Set a tracker's total on a day, up to tomorrow (UTC). Repeating it

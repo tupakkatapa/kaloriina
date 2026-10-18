@@ -36,21 +36,29 @@ struct ImportQuery {
     /// the restore path. The app's own import never sends it.
     #[serde(default)]
     restore: bool,
+    /// The import's retry key: an import naming one made before
+    /// answers with that profile.
+    uid: Option<String>,
 }
 
 /// A new profile from an export: 201 with it, or nothing written. Read
 /// typed from the body's bytes, header first (see
-/// [`model::ProfileExport::read`]).
+/// [`model::ProfileExport::read`]), off the database lock.
 async fn import(
     State(s): State<AppState>,
+    permit: ImportPermit,
     Query(q): Query<ImportQuery>,
     JsonBytes(body): JsonBytes,
 ) -> Created<model::Profile> {
-    let file = model::ProfileExport::read(&body)?;
-    drop(body);
-    let checked = file.checked(&s.today())?;
-    let profile = on_db(&s, move |conn| {
-        db::profile_import(conn, &checked, q.restore)
+    model::checked_opt_uid(q.uid.as_deref())?;
+    let (db, tz, today) = (s.db.clone(), s.tz.clone(), s.today());
+    let profile = import_work(permit, move || {
+        let file = model::ProfileExport::read(&body)?;
+        drop(body);
+        let mut checked = file.checked(&today)?;
+        checked.profile.uid = q.uid;
+        let mut conn = db.lock().unwrap_or_else(PoisonError::into_inner);
+        db::profile_import(&mut conn, &checked, q.restore, model::now_ms(), &tz)
     })
     .await?;
     Ok(created(profile))

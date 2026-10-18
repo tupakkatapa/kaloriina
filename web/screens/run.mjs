@@ -1,36 +1,51 @@
 // Running a workout step by step, then saving what was done.
 
-import { api, get, meta, scoped, stored, uid, weightKg } from "../api.mjs";
+import {
+  api,
+  get,
+  hookEvent,
+  meta,
+  profileId,
+  scoped,
+  stored,
+  uid,
+} from "../api.mjs";
 import { iso, pretty } from "../dates.mjs";
+import { capitalized, countdown, plural } from "../format.mjs";
 import { go, href, leaving } from "../nav.mjs";
-import { capitalized, plural } from "../nutrients.mjs";
+import { readJson, writeJson } from "../prefs.mjs";
+import { loadResting } from "../rows.mjs";
 import {
   busy,
-  confirmDialog,
   choice,
+  confirmDialog,
   editor,
   field,
+  fill,
   h,
+  icon,
+  notesSection,
   notify,
   num,
-  numberOrNull,
+  SOUND,
   titleBar,
 } from "../ui.mjs";
+import { inputText, readInput, toShown, unitOf } from "../units.mjs";
 import {
-  countdown,
   describe,
   describeSet,
   details,
+  exerciseIds,
   fingerprint,
   harder,
-  kcalFor,
   lastTime,
   lastTimeText,
+  library,
   newRecords,
-  runKey,
   swapExercise,
   unroll,
 } from "../workouts.mjs";
+import { activityForm } from "./activity-editor.mjs";
 
 // A short tone; the run screen beeps the last seconds of a rest or hold.
 // Browsers start audio only from a tap, so every run button calls
@@ -44,26 +59,28 @@ function wakeAudio() {
     // Sound is a nicety: no audio device, no beep.
   }
 }
-// The one label of the run's mute toggle (pressed: muted). Muting stops
-// the beeps only: vibration and the screen lock stay.
-const SOUND_LABEL = "Sound off";
+// The run's sound toggle, an icon in its header (pressed: sound on; off,
+// the speaker struck through). Muting stops the beeps only: vibration and
+// the screen lock stay.
 const SOUND_KEY = "sound";
 const muted = () => localStorage.getItem(SOUND_KEY) === "off";
 function soundToggle() {
-  const button = h(
-    "button",
-    {
-      type: "button",
-      class: "sound",
-      "aria-pressed": String(muted()),
-      onclick: () => {
-        if (muted()) localStorage.removeItem(SOUND_KEY);
-        else localStorage.setItem(SOUND_KEY, "off");
-        button.setAttribute("aria-pressed", String(muted()));
-      },
+  const paint = () =>
+    fill(button, icon(muted() ? `${SOUND}M4 4l16 16` : SOUND)).setAttribute(
+      "aria-pressed",
+      String(!muted()),
+    );
+  const button = h("button", {
+    type: "button",
+    class: "icon sound",
+    "aria-label": "Sound",
+    onclick: () => {
+      if (muted()) localStorage.removeItem(SOUND_KEY);
+      else localStorage.setItem(SOUND_KEY, "off");
+      paint();
     },
-    SOUND_LABEL,
-  );
+  });
+  paint();
   return button;
 }
 function beep(ms = 120, hz = 880) {
@@ -83,33 +100,115 @@ const timed = (s) => Boolean(s?.seconds) || s?.kind === "pad";
 // A run left alone this long asks whether to resume or start over.
 const STALE_MS = 12 * 60 * 60 * 1000;
 
+// A run is kept on this device (localStorage: a phone kills a backgrounded
+// app, and the run must survive that), per profile and workout.
+const runPrefix = () => `run:${profileId}:`;
+// The run kept for workout `id` (in progress, or finished but not saved).
+// Unreadable reads as none: start over.
+export const keptRunOf = (id) => readJson(runPrefix() + id, null);
+const keepRun = (id, state) => writeJson(runPrefix() + id, state);
+const dropRun = (id) => localStorage.removeItem(runPrefix() + id);
+
+// The run waiting for this profile, the latest touched: {id, name, finished,
+// at, touched}, or null. A Resume banner's source.
+export function runWaiting() {
+  const prefix = runPrefix();
+  let latest = null;
+  for (const key of Object.keys(localStorage)) {
+    if (!key.startsWith(prefix)) continue;
+    const kept = readJson(key, null);
+    if (kept && !(kept.touched <= latest?.touched))
+      latest = {
+        id: Number(key.slice(prefix.length)),
+        name: kept.name,
+        finished: kept.finished,
+        at: kept.at,
+        touched: kept.touched,
+      };
+  }
+  return latest;
+}
+
+// "Pull day in progress · Resume": the run waiting (`runWaiting`), for the
+// Diary and Activity; null without one. A run kept for a workout deleted
+// since is dropped, never linked.
+export async function runBanner() {
+  const run = runWaiting();
+  if (!run) return null;
+  try {
+    await get(`/workouts/${run.id}`);
+  } catch (err) {
+    // Unreachable says nothing about the workout: the run still waits.
+    if (err.status === 404) {
+      dropRun(run.id);
+      return null;
+    }
+  }
+  return h(
+    "p",
+    { class: "run-banner" },
+    h(
+      "span",
+      {},
+      run.finished
+        ? `${run.name} done, not saved yet`
+        : `${run.name} in progress`,
+    ),
+    h(
+      "a",
+      { class: "button primary", href: href.run(run.id) },
+      run.finished ? "Save" : "Resume",
+    ),
+  );
+}
+
 // The run kept for workout `id`, if it's for these exact steps.
 function keptRun(id, fp) {
-  try {
-    const kept = JSON.parse(sessionStorage.getItem(runKey(id)));
-    return kept?.fp === fp ? kept : null;
-  } catch {
-    return null; // unreadable: start over
-  }
+  const kept = keptRunOf(id);
+  return kept?.fp === fp ? kept : null;
+}
+
+// The activities that did any of the exercises `ids`, oldest first, each
+// with only their sets: what you did last time and the bests a new record
+// beats, from each exercise's history (never every activity ever). One that
+// can't be read (offline: the worker keeps no history) is none: the run
+// goes on without its last time.
+async function historyOf(ids) {
+  const done = new Map();
+  const all = await Promise.all(
+    [...ids].map((x) =>
+      get(scoped(`/exercises/${x}/history`)).catch(() => ({ days: [] })),
+    ),
+  );
+  for (const { days } of all)
+    for (const d of days) {
+      if (!done.has(d.activity_id))
+        done.set(d.activity_id, { id: d.activity_id, day: d.day, sets: [] });
+      done.get(d.activity_id).sets.push(...d.sets);
+    }
+  return [...done.values()].toSorted(
+    (a, b) => a.day.localeCompare(b.day) || a.id - b.id,
+  );
 }
 
 // Goes through a workout step by step: reps wait for Done (− / + record
 // what you actually did, and the weight used can change), rests and timed
 // steps count down by themselves and beep their last 3 seconds. Finish
-// ends early with what was done. Progress is kept for the tab's life, so a
-// reload or a detour resumes — only for the same steps: an edited workout
-// starts over. At the end the session is saved to the diary.
+// ends early with what was done. Progress is kept on the device, so a
+// reload, a detour or a killed app resumes — only for the same steps: an
+// edited workout starts over. Leaving doesn't ask: it keeps running, and
+// the Resume banner leads back. At the end the activity is saved to the
+// diary.
 export async function workoutRun(id, params) {
   // This navigation's teardown, taken before loading: if you leave while it
   // loads, nothing starts.
   const { signal } = leaving;
-  // Every session so far: what you did last time, and the bests a new
-  // record beats.
-  const [workout, exercises, history] = await Promise.all([
+  const [workout, exercises] = await Promise.all([
     get(`/workouts/${id}`),
     get("/exercises"),
-    get(scoped("/sessions")),
+    loadResting(),
   ]);
+  const history = await historyOf(exerciseIds(workout.steps));
   if (signal.aborted) return null;
   const byId = new Map(exercises.map((e) => [e.id, e]));
   const steps = unroll(workout.steps, byId);
@@ -119,6 +218,7 @@ export async function workoutRun(id, params) {
     return staleRun(workout, kept, steps.length);
   const state = kept ?? {
     fp,
+    name: workout.name,
     at: 0,
     startedAt: Date.now(),
     // Started from a plan (`?day=`): saved on that day.
@@ -129,8 +229,14 @@ export async function workoutRun(id, params) {
   };
   const keep = () => {
     state.touched = Date.now();
-    sessionStorage.setItem(runKey(id), JSON.stringify(state));
+    keepRun(id, state);
   };
+  // A run starting (not resumed) tells Home Assistant; kept at once, a
+  // reload resumes it instead of starting again.
+  if (!kept) {
+    keep();
+    hookEvent("workout_started", { workout: workout.name });
+  }
   if (state.finished)
     return finishScreen({
       workout,
@@ -143,14 +249,17 @@ export async function workoutRun(id, params) {
   // When each step was first shown: an EMOM round counts from its first.
   state.shownAt ??= [];
 
-  let deadline = 0; // when the current timed step ends
-  let left = 0; // seconds left when paused
+  // When the current timed step ends; the seconds left when paused.
+  let deadline = 0;
+  let left = 0;
   let paused = false;
   let shown = null;
   let lock = null;
   const step = () => steps[state.at];
   const done = () => state.done[state.at];
 
+  // A note of the workout's, above the step after it (workouts.mjs unroll).
+  const note = h("p", { class: "run-note" });
   const where = h("p", { class: "muted run-where" });
   const what = h("h2", { class: "run-what", "aria-live": "polite" });
   const extra = h("p", { class: "run-extra" });
@@ -182,13 +291,15 @@ export async function workoutRun(id, params) {
     },
     "+",
   );
+  // In this device's units; left as shown, the step's kg stay as they
+  // were (`shownKg`, what the step showed).
+  let shownKg = null;
   const weight = num({
-    step: "any",
-    min: 0,
-    max: meta.limits.kg,
-    "aria-label": "Weight used (kg)",
+    max: Math.ceil(toShown(meta.limits.kg, "kg")),
+    "aria-label": `Weight used (${unitOf("kg")})`,
+    // Emptied: no weight used (null), never the plan's again.
     oninput: () => {
-      done().kg = numberOrNull(weight) ?? undefined;
+      done().kg = readInput(weight.value, shownKg, "kg");
       keep();
     },
   });
@@ -197,7 +308,7 @@ export async function workoutRun(id, params) {
     { class: "row run-weight" },
     h("span", {}, "Weight"),
     weight,
-    h("span", {}, "kg"),
+    h("span", {}, unitOf("kg")),
   );
   const next = h("p", { class: "muted" });
   const progress = h("progress", {
@@ -212,18 +323,25 @@ export async function workoutRun(id, params) {
 
   const remaining = () =>
     paused ? left : Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
-  // Leaving a step records it: a timed one keeps the seconds actually held
-  // (all of them when it ran out).
+  // Leaving a step records it: a timed one the seconds actually held (all
+  // of them when it ran out), only when held at all, never fewer than held
+  // before (Back onto it, then Skip).
   const record = () => {
     if (step()?.kind !== "exercise") return;
-    if (step().seconds) done().seconds = step().seconds - remaining();
-    else done().reps ??= step().reps;
+    if (step().seconds) {
+      const held = step().seconds - remaining();
+      if (held <= 0) return;
+      done().seconds = Math.max(done().seconds ?? 0, held);
+    } else done().reps ??= step().reps;
     done().reached = true;
   };
   const finish = () => {
     stop();
     state.finished = true;
+    // Its time ends now: a finish screen opened later says the same.
+    state.endedAt ??= Date.now();
     keep();
+    hookEvent("workout_finished", { workout: workout.name });
     go(href.run(id));
   };
 
@@ -276,7 +394,7 @@ export async function workoutRun(id, params) {
           })
         ) {
           // Seconds already held count; a reps step not marked Done doesn't.
-          if (step()?.seconds && remaining() < step().seconds) record();
+          if (step()?.seconds) record();
           finish();
         }
       }),
@@ -287,6 +405,7 @@ export async function workoutRun(id, params) {
     "div",
     { class: "run" },
     progress,
+    note,
     where,
     what,
     extra,
@@ -295,6 +414,8 @@ export async function workoutRun(id, params) {
     last,
     next,
     h("div", { class: "actions run-controls" }, back, pause, doneButton),
+    // The workout's notes, folded on every step: open them when wanted.
+    notesSection(workout.notes, { fold: true }),
     h("p", {}, finishEarly),
   );
 
@@ -344,11 +465,16 @@ export async function workoutRun(id, params) {
     paused = false;
     shown = null;
     progress.value = state.at;
+    note.textContent = noteText(s);
+    note.hidden = !s.notes;
     where.textContent = [`Step ${state.at + 1} of ${steps.length}`, s.round]
       .filter(Boolean)
       .join(" · ");
     what.textContent =
-      { rest: "Rest", pad: "Next round" }[s.kind] ?? e?.name ?? "Exercise";
+      s.label ??
+      { rest: "Rest", pad: "Next round" }[s.kind] ??
+      e?.name ??
+      "Exercise";
     extra.textContent = s.kind === "exercise" ? capitalized(details(s, e)) : "";
     if (s.seconds) deadline = Date.now() + s.seconds * 1000;
     // An EMOM round ends `every` seconds after its first step began.
@@ -365,9 +491,14 @@ export async function workoutRun(id, params) {
     const weighted =
       s.kind === "exercise" && (e?.load ?? "optional") !== "none";
     weightRow.hidden = !weighted;
-    weight.value = done().kg ?? s.kg ?? "";
+    shownKg = "kg" in done() ? done().kg : (s.kg ?? null);
+    weight.value = inputText(shownKg, "kg");
     const after = steps[state.at + 1];
-    next.textContent = after ? `Next: ${describe(after, byId)}` : "Last step";
+    next.textContent = after
+      ? `Next: ${[noteText(after), describe(after, byId)].filter(Boolean).join(" · ")}`
+      : s.notesAfter
+        ? `Next: ${noteText({ notes: s.notesAfter })}`
+        : "Last step";
     pause.hidden = !timed(s);
     pause.textContent = "Pause";
     doneButton.textContent = timed(s) ? "Skip" : "Done";
@@ -383,6 +514,13 @@ export async function workoutRun(id, params) {
     screen,
   );
 }
+
+// The notes a step carries (workouts.mjs unroll), each "Warm-up · 5 min
+// easy rowing" (its name, its text), one after another; "" without.
+const noteText = (s) =>
+  (s.notes ?? [])
+    .map((n) => [n.name, n.text?.trim()].filter(Boolean).join(" · "))
+    .join(" · ");
 
 // A run left alone for hours: resume where it was, or start over.
 function staleRun(workout, kept, length) {
@@ -405,7 +543,7 @@ function staleRun(workout, kept, length) {
           type: "button",
           onclick: () => {
             kept.touched = Date.now();
-            sessionStorage.setItem(runKey(workout.id), JSON.stringify(kept));
+            keepRun(workout.id, kept);
             go(href.run(workout.id));
           },
         },
@@ -417,7 +555,7 @@ function staleRun(workout, kept, length) {
           type: "button",
           class: "primary",
           onclick: () => {
-            sessionStorage.removeItem(runKey(workout.id));
+            dropRun(workout.id);
             go(href.run(workout.id));
           },
         },
@@ -450,13 +588,13 @@ function readyForHarder(run, state, exercises) {
 
 // The run is over: what was done, on the day it started, ready to save.
 // Exercises done in full offer their next harder variants: picked ones
-// replace them in the workout once the session is saved (with Undo).
+// replace them in the workout once the activity is saved (with Undo).
 function finishScreen({ workout, run, exercises, history, state, keep }) {
   const byId = new Map(exercises.map((e) => [e.id, e]));
   const sets = run.flatMap((s, i) => {
     const d = state.done[i];
     if (s.kind !== "exercise" || !d.reached) return [];
-    const weight = d.kg ?? s.kg;
+    const weight = "kg" in d ? d.kg : s.kg;
     return [
       {
         exercise_id: s.exercise_id,
@@ -469,35 +607,24 @@ function finishScreen({ workout, run, exercises, history, state, keep }) {
       },
     ];
   });
-  const took = Math.round((Date.now() - state.startedAt) / 60000);
-  const minutes = Math.min(meta.limits.minutes, Math.max(1, took));
-  const day = h("input", {
-    type: "date",
-    name: "day",
-    required: true,
-    value: state.day,
-  });
-  const time = num({
-    name: "minutes",
-    value: minutes,
-    step: 1,
-    min: 1,
-    max: meta.limits.minutes,
-    required: true,
-  });
-  const energy = num({
-    name: "kcal",
-    value: workout.kcal ?? "",
-    step: 1,
-    min: 0,
-    max: meta.limits.kcal,
-  });
-  const estimate = () => {
-    const est = kcalFor(numberOrNull(time) ?? 0, weightKg());
-    energy.placeholder = est === null ? "" : `≈ ${est}`;
-  };
-  time.addEventListener("input", estimate);
-  estimate();
+  // Whole minutes, at least one (as the form saves it).
+  const took = Math.max(
+    1,
+    Math.round(((state.endedAt ?? Date.now()) - state.startedAt) / 60000),
+  );
+  // The activity form, filled with the run: started then, on its day.
+  const form = activityForm(
+    {
+      day: state.day,
+      name: workout.name,
+      minutes: Math.min(meta.limits.activity_minutes, took),
+      kcal: workout.kcal,
+      sets,
+      type: "workout",
+      start_at: new Date(state.startedAt).toISOString(),
+    },
+    { lib: library(exercises) },
+  );
   // The id this save is made under, kept with the run: saving twice (a
   // retry, a second tap after a reload) saves once.
   state.uid ??= uid();
@@ -512,19 +639,20 @@ function finishScreen({ workout, run, exercises, history, state, keep }) {
       options: [["", "Keep"], ...options.map((o) => [String(o.id), o.name])],
     }),
   }));
-  const harderPart = picks.length
-    ? h(
-        "fieldset",
-        { class: "harder" },
-        h("legend", {}, "Ready for harder"),
-        h(
-          "p",
-          { class: "muted" },
-          "Every set hit its target. Next time, in this workout:",
-        ),
-        picks.map((p) => field(p.exercise.name, p.control)),
-      )
-    : null;
+  const harderPart =
+    picks.length > 0
+      ? h(
+          "fieldset",
+          { class: "harder" },
+          h("legend", {}, "Ready for harder"),
+          h(
+            "p",
+            { class: "muted" },
+            "Every set hit its target. Next time, in this workout:",
+          ),
+          picks.map((p) => field(p.exercise.name, p.control)),
+        )
+      : null;
   // What the save did besides saving, for its one toast.
   let outcome = null;
 
@@ -539,13 +667,8 @@ function finishScreen({ workout, run, exercises, history, state, keep }) {
     let next = fresh.steps;
     for (const { exercise, to } of chosen)
       next = swapExercise(next, exercise.id, to);
-    const body = (list, rev) => ({
-      name: fresh.name,
-      minutes: fresh.minutes,
-      kcal: fresh.kcal,
-      steps: list,
-      rev,
-    });
+    // The workout as read, whole (a PUT replaces it): only the steps change.
+    const body = (list, rev) => ({ ...fresh, steps: list, rev });
     try {
       const saved = await api(
         "PUT",
@@ -570,13 +693,13 @@ function finishScreen({ workout, run, exercises, history, state, keep }) {
       onclick: busy(async () => {
         if (
           !(await confirmDialog("Discard this workout?", {
-            detail: "It won't be saved to the diary.",
+            detail: "It won't be saved to the Diary.",
             confirm: "Discard",
           }))
         )
           return;
-        sessionStorage.removeItem(runKey(workout.id));
-        go(href.workouts());
+        dropRun(workout.id);
+        go(href.activity());
       }),
     },
     "Don't save",
@@ -591,37 +714,17 @@ function finishScreen({ workout, run, exercises, history, state, keep }) {
         { class: "muted" },
         `${plural(sets.length, "set")} in ${plural(took, "minute")}.`,
       ),
-      field("Day", day),
-      h(
-        "div",
-        { class: "pair" },
-        field("Duration (min)", time),
-        field("Energy (kcal)", energy, {
-          hint: "Empty: estimated from the duration and your weight.",
-        }),
-      ),
+      ...form.fields,
       harderPart,
     ],
     saveLabel: "Save to diary",
     secondary: [discard],
     save: async () => {
-      const body = {
-        uid: state.uid,
-        day: day.value,
-        workout_id: workout.id,
-        name: workout.name,
-        minutes: Number(time.value),
-        kcal: numberOrNull(energy),
-        sets,
-        // When it began, if it's the day it's saved on.
-        ...(iso(new Date(state.startedAt)) === day.value
-          ? { start_at: new Date(state.startedAt).toISOString() }
-          : {}),
-      };
-      let session = body;
+      const body = { ...form.body(), uid: state.uid, workout_id: workout.id };
+      let activity = body;
       const queued =
         (await stored(async () => {
-          session = await api("POST", scoped("/sessions"), body, {
+          activity = await api("POST", scoped("/activities"), body, {
             queue: true,
             label: workout.name,
           });
@@ -633,40 +736,38 @@ function finishScreen({ workout, run, exercises, history, state, keep }) {
           to: p.options.find((o) => String(o.id) === p.control.value),
         }));
       outcome = { chosen, queued, swapped: null };
-      if (chosen.length && !queued) {
+      if (chosen.length > 0 && !queued) {
         const result = await swap(chosen);
         if (result.stale) {
           // Saved (a second Save sends the same uid: saved once), but the
           // workout moved on: show the picks again over its new version.
           notify("Workout changed; pick again", { error: true });
-          return undefined;
+          return;
         }
         outcome.swapped = result;
       }
-      sessionStorage.removeItem(runKey(workout.id));
-      return session;
+      dropRun(workout.id);
+      return activity;
     },
-    after: (session) => href.day(session.day),
+    after: (activity) => href.day(activity.day),
     saved: (s) => {
       const { chosen, queued, swapped } = outcome;
-      const records = newRecords(history, { ...s, sets });
+      const records = newRecords(history, s);
       const message = [
         `Saved ${s.name} to ${pretty(s.day)}`,
         swapped
           ? `next time: ${chosen.map((c) => c.to.name).join(", ")}`
           : null,
-        queued && chosen.length
-          ? "Saved on this device; change the workout when online"
+        queued && chosen.length > 0
+          ? "Saved in this browser; change the workout when online"
           : null,
-        records.length
-          ? `New record${records.length > 1 ? "s" : ""}: ${records.map(describeSet).join(", ")}`
+        records.length > 0
+          ? `New record${records.length > 1 ? "s" : ""}: ${records.map((x) => describeSet(x)).join(", ")}`
           : null,
       ]
         .filter(Boolean)
         .join(" · ");
-      return swapped
-        ? { message, action: { label: "Undo", run: swapped.undo } }
-        : message;
+      return swapped ? { message, undo: swapped.undo } : message;
     },
   });
   return node;

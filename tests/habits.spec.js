@@ -1,11 +1,13 @@
-// Habits: counting in the diary's Log (card and sheet), Profile → Habits and the
-// Summary calendars.
-// Every test counts on a profile of its own (trackers are per profile).
+// Habits: counting in the diary's Log (card and sheet), Profile → Habits and
+// the Summary calendars. Every test counts on a profile of its own (trackers
+// are per profile).
 
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import {
   answer,
   entry,
+  expectPartsWhole,
+  fixedToday,
   food,
   ownProfile,
   starts,
@@ -13,9 +15,15 @@ import {
   unique,
 } from "./helpers.js";
 
+// One today for the whole test, in the page and here.
+test.beforeEach(({ page }) => fixedToday(page));
+
 // A number and its unit as the app writes them (a no-break space).
 const words = (text) =>
-  new RegExp(`^${text.replace(/[().]/g, "\\$&").replaceAll(" ", "\\s")}$`);
+  new RegExp(
+    `^${text.replaceAll(/[().]/gu, "\\$&").replaceAll(" ", "\\s")}$`,
+    "u",
+  );
 
 const yesterday = () =>
   new Date(Date.parse(todayInApp()) - 864e5).toISOString().slice(0, 10);
@@ -43,13 +51,17 @@ const card = (page) =>
     has: page.getByRole("heading", { name: "Log", exact: true }),
   });
 
+// Eaten's foot: what the day's food held.
+const totals = (page) =>
+  page.getByRole("list", { name: "Day's totals from food" });
+
 // A food of `per100` logged as eaten on `day`.
 async function eat(request, pid, day, per100, grams, tag) {
   const f = await food(request, {
     name: `Drink ${tag} ${Object.keys(per100).join(" ")}`,
     per100: { energy: 40, ...per100 },
   });
-  await entry(request, { day, group: "Consumed", food_id: f.id, grams }, pid);
+  await entry(request, { day, group: "Eaten", food_id: f.id, grams }, pid);
 }
 
 test("the + Log sheet counts in place; the Log card then counts too, and sets any amount", async ({
@@ -65,14 +77,14 @@ test("the + Log sheet counts in place; the Log card then counts too, and sets an
   const log = card(page);
   // A past day: nothing counted, so no tracker row in the card.
   await expect(log.locator(".habit-row")).toHaveCount(0);
-  await log.getByRole("button", { name: "+ Log" }).click();
+  await log.getByRole("button", { name: /^Log on /u }).click();
   const sheet = page.getByRole("dialog", { name: "Log" });
   // Only the active tracker, at 0; no built-ins in the sheet.
   await expect(sheet.locator(".habit-row")).toHaveCount(1);
   await expect(sheet.locator(".habit-builtins")).toHaveCount(0);
   const less = sheet.getByRole("button", { name: "One less Snus" });
   const more = sheet.getByRole("button", { name: "One more Snus" });
-  const amount = sheet.getByRole("button", { name: /^Snus: / });
+  const amount = sheet.getByRole("button", { name: /^Snus: /u });
   await expect(amount).toHaveText(words("0 pouches"));
   await expect(less).toBeDisabled();
 
@@ -92,19 +104,19 @@ test("the + Log sheet counts in place; the Log card then counts too, and sets an
     ),
   ).toBe(true);
   expect(await days(request, pid)).toEqual([
-    { habit: String(snus.id), day, amount: 2 },
+    { habit: String(snus.id), day, amount: 2, known: true },
   ]);
 
   // Done: the card shows the count, in place, focus back on + Log.
   await sheet.getByRole("button", { name: "Done" }).click();
   await expect(sheet).toHaveCount(0);
-  await expect(log.getByRole("button", { name: "+ Log" })).toBeFocused();
+  await expect(log.getByRole("button", { name: /^Log on /u })).toBeFocused();
   expect(
     await page.evaluate(
       () => window.sameScreen === document.querySelector("#app section"),
     ),
   ).toBe(true);
-  const cardAmount = log.getByRole("button", { name: /^Snus: / });
+  const cardAmount = log.getByRole("button", { name: /^Snus: /u });
   const cardLess = log.getByRole("button", { name: "One less Snus" });
   await expect(cardAmount).toHaveText(words("2 pouches"));
 
@@ -125,7 +137,7 @@ test("the + Log sheet counts in place; the Log card then counts too, and sets an
   await expect(dialog).toBeHidden();
   await expect(cardAmount).toHaveText(words("4.5 pouches"));
   expect(await days(request, pid)).toEqual([
-    { habit: String(snus.id), day, amount: 4.5 },
+    { habit: String(snus.id), day, amount: 4.5, known: true },
   ]);
   // It survives a reload (the Day view carries it); 0 removes it.
   await page.reload();
@@ -151,7 +163,7 @@ test("a count on the Log card wraps inside its button at 320 px", async ({
   const day = yesterday();
   await count(request, pid, snus.id, day, 10);
   await page.goto(`/#/day/${day}`);
-  const amount = card(page).getByRole("button", { name: /^Snus: / });
+  const amount = card(page).getByRole("button", { name: /^Snus: /u });
   await expect(amount).toHaveText(words("10 pouches"));
   expect(
     // Within a pixel: widths round.
@@ -159,7 +171,7 @@ test("a count on the Log card wraps inside its button at 320 px", async ({
   ).toBe(true);
 });
 
-test("the Log card shows the day's alcohol and caffeine; the sheet leads to Profile → Habits", async ({
+test("Eaten's totals show the day's alcohol and caffeine; the Log sheet leads to Profile → Habits", async ({
   page,
   request,
 }, testInfo) => {
@@ -168,28 +180,30 @@ test("the Log card shows the day's alcohol and caffeine; the sheet leads to Prof
   // 240 g: 24 g alcohol (2 drinks) and 240 mg caffeine.
   await eat(request, pid, day, { alcohol: 10, caffeine: 100 }, 240, tag);
   await page.goto(`/#/day/${day}`);
-  await expect(card(page).locator(".habit-builtins")).toHaveText(
+  await expect(totals(page).locator(".habit-builtins")).toHaveText(
     words("Alcohol 2 drinks · Caffeine 240 mg"),
   );
   // One row of its own kind.
   await expect(
-    card(page)
+    totals(page)
       .locator(".log-row", { has: page.locator(".habit-builtins") })
       .locator(".kind"),
   ).toHaveText("From food");
-  await card(page).getByRole("button", { name: "+ Log" }).click();
+  await card(page)
+    .getByRole("button", { name: /^Log on /u })
+    .click();
   await page
     .getByRole("dialog", { name: "Log" })
     .getByRole("link", { name: starts("Manage habits…") })
     .click();
-  await expect(page).toHaveURL(/#\/habits$/);
+  await expect(page).toHaveURL(/#\/habits$/u);
   await expect(page.getByRole("dialog")).toHaveCount(0);
 
   // A day with nothing: the card and its hint, no list.
   const empty = new Date(Date.parse(day) + 864e5).toISOString().slice(0, 10);
   await page.goto(`/#/day/${empty}`);
   await expect(card(page)).toBeVisible();
-  await expect(card(page)).toContainText("Nothing logged yet. Use + Log.");
+  await expect(card(page)).toContainText("Nothing logged.");
   await expect(card(page).getByRole("list")).toHaveCount(0);
 });
 
@@ -200,22 +214,22 @@ test("Profile → Habits adds, edits, archives and deletes a tracker", async ({
   const { tag } = unique(472, testInfo);
   const pid = await ownProfile(page, request, `Keeper ${tag}`);
   await page.goto("/#/profile");
-  const row = page.getByRole("link", { name: /^Habits/ });
-  await expect(row).toHaveText(/\d+ built-ins and 0 of your own/);
+  const row = page.getByRole("link", { name: /^Habits/u });
+  await expect(row).toHaveText(/\d+ built-ins and 0 of your own/u);
   await row.click();
   await expect(page.getByRole("heading", { name: "Habits" })).toBeVisible();
 
   // Add: a name and a unit; the goal is set on Targets.
-  await page.getByRole("link", { name: /^New habit/ }).click();
+  await page.getByRole("link", { name: /^New habit/u }).click();
   await page.getByLabel("Name").fill("Snus");
   await page.getByLabel("Unit").fill("pouches");
   await expect(page.locator(".habit-goal")).toHaveText(
     "Goal: none · Set it on Targets once saved",
   );
   await page.getByRole("button", { name: "Save" }).click();
-  await expect(page).toHaveURL(/#\/habits$/);
-  await expect(page.getByRole("link", { name: /^Snus/ })).toHaveText(
-    /pouches$/,
+  await expect(page).toHaveURL(/#\/habits$/u);
+  await expect(page.getByRole("link", { name: /^Snus/u })).toHaveText(
+    /pouches$/u,
   );
   // A goal set elsewhere shows on the list and, read-only, in the editor.
   const [made] = await (
@@ -225,12 +239,12 @@ test("Profile → Habits adds, edits, archives and deletes a tracker", async ({
     data: { ...made, goal_value: 10, goal_dir: "at_least" },
   });
   await page.reload();
-  await expect(page.getByRole("link", { name: /^Snus/ })).toHaveText(
-    /pouches · at least 10 a day/,
+  await expect(page.getByRole("link", { name: /^Snus/u })).toHaveText(
+    /pouches · at least 10 a day/u,
   );
 
   // Rename and change the unit: the goal stays.
-  await page.getByRole("link", { name: /^Snus/ }).click();
+  await page.getByRole("link", { name: /^Snus/u }).click();
   await expect(page.locator(".habit-goal")).toHaveText(
     "Goal: at least 10 a day · Change on Targets",
   );
@@ -240,7 +254,7 @@ test("Profile → Habits adds, edits, archives and deletes a tracker", async ({
   await page.getByLabel("Name").fill("Nicotine");
   await page.getByLabel("Unit").fill("pieces");
   await page.getByRole("button", { name: "Save" }).click();
-  await expect(page.locator("#toast")).toHaveText(/Saved Nicotine/);
+  await expect(page.locator("#toast")).toHaveText(/Saved Nicotine/u);
   await expect(page.getByRole("heading", { name: "Nicotine" })).toBeVisible();
   const [saved] = await (
     await request.get(`/api/profiles/${pid}/habits`)
@@ -273,7 +287,7 @@ test("Profile → Habits adds, edits, archives and deletes a tracker", async ({
   await expect.poll(archived).toBe(true);
   await page.getByRole("link", { name: "Back" }).click();
   await expect(page.getByRole("heading", { name: "Archived" })).toBeVisible();
-  await page.getByRole("link", { name: /^Nicotine/ }).click();
+  await page.getByRole("link", { name: /^Nicotine/u }).click();
   await page
     .getByRole("radiogroup", { name: "Status" })
     .getByRole("radio", { name: "Active" })
@@ -286,14 +300,14 @@ test("Profile → Habits adds, edits, archives and deletes a tracker", async ({
   // Delete: the confirm says how many logged days go with it.
   await count(request, pid, saved.id, yesterday(), 3);
   await count(request, pid, saved.id, todayInApp(), 1);
-  await page.getByRole("link", { name: /^Nicotine/ }).click();
+  await page.getByRole("link", { name: /^Nicotine/u }).click();
   await page.getByRole("button", { name: "Delete" }).click();
   await expect(page.getByRole("dialog")).toContainText(
     "Its 2 logged days go with it.",
   );
   expect(await answer(page, "Delete")).toBe("Delete Nicotine?");
-  await expect(page).toHaveURL(/#\/habits$/);
-  await expect(page.getByRole("link", { name: /^Nicotine/ })).toHaveCount(0);
+  await expect(page).toHaveURL(/#\/habits$/u);
+  await expect(page.getByRole("link", { name: /^Nicotine/u })).toHaveCount(0);
   expect(await days(request, pid)).toEqual([]);
 });
 
@@ -308,7 +322,7 @@ test("a stale tracker edit offers Reload", async ({
   await page.getByLabel("Unit").fill("cans");
   // Changed elsewhere meanwhile.
   await request.put(`/api/profiles/${pid}/habits/${t.id}`, {
-    data: { name: "Snuff", unit: "pinches", rev: t.rev },
+    data: { ...t, name: "Snuff", unit: "pinches" },
   });
   await page.getByRole("button", { name: "Save" }).click();
   await page.getByRole("button", { name: "Reload" }).click();
@@ -331,12 +345,15 @@ async function calendarSetup(page, request, slot, testInfo) {
   // Sat 5th: 2 drinks (over); Sun 6th: half a drink.
   await eat(request, pid, `${MONTH}-05`, { alcohol: 10 }, 240, tag);
   await eat(request, pid, `${MONTH}-06`, { alcohol: 1 }, 600, tag);
+  // Thu 10th: food without alcohol, so alcohol's "none" (a built-in's day
+  // is logged by its food).
+  await eat(request, pid, `${MONTH}-10`, { alcohol: 0 }, 100, tag);
   const snus = await tracker(request, pid, {
     name: "Snus",
     goal_value: 5,
     goal_dir: "at_most",
   });
-  // Snus on 4 days of 4 distinct amounts; Thu 10th logs only Snus.
+  // Snus on 4 days of 4 distinct amounts; Sat 12th logs only Snus.
   for (const [d, n] of [
     ["05", 1],
     ["09", 4],
@@ -359,6 +376,51 @@ async function habitOf(page, name) {
 const cellOf = (scope, day) =>
   scope.locator(`.habit-cal td[data-day="${day}"]`);
 
+test("an unknown day is a floor, never a 0: means over the known days (AC2-1)", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { pid } = await calendarSetup(page, request, 1002, testInfo);
+  // Tue 15th: beer beside a lager without its alcohol set: the beer's 20 g
+  // came with 500 of the 900 g that could hold alcohol, so the day's
+  // alcohol isn't known (ADR 0030: bread beside it would hold none).
+  const { tag } = unique(1002, testInfo);
+  await eat(request, pid, `${MONTH}-15`, { alcohol: 4 }, 500, tag);
+  const lager = await food(request, {
+    name: `Lager 5% ${tag}`,
+    per100: { energy: 43 },
+    servings: [{ label: "0,33 l can", grams: 330 }],
+  });
+  await entry(
+    request,
+    { day: `${MONTH}-15`, group: "Eaten", food_id: lager.id, grams: 400 },
+    pid,
+  );
+  await page.goto(`/#/summary/habits/month/${MONTH}-01`);
+  const alcohol = await habitOf(page, "Alcohol");
+  await expect(
+    alcohol.getByRole("list", { name: "Alcohol" }).locator(".tile"),
+  ).toHaveText(
+    [
+      "5.8 drinks a week",
+      "≥ 3 days with any",
+      "≥ 2 drinks most in a day (Sat, Sep 5)",
+      "≥ 2 days over your limit",
+    ].map((x) => words(x)),
+  );
+  // Which days the mean is over: its long text.
+  await expect(
+    alcohol.getByRole("list", { name: "Alcohol" }).locator(".tile").first(),
+  ).toHaveAccessibleDescription(
+    "Your average a week over 3 known days of 4 with food logged.",
+  );
+  const tue = cellOf(alcohol, `${MONTH}-15`);
+  await expect(tue.getByRole("link")).toHaveAccessibleName(
+    words("Tue, Sep 15: ≥ 1.7 drinks, not all known, over"),
+  );
+  await expect(tue).toHaveClass(/\bnone\b/u);
+});
+
 test("the month calendar shades, hatches, outlines and links each day", async ({
   page,
   request,
@@ -371,6 +433,10 @@ test("the month calendar shades, hatches, outlines and links each day", async ({
   await tracker(request, pid, { name: "Gum" });
   await page.goto(`/#/summary/habits/month/${MONTH}-01`);
   const section = page.locator(".habits-summary");
+  // The Habits subtab names it; its heading is for screen readers only.
+  await expect(section.getByRole("heading", { name: "Habits" })).toHaveClass(
+    "sr-only",
+  );
   // One habit at a time: the built-ins with data or a target, then trackers
   // by age.
   await expect(habitSwitch(page).getByRole("radio")).toHaveText([
@@ -395,45 +461,58 @@ test("the month calendar shades, hatches, outlines and links each day", async ({
   await expect(sat.getByRole("link")).toHaveAccessibleName(
     words("Sat, Sep 5: 2 drinks, over"),
   );
-  await expect(sat).toHaveClass(/\bshade-2\b/);
-  await expect(sat).toHaveClass(/\bover\b/);
+  await expect(sat).toHaveClass(/\bshade-2\b/u);
+  await expect(sat).toHaveClass(/\bover\b/u);
   await expect(sat).toContainText("2");
   const sun = cellOf(alcohol, `${MONTH}-06`);
   await expect(sun.getByRole("link")).toHaveAccessibleName(
     words("Sun, Sep 6: 0.5 drinks"),
   );
-  await expect(sun).toHaveClass(/\bshade-1\b/);
-  await expect(sun).not.toHaveClass(/\bover\b/);
-  // Logged (Snus only) reads "none"; not logged at all is hatched.
+  await expect(sun).toHaveClass(/\bshade-1\b/u);
+  await expect(sun).not.toHaveClass(/\bover\b/u);
+  // Food logged, no alcohol, reads "none"; no food logged is hatched,
+  // Snus or not.
   const thu = cellOf(alcohol, `${MONTH}-10`);
   await expect(thu.getByRole("link")).toHaveAccessibleName("Thu, Sep 10: none");
-  await expect(thu).toHaveClass(/\bshade-0\b/);
-  await expect(thu).not.toHaveClass(/\bnone\b/);
-  const mon = cellOf(alcohol, `${MONTH}-07`);
-  await expect(mon.getByRole("link")).toHaveAccessibleName(
-    "Mon, Sep 7: nothing logged",
-  );
-  await expect(mon).toHaveClass(/\bnone\b/);
+  await expect(thu).toHaveClass(/\bshade-0\b/u);
+  await expect(thu).not.toHaveClass(/\bnone\b/u);
+  for (const [d, name] of [
+    ["07", "Mon, Sep 7"],
+    ["12", "Sat, Sep 12"],
+  ]) {
+    const unlogged = cellOf(alcohol, `${MONTH}-${d}`);
+    await expect(unlogged.getByRole("link")).toHaveAccessibleName(
+      `${name}: nothing logged`,
+    );
+    await expect(unlogged).toHaveClass(/\bnone\b/u);
+  }
   await expect(
-    alcohol.getByRole("list", { name: "Alcohol" }).getByRole("listitem"),
+    alcohol.getByRole("list", { name: "Alcohol" }).locator(".tile"),
   ).toHaveText(
     [
-      "0.6 drinks a week",
+      "5.8 drinks a week",
       "2 days with any",
-      "2 most in a day (Sat, Sep 5)",
+      "2 drinks most in a day (Sat, Sep 5)",
       "1 day over your limit",
-    ].map(words),
+    ].map((x) => words(x)),
+  );
+  // Over the days with food logged (an unlogged day is missing, not 0).
+  await expect(
+    alcohol.getByRole("list", { name: "Alcohol" }).locator(".tile").first(),
+  ).toHaveAccessibleDescription(
+    "Your average a week over 3 days with food logged.",
   );
   await expect(alcohol.locator(".habit-legend li")).toHaveText(
     [
-      "None",
+      "0",
       "≤ 1 drinks",
       "1–3 drinks",
       "3–5 drinks",
       "> 5 drinks",
-      "nothing logged",
+      // One word for empty everywhere.
+      "Nothing logged",
       "over your limit",
-    ].map(words),
+    ].map((x) => words(x)),
   );
   // What a drink is, under its key alone.
   await expect(alcohol.locator(".habit-legend")).toContainText(
@@ -450,11 +529,11 @@ test("the month calendar shades, hatches, outlines and links each day", async ({
   ]) {
     const c = cellOf(snus, `${MONTH}-${d}`);
     await expect(c.getByRole("link")).toHaveAccessibleName(words(label));
-    await expect(c).toHaveClass(new RegExp(`\\b${shade}\\b`));
+    await expect(c).toHaveClass(new RegExp(`\\b${shade}\\b`, "u"));
   }
   // Its quartiles (1, 2, 4) in the one legend grammar.
-  await expect(snus.locator(".habit-legend li").first()).toHaveText("None");
-  await expect(snus.locator(".habit-legend")).toContainText(/1–2\spouches/);
+  await expect(snus.locator(".habit-legend li").first()).toHaveText("0");
+  await expect(snus.locator(".habit-legend")).toContainText(/1–2\spouches/u);
   // The pick is kept on this device.
   expect(await page.evaluate(() => localStorage.getItem("summary-habit"))).toBe(
     String(snusId),
@@ -463,15 +542,15 @@ test("the month calendar shades, hatches, outlines and links each day", async ({
 
   // A key's note is its habit's alone; caffeine (no data, no target) isn't
   // offered.
-  await expect(section.getByText(/A drink is 12 g/)).toHaveCount(0);
+  await expect(section.getByText(/A drink is 12 g/u)).toHaveCount(0);
   await expect(
     habitSwitch(page).getByRole("radio", { name: "Caffeine" }),
   ).toHaveCount(0);
 
-  // A day opens its diary.
+  // A day opens the Diary.
   await habitOf(page, "Alcohol");
   await cellOf(alcohol, `${MONTH}-05`).getByRole("link").click();
-  await expect(page).toHaveURL(new RegExp(`#/day/${MONTH}-05$`));
+  await expect(page).toHaveURL(new RegExp(`#/day/${MONTH}-05$`, "u"));
 });
 
 test("the week is a row of 7; the year 12 months that open", async ({
@@ -484,8 +563,8 @@ test("the week is a row of 7; the year 12 months that open", async ({
   await expect(alcohol.getByRole("row")).toHaveCount(2);
   await expect(alcohol.locator("td.cal-cell")).toHaveCount(7);
   await expect(
-    cellOf(alcohol, `${MONTH}-12`).getByRole("link"),
-  ).toHaveAccessibleName("Sat, Sep 12: none");
+    cellOf(alcohol, `${MONTH}-10`).getByRole("link"),
+  ).toHaveAccessibleName("Thu, Sep 10: none");
   // A built-in is a common noun mid-sentence; a tracker keeps its name.
   await expect(alcohol).toContainText("No alcohol this week");
 
@@ -498,20 +577,20 @@ test("the week is a row of 7; the year 12 months that open", async ({
   // Colour only on screen; words for readers, and no links per day.
   const sat = cellOf(alcohol, `${MONTH}-05`);
   await expect(sat).toHaveText(words("Sat, Sep 5: 2 drinks, over"));
-  await expect(sat).toHaveClass(/\bshade-2\b/);
+  await expect(sat).toHaveClass(/\bshade-2\b/u);
   await expect(sat.getByRole("link")).toHaveCount(0);
   await expect(alcohol.getByRole("list", { name: "Alcohol" })).toContainText(
-    /drinks a week/,
+    /drinks a week/u,
   );
   await (await habitOf(page, "Snus"))
     .getByRole("link", { name: "Sep", exact: true })
     .click();
   await expect(page).toHaveURL(
-    new RegExp(`#/summary/habits/month/${MONTH}-01$`),
+    new RegExp(`#/summary/habits/month/${MONTH}-01$`, "u"),
   );
 });
 
-test("a fruit entry shows in Log card, Summary, Targets", async ({
+test("a fruit entry shows in Eaten's totals, Summary, Targets", async ({
   page,
   request,
 }, testInfo) => {
@@ -527,7 +606,7 @@ test("a fruit entry shows in Log card, Summary, Targets", async ({
     .getByLabel("Category")
     .selectOption({ label: "Fruit and vegetables" });
   await page.getByRole("button", { name: "Save" }).click();
-  await expect(page.locator("#toast")).toHaveText(/Saved/);
+  await expect(page.locator("#toast")).toHaveText(/Saved/u);
   expect(
     (await (await request.get(`/api/foods/${apple.id}`)).json()).category,
   ).toBe("fruit_veg");
@@ -535,11 +614,11 @@ test("a fruit entry shows in Log card, Summary, Targets", async ({
   const day = "2026-08-12";
   await entry(
     request,
-    { day, group: "Consumed", food_id: apple.id, grams: 300 },
+    { day, group: "Eaten", food_id: apple.id, grams: 300 },
     pid,
   );
   await page.goto(`/#/day/${day}`);
-  await expect(card(page).locator(".habit-builtins")).toHaveText(
+  await expect(totals(page).locator(".habit-builtins")).toHaveText(
     words("Fruit and vegetables 300 g"),
   );
 
@@ -549,7 +628,7 @@ test("a fruit entry shows in Log card, Summary, Targets", async ({
   await expect(cellOf(fruit, day).getByRole("link")).toHaveAccessibleName(
     words("Wed, Aug 12: 300 g"),
   );
-  await expect(cellOf(fruit, day)).toHaveClass(/\bshade-2\b/);
+  await expect(cellOf(fruit, day)).toHaveClass(/\bshade-2\b/u);
 
   // Targets: its goal is a Habits row; 250 g a day makes the day a reached one.
   await page.goto("/#/targets");
@@ -557,11 +636,97 @@ test("a fruit entry shows in Log card, Summary, Targets", async ({
   await expect(input).toHaveValue("500");
   await input.fill("250");
   await page.getByRole("button", { name: "Save" }).click();
-  await expect(page.locator("#toast")).toHaveText(/Saved/);
+  await expect(page.locator("#toast")).toHaveText(/Saved/u);
   await page.goto(`/#/summary/habits/month/${day}`);
   const reached = await habitOf(page, "Fruit and vegetables");
-  await expect(cellOf(reached, day)).toHaveClass(/\bshade-4\b/);
+  await expect(cellOf(reached, day)).toHaveClass(/\bshade-4\b/u);
   await expect(
     reached.getByRole("list", { name: "Fruit and vegetables" }),
   ).toContainText("1 day at your target");
+});
+
+test("creatine from the seeded food", async ({ page, request }, testInfo) => {
+  // Slots 920–929 are this plan's; 920 is this test's.
+  const { day, tag } = unique(920, testInfo);
+  const pid = await ownProfile(page, request, `Creatine ${tag}`);
+  const [tub] = await (
+    await request.get(`/api/profiles/${pid}/foods?q=creatine`)
+  ).json();
+  expect(tub.name).toBe("Creatine monohydrate");
+  expect(tub.servings).toEqual([{ label: "Dose", grams: 3 }]);
+
+  // No goal and no data: not offered (a month with nothing logged).
+  const empty = "2029-01-01";
+  await page.goto(`/#/summary/habits/month/${empty}`);
+  await expect(habitSwitch(page).getByRole("radio").first()).toBeVisible();
+  await expect(
+    habitSwitch(page).getByRole("radio", { name: "Creatine", exact: true }),
+  ).toHaveCount(0);
+
+  // One dose eaten: Eaten's From food row, and offered with data.
+  await entry(
+    request,
+    { day, group: "Eaten", food_id: tub.id, serving: "Dose", quantity: 1 },
+    pid,
+  );
+  await page.goto(`/#/day/${day}`);
+  await expect(totals(page).locator(".habit-builtins")).toHaveText(
+    words("Creatine 3 g"),
+  );
+  await page.goto(`/#/summary/habits/month/${day}`);
+  await habitOf(page, "Creatine");
+
+  // Targets: a Habits row, unset (no recommended goal); 3 g a day offers
+  // it with no data too.
+  await page.goto("/#/targets");
+  const input = page.getByLabel("Creatine target");
+  await expect(input).toHaveValue("");
+  await input.fill("3");
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.locator("#toast")).toHaveText(/Saved/u);
+  await page.goto(`/#/summary/habits/month/${empty}`);
+  await habitOf(page, "Creatine");
+});
+
+test("Hydration: a spirit's alcohol takes its water back, never more; the calendar says what counts", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { day, tag } = unique(55, testInfo);
+  const pid = await ownProfile(page, request, `Spirits ${tag}`);
+  await page.clock.setFixedTime(new Date(`${day}T12:00:00Z`).getTime() + 864e5);
+  // Vodka: 24 ml water, 13.2 g alcohol → 0, not −108. Tea: 398 ml.
+  await eat(request, pid, day, { water: 60, alcohol: 33 }, 40, tag);
+  await eat(request, pid, day, { water: 99.5 }, 400, tag);
+  await page.goto(`/#/summary/habits/month/${day.slice(0, 8)}01`);
+  const hydration = page.locator(".habits-summary .habit-water");
+  await expect(hydration.locator("caption")).toHaveText("Hydration by day");
+  await expect(
+    hydration.locator(`.habit-cal td[data-day="${day}"]`).getByRole("link"),
+  ).toHaveAccessibleName(/: 398\sml$/u);
+  await expect(hydration).toContainText(
+    "Water in what you eat and drink (a drink without a water value, estimated), less alcohol's effect.",
+  );
+});
+
+// From food is a line of parts: at a phone's widths it wraps between them
+// only, never inside "Salt ≥ 1.1 g" or "Fruit and vegetables ≥ 180 g".
+test("From food wraps between its parts only on a phone", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { day, tag } = unique(1165, testInfo);
+  const pid = await ownProfile(page, request, `Parts ${tag}`);
+  const f = await food(request, {
+    name: `Juice ${tag}`,
+    category: "fruit_veg",
+    per100: { energy: 40, alcohol: 5, caffeine: 50, sodium: 250 },
+  });
+  await entry(request, { day, group: "Eaten", food_id: f.id, grams: 180 }, pid);
+  // A food without them: what's counted is a floor.
+  await eat(request, pid, day, {}, 100, tag);
+  await page.goto(`/#/day/${day}`);
+  const text = totals(page).locator(".habit-builtins");
+  await expect(text).toContainText("Fruit and vegetables");
+  await expectPartsWhole(text, (t) => t.split(" · "));
 });

@@ -4,10 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { legendWords, step } from "../web/calendar-grid.mjs";
+import { cellAmount, legendWords, step } from "../web/calendar-grid.mjs";
 import { reachedStep } from "../web/habits.mjs";
 
-const NB = "\u00a0";
+const NB = "\u00A0";
 
 test("bounds read as ranges, the unit on each", () => {
   assert.deepEqual(legendWords([1, 1.5, 2], "L"), [
@@ -52,4 +52,12 @@ test("minutes as hours; no unit, no space", () => {
     "45–90",
     `>${NB}90`,
   ]);
+});
+
+test("calendar cells are formatted as every other number: 1,087", () => {
+  assert.equal(cellAmount(1087.4), "1,087");
+  assert.equal(cellAmount(9999.4), "9,999");
+  assert.equal(cellAmount(0), "0");
+  // Five digits don't fit a phone's cell: compact.
+  assert.equal(cellAmount(10_460), "10.5K");
 });

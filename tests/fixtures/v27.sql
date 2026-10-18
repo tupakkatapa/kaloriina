@@ -316,7 +316,7 @@ CREATE TABLE scale_reading (
     muscle REAL,
     PRIMARY KEY (profile_id, source, source_user, taken_at)
 );
-INSERT INTO scale_reading VALUES(1,'openscale',1,1790000000000,4,'2026-10-01',68.5,NULL,NULL,NULL);
+INSERT INTO scale_reading VALUES(1,'openscale',1,1790832600000,4,'2026-10-01',68.5,NULL,NULL,NULL);
 CREATE TABLE sync_state (
     profile_id INTEGER NOT NULL REFERENCES profile (id) ON DELETE CASCADE,
     source TEXT NOT NULL,
@@ -335,7 +335,7 @@ CREATE TABLE activity_day (
     steps INTEGER, resting_hr INTEGER, hrv_ms INTEGER, asleep_min INTEGER, in_bed_min INTEGER, bedtime TEXT, wake_time TEXT, deep_min INTEGER, rem_min INTEGER, light_min INTEGER,
     PRIMARY KEY (profile_id, day)
 );
-INSERT INTO activity_day VALUES(1,'2026-10-01',NULL,9000,NULL,NULL,440,NULL,NULL,NULL,NULL,NULL,NULL);
+INSERT INTO activity_day VALUES(1,'2026-10-01',NULL,9000,NULL,NULL,440,475,'23:10','07:05',NULL,NULL,NULL);
 CREATE TABLE activity_session (
     profile_id INTEGER NOT NULL REFERENCES profile (id) ON DELETE CASCADE,
     source_key TEXT NOT NULL,

@@ -1,16 +1,18 @@
-// Water: "+ Water" on the
-// Add screen, the Water habit, Profile → Habits' water food, and water in
-// ml or L everywhere.
-// Every test works on a profile of its own.
+// Water: the Water row atop the Add screen's list, the Water habit, Profile →
+// Habits' water food, and water in ml or L everywhere. Every test works on a
+// profile of its own.
 
-import { test, expect } from "@playwright/test";
-import { food, ownProfile, unique } from "./helpers.js";
+import { expect, test } from "@playwright/test";
+import { expectPartsWhole, food, ownProfile, unique } from "./helpers.js";
 
 // A number and its unit as the app writes them (a no-break space).
 const words = (text) =>
-  new RegExp(`^${text.replace(/[().]/g, "\\$&").replaceAll(" ", "\\s")}$`);
+  new RegExp(
+    `^${text.replaceAll(/[().+]/gu, "\\$&").replaceAll(" ", "\\s")}$`,
+    "u",
+  );
 
-const KEPT = "Saved on this device; it's sent when you're back online";
+const KEPT = "Saved in this browser; it's sent when you're back online";
 
 // Writes fail as if offline; reads go through.
 const fail = (route) =>
@@ -22,7 +24,7 @@ const dayOf = async (request, pid, day) =>
 // The day's eaten entries, as [name, grams].
 const eaten = async (request, pid, day) =>
   (await dayOf(request, pid, day)).groups
-    .filter((g) => g.name === "Consumed")
+    .filter((g) => g.name === "Eaten")
     .flatMap((g) => g.entries)
     .map((e) => [e.name, e.grams]);
 
@@ -30,6 +32,10 @@ const card = (page) =>
   page.locator(".group", {
     has: page.getByRole("heading", { name: "Log", exact: true }),
   });
+
+// Eaten's foot: what the day's food held, Hydration first.
+const totals = (page) =>
+  page.getByRole("list", { name: "Day's totals from food" });
 
 // Send the outbox now, through the page's own api.mjs (beside its main.mjs,
 // versioned or not).
@@ -39,8 +45,14 @@ const flush = (page) =>
     return (await import(new URL("api.mjs", main))).flush();
   });
 
+// The Add screen's Water row, first in its list.
+const waterRow = (page) =>
+  page
+    .locator(".finder-results > ul")
+    .getByRole("button", { name: /^Water\b/u });
+
 async function addWater(page, ml) {
-  await page.getByRole("button", { name: "+ Water" }).click();
+  await waterRow(page).click();
   const dialog = page.getByRole("dialog", { name: "Water to Eaten" });
   await expect(dialog.getByLabel("Amount (ml)")).toBeFocused();
   await dialog.getByLabel("Amount (ml)").fill(String(ml));
@@ -48,14 +60,19 @@ async function addWater(page, ml) {
   await expect(dialog).toBeHidden();
 }
 
-test("+ Water asks ml, logs the water food to the group, and Undo takes it back", async ({
+test("Water asks ml, logs the water food to the group, and Undo takes it back", async ({
   page,
   request,
 }, testInfo) => {
   const { day, tag } = unique(610, testInfo);
   const pid = await ownProfile(page, request, `Drinks ${tag}`);
-  await page.goto(`/#/add/${day}/Consumed`);
-  await page.getByRole("button", { name: "+ Water" }).click();
+  await page.goto(`/#/add/${day}/Eaten`);
+  // A row atop the list, not a button in the title bar.
+  await expect(page.locator("header.title").getByRole("button")).toHaveCount(0);
+  await expect(
+    page.locator(".finder-results .results").first().locator("li").first(),
+  ).toContainText("Water");
+  await waterRow(page).click();
   const dialog = page.getByRole("dialog", { name: "Water to Eaten" });
   const ml = dialog.getByLabel("Amount (ml)");
   // Empty by default, required, and bounded by the served limits.
@@ -74,13 +91,14 @@ test("+ Water asks ml, logs the water food to the group, and Undo takes it back"
   expect(await eaten(request, pid, day)).toEqual([]);
 
   await addWater(page, 330);
-  await expect(page).toHaveURL(new RegExp(`#/day/${day}$`));
+  await expect(page).toHaveURL(new RegExp(`#/day/${day}$`, "u"));
   const toast = page.locator("#toast");
   await expect(toast).toContainText("Added Water 330 ml to Eaten");
   expect(await eaten(request, pid, day)).toEqual([["Water", 330]]);
-  // The day's Log card says how much water the day held.
-  await expect(card(page).locator(".habit-builtins")).toHaveText(
-    words("Water 330 ml"),
+  // Eaten's totals say how much water the day held, against the
+  // profile's recommended 2 L.
+  await expect(totals(page).locator(".hydration .name")).toHaveText(
+    words("330 ml of 2 L"),
   );
 
   await toast.getByRole("button", { name: "Undo" }).click();
@@ -91,28 +109,32 @@ test("+ Water asks ml, logs the water food to the group, and Undo takes it back"
   // Only the group's Add screen has it, not the Foods tab.
   await page.goto("/#/foods");
   await expect(page.getByLabel("Search foods")).toBeVisible();
-  await expect(page.getByRole("button", { name: "+ Water" })).toHaveCount(0);
+  await expect(waterRow(page)).toHaveCount(0);
 });
 
-test("+ Water made while writes fail waits on its day, then is stored once", async ({
+test("Water made while writes fail waits on its day, then is stored once", async ({
   page,
   request,
 }, testInfo) => {
   const { day, tag } = unique(611, testInfo);
   const pid = await ownProfile(page, request, `Offline ${tag}`);
-  await page.goto(`/#/add/${day}/Consumed`);
-  await expect(page.getByRole("button", { name: "+ Water" })).toBeVisible();
+  await page.goto(`/#/add/${day}/Eaten`);
+  await expect(waterRow(page)).toBeVisible();
   const glob = `**/api/profiles/${pid}/entries`;
   await page.route(glob, fail);
   await addWater(page, 500);
-  await expect(page).toHaveURL(new RegExp(`#/day/${day}$`));
+  await expect(page).toHaveURL(new RegExp(`#/day/${day}$`, "u"));
   await expect(page.locator("#toast")).toHaveText(KEPT);
+  // In its group, said not counted yet; not again at the bottom.
   const waiting = page
-    .locator(".group", {
-      has: page.getByRole("heading", { name: "Waiting to send" }),
-    })
-    .locator(".entry");
-  await expect(waiting).toHaveText([/^Water 500\sml/]);
+    .locator(".group", { has: page.getByRole("heading", { name: "Eaten" }) })
+    .locator(".entry", { hasText: "Waiting to send" });
+  await expect(waiting).toHaveText([
+    /^Water 500\sml\s*Waiting to send · not counted yet$/u,
+  ]);
+  await expect(
+    page.getByRole("heading", { name: "Waiting to send" }),
+  ).toHaveCount(0);
   expect(await eaten(request, pid, day)).toEqual([]);
 
   await page.unroute(glob, fail);
@@ -147,17 +169,17 @@ test("Profile → Habits picks the water food + Water logs, and goes back to the
   ).toHaveCount(0);
   await section.getByLabel("Water food").fill(`Spring water ${tag}`);
   await section
-    .getByRole("button", { name: new RegExp(`^Spring water ${tag}`) })
+    .getByRole("button", { name: new RegExp(`^Spring water ${tag}`, "u") })
     .click();
   await expect(section.locator(".water-food-current")).toHaveText(
     `Spring water ${tag}`,
   );
   await expect(page.locator("#toast")).toContainText(
-    `“+ Water” logs Spring water ${tag}`,
+    `Water now logs Spring water ${tag}`,
   );
 
   // The pick is the profile's: the Add screen logs it.
-  await page.goto(`/#/add/${day}/Consumed`);
+  await page.goto(`/#/add/${day}/Eaten`);
   await addWater(page, 250);
   await expect(page.locator("#toast")).toContainText(
     "Added Water 250 ml to Eaten",
@@ -177,7 +199,7 @@ test("Profile → Habits picks the water food + Water logs, and goes back to the
   expect(saved).toMatchObject({ chosen: false, food: { name: "Water" } });
 });
 
-test("the Water habit: the Log card's line and the Summary calendar, shaded against the target", async ({
+test("the Hydration habit: Eaten's totals line and the Summary calendar, shaded against the target", async ({
   page,
   request,
 }, testInfo) => {
@@ -189,34 +211,39 @@ test("the Water habit: the Log card's line and the Summary calendar, shaded agai
     name: `Juice ${tag}`,
     per100: { energy: 40, water: 95, alcohol: 1.2 },
   });
-  // 2000 g: 1.9 L of water and 24 g of alcohol (2 drinks), eaten; planned
-  // water doesn't count.
+  // 2000 g: 1.9 L of water and 24 g of alcohol (2 drinks), eaten: the
+  // alcohol takes back 240 ml, 1.66 L hydrates; planned water doesn't count.
   const log = (group, grams) =>
     request.post(`/api/profiles/${pid}/entries`, {
       data: { day, group, food_id: drink.id, grams },
     });
-  expect((await log("Consumed", 2000)).ok()).toBeTruthy();
+  expect((await log("Eaten", 2000)).ok()).toBeTruthy();
   expect((await log("Planned", 1000)).ok()).toBeTruthy();
   await page.goto(`/#/day/${day}`);
-  await expect(card(page).locator(".habit-builtins")).toHaveText(
-    words("Water 1.9 L · Alcohol 2 drinks"),
+  await expect(totals(page).locator(".habit-builtins")).toHaveText(
+    words("Alcohol 2 drinks"),
+  );
+  await expect(totals(page).locator(".hydration .name")).toHaveText(
+    words("1.7 L of 2 L"),
   );
 
-  // The profile's recommended 2 L target ("at least"): 1.9 L is under it.
+  // The profile's recommended 2 L target ("at least"): 1.7 L is under it.
   const month = `/#/summary/habits/month/${day.slice(0, 8)}01`;
   await page.goto(month);
-  // Water is the habit shown first.
+  // Hydration is the habit shown first.
   const water = page.locator(".habits-summary .habit-water");
   const legend = water.locator(".habit-legend");
   const cell = water.locator(`.habit-cal td[data-day="${day}"]`);
-  await expect(cell).toHaveClass(/\bshade-3\b/);
-  await expect(cell.getByRole("link")).toHaveAccessibleName(/: 1\.9\sL$/);
-  await expect(legend).toContainText(/≥\s2\sL \(target\)/);
-  await expect(water.getByRole("list", { name: "Water" })).toContainText(
-    /1\.9\sL a day/,
+  await expect(cell).toHaveClass(/\bshade-3\b/u);
+  await expect(cell.getByRole("link")).toHaveAccessibleName(/: 1\.7\sL$/u);
+  // Shaded against the day's goal, which grows with activity: the key
+  // says how far toward it, not the plain target's litres.
+  await expect(legend).toContainText("the day's goal met");
+  await expect(water.getByRole("list", { name: "Hydration" })).toContainText(
+    /1\.7\sL a day/u,
   );
 
-  // A 1.8 L target is reached: the darkest step, never "over".
+  // A 1.6 L target is reached: the darkest step, never "over".
   const targets = async (list) => {
     const p = await (await request.get(`/api/profiles/${pid}`)).json();
     const res = await request.put(`/api/profiles/${pid}/targets`, {
@@ -224,29 +251,76 @@ test("the Water habit: the Log card's line and the Summary calendar, shaded agai
     });
     expect(res.ok()).toBeTruthy();
   };
-  await targets([{ metric: "water", value: 1800 }]);
+  await targets([{ metric: "water", value: 1600 }]);
   await page.reload();
-  await expect(cell).toHaveClass(/\bshade-4\b/);
-  await expect(legend).toContainText(/≥\s1\.8\sL \(target\)/);
+  await expect(cell).toHaveClass(/\bshade-4\b/u);
+  await expect(legend).toContainText("the day's goal met");
   await expect(legend).not.toContainText("over your limit");
   await expect(water.locator(".cal-cell.over")).toHaveCount(0);
 
   // No target: fixed steps (≤ 1 L / 1–1.5 L / 1.5–2 L / > 2 L).
   await targets([]);
   await page.reload();
-  await expect(cell).toHaveClass(/\bshade-3\b/);
-  await expect(legend).toContainText(/1–1\.5\sL/);
+  await expect(cell).toHaveClass(/\bshade-3\b/u);
+  await expect(legend).toContainText(/1–1\.5\sL/u);
   await expect(legend).not.toContainText("(target)");
 });
 
-test("+ Water offers the last amount and 250 / 500 ml", async ({
+test("Eaten's Hydration row is its value only", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { day, tag } = unique(813, testInfo);
+  const pid = await ownProfile(page, request, `Hydration ${tag}`);
+  const base = `/api/profiles/${pid}`;
+  const { rev } = await (await request.get(base)).json();
+  await request.put(`${base}/targets`, {
+    data: {
+      rev,
+      targets: [
+        { metric: "water", value: 2000 },
+        { metric: "sodium", value: 2000 },
+        { metric: "potassium", value: 3500 },
+      ],
+    },
+  });
+  const drink = await food(request, {
+    name: `Broth ${tag}`,
+    per100: { water: 90, sodium: 40, potassium: 50 },
+  });
+  await request.post(`${base}/entries`, {
+    data: { day, group: "Eaten", food_id: drink.id, grams: 500 },
+  });
+  // An hour's run: the day's goal is 0.5 L more.
+  await request.post(`${base}/activities`, {
+    data: { day, name: "Run", minutes: 60, type: "run" },
+  });
+  await page.goto(`/#/day/${day}`);
+  // The value only, the goal's activity part included; no
+  // disclosure, no "Approximate", no + Water. Salt is From food's.
+  const row = totals(page).locator(".log-row", {
+    has: page.locator(".hydration"),
+  });
+  // Why the day's goal isn't the target, on the row.
+  await expect(row.locator(".hydration")).toHaveText(
+    words("450 ml of 2.5 L (2 L + activity)"),
+  );
+  await expect(totals(page).locator("details")).toHaveCount(0);
+  await expect(row.getByRole("button")).toHaveCount(0);
+  await expect(totals(page)).not.toContainText("Approximate");
+  await expect(totals(page).locator(".habit-builtins")).toContainText(
+    words("Salt 0.5 g"),
+  );
+});
+
+test("Water offers the last amount and 250 / 500 ml", async ({
   page,
   request,
 }, testInfo) => {
   const { day, tag } = unique(804, testInfo);
   const pid = await ownProfile(page, request, `Chips ${tag}`);
-  await page.goto(`/#/add/${day}/Consumed`);
-  await page.getByRole("button", { name: "+ Water" }).click();
+  await page.goto(`/#/add/${day}/Eaten`);
+  await waterRow(page).click();
   const dialog = page.getByRole("dialog", { name: "Water to Eaten" });
   const ml = dialog.getByLabel("Amount (ml)");
   await dialog.getByRole("button", { name: "500 ml" }).click();
@@ -257,8 +331,8 @@ test("+ Water offers the last amount and 250 / 500 ml", async ({
   await expect(dialog).toBeHidden();
   expect(await eaten(request, pid, day)).toEqual([["Water", 250]]);
   // Next time, the last amount is filled in.
-  await page.goto(`/#/add/${day}/Consumed`);
-  await page.getByRole("button", { name: "+ Water" }).click();
+  await page.goto(`/#/add/${day}/Eaten`);
+  await waterRow(page).click();
   await expect(ml).toHaveValue("250");
 });
 
@@ -270,9 +344,11 @@ test("+ Log has Water, and water reads in ml or L everywhere", async ({
   const pid = await ownProfile(page, request, `Sheet ${tag}`);
   await page.goto(`/#/day/${day}`);
   const fromSheet = async (ml) => {
-    await card(page).getByRole("button", { name: "+ Log" }).click();
+    await card(page)
+      .getByRole("button", { name: /^Log on /u })
+      .click();
     const sheet = page.getByRole("dialog", { name: "Log" });
-    await sheet.getByRole("button", { name: /^Water\b/ }).click();
+    await sheet.getByRole("button", { name: /^Hydration\b/u }).click();
     await expect(sheet).toBeHidden();
     const dialog = page.getByRole("dialog", { name: "Water to Eaten" });
     await dialog.getByLabel("Amount (ml)").fill(String(ml));
@@ -281,14 +357,14 @@ test("+ Log has Water, and water reads in ml or L everywhere", async ({
   };
   await fromSheet(1200);
   const toast = page.locator("#toast");
-  await expect(toast).toContainText(/Added Water 1\.2\sL to Eaten/);
+  await expect(toast).toContainText(/Added Water 1\.2\sL to Eaten/u);
   await fromSheet(330);
-  await expect(toast).toContainText(/Added Water 330\sml to Eaten/);
+  await expect(toast).toContainText(/Added Water 330\sml to Eaten/u);
   expect(await eaten(request, pid, day)).toEqual([
     ["Water", 1200],
     ["Water", 330],
   ]);
-  // One unit rule: the entries as the Log card's line, never grams.
+  // One unit rule: the entries as Eaten's totals line, never grams.
   const eatenGroup = page.locator(".group", {
     has: page.getByRole("heading", { name: "Eaten" }),
   });
@@ -296,12 +372,12 @@ test("+ Log has Water, and water reads in ml or L everywhere", async ({
     words("1.2 L"),
     words("330 ml"),
   ]);
-  await expect(card(page).locator(".habit-builtins")).toHaveText(
-    words("Water 1.5 L"),
+  await expect(totals(page).locator(".hydration .name")).toHaveText(
+    words("1.5 L of 2 L"),
   );
 });
 
-test("+ Water without a water food leads to Habits to pick one", async ({
+test("Water without a water food leads to Habits to pick one", async ({
   page,
   request,
 }, testInfo) => {
@@ -310,8 +386,8 @@ test("+ Water without a water food leads to Habits to pick one", async ({
   await page.route(`**/api/profiles/${pid}/water-food`, (route) =>
     route.fulfill({ json: { food: null } }),
   );
-  await page.goto(`/#/add/${day}/Consumed`);
-  await page.getByRole("button", { name: "+ Water" }).click();
+  await page.goto(`/#/add/${day}/Eaten`);
+  await waterRow(page).click();
   const dialog = page.getByRole("dialog", { name: "Water to Eaten" });
   await dialog.getByLabel("Amount (ml)").fill("250");
   await dialog.getByRole("button", { name: "Add" }).click();
@@ -319,6 +395,67 @@ test("+ Water without a water food leads to Habits to pick one", async ({
     "No water food yet: pick one in Habits.",
   );
   await dialog.getByRole("link", { name: "Habits" }).click();
-  await expect(page).toHaveURL(/#\/habits$/);
+  await expect(page).toHaveURL(/#\/habits$/u);
   await expect(page.locator("dialog[open]")).toHaveCount(0);
+});
+
+// In US units the limits read, attribute and check alike, each
+// rounded inward, so the hint never names a value it refuses.
+test("US water: the hint's ends are accepted, past them refused", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { day, tag } = unique(1090, testInfo);
+  const pid = await ownProfile(page, request, `Ounces ${tag}`);
+  await page.addInitScript(() => localStorage.setItem("units", "us"));
+  await page.goto(`/#/add/${day}/Eaten`);
+  await waterRow(page).click();
+  const dialog = page.getByRole("dialog", { name: "Water to Eaten" });
+  const oz = dialog.getByLabel("Amount (fl oz)");
+  await expect(dialog.getByText(words("0.1–169 fl oz"))).toBeVisible();
+  await expect(oz).toHaveAttribute("min", "0.1");
+  await expect(oz).toHaveAttribute("max", "169");
+  await oz.fill("169.1");
+  await dialog.getByRole("button", { name: "Add" }).click();
+  await expect(dialog).toBeVisible();
+  await oz.fill("169");
+  await dialog.getByRole("button", { name: "Add" }).click();
+  await expect(dialog).toBeHidden();
+  await expect
+    .poll(async () => (await eaten(request, pid, day)).map(([, g]) => g))
+    .toEqual([expect.closeTo(4998, 0)]);
+});
+
+// Hydration's value is three parts, "≥ 402 ml", "of 2.5 L" and "(2 L +
+// activity)": at a phone's widths it wraps between them only.
+test("Hydration wraps between its parts only on a phone", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { day, tag } = unique(1166, testInfo);
+  const pid = await ownProfile(page, request, `Hydration parts ${tag}`);
+  const base = `/api/profiles/${pid}`;
+  const { rev } = await (await request.get(base)).json();
+  await request.put(`${base}/targets`, {
+    data: { rev, targets: [{ metric: "water", value: 2000 }] },
+  });
+  for (const [name, per100] of [
+    [`Broth ${tag}`, { water: 90 }],
+    // No water value, not a drink: the day's hydration is a floor.
+    [`Crackers ${tag}`, { energy: 400 }],
+  ]) {
+    const f = await food(request, { name, per100 });
+    await request.post(`${base}/entries`, {
+      data: { day, group: "Eaten", food_id: f.id, grams: 450 },
+    });
+  }
+  await request.post(`${base}/activities`, {
+    data: { day, name: "Run", minutes: 60, type: "run" },
+  });
+  await page.goto(`/#/day/${day}`);
+  const value = totals(page).locator(".hydration");
+  await expect(value).toContainText("activity)");
+  await expectPartsWhole(value, (t) =>
+    /^(.+?) (of \S+ \S+) (\(.+\))$/u.exec(t).slice(1),
+  );
 });

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The page's background colour (web/style.css), dark. -->
+<resources>
+    <color name="bg">#121211</color>
+    <bool name="light_bars">false</bool>
+</resources>

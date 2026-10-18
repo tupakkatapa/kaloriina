@@ -1,13 +1,15 @@
-// The diary day's Log card: everything logged that day but food (workouts
-// planned and done, weight, the scale's body composition, measurements,
-// habits, a check-in and a note) as compact rows, and the "+ Log" sheet that
+// The diary day's Log card: everything logged that day but food and
+// activity (weight, the scale's body composition, measurements, the
+// trackers counted, a check-in and a note) as compact rows; what the food
+// held of the habits is Eaten's (diary.mjs), and the Log sheet its + opens, which
 // adds them. Weight, measurements, the check-in and the note are edited in
 // small dialogs.
 
+import { storedOrKept, writeAll } from "../actions.mjs";
 import {
   api,
+  createId,
   get,
-  isQueued,
   loadProfiles,
   meta,
   profileId,
@@ -16,229 +18,143 @@ import {
   uid,
 } from "../api.mjs";
 import {
-  METRICS,
-  customTags,
+  CHECK_IN_SCALES,
   line as checkInLine,
+  customTags,
   normalTag,
   offered,
   tagsOf,
 } from "../check-ins.mjs";
-import { clockAt, pretty, shift, today } from "../dates.mjs";
+import { clockAt, duration, pretty, shift, today } from "../dates.mjs";
+import { isNil, lower, qty } from "../format.mjs";
+import { counted } from "../habits.mjs";
 import { go, goDay, href, showsDay } from "../nav.mjs";
-import { CONSUMED, isNil, qty, withUnit } from "../nutrients.mjs";
+import { EATEN, withUnit } from "../nutrients.mjs";
 import { latest } from "../outbox.mjs";
+import { readJson, writeJson } from "../prefs.mjs";
 import {
-  busy,
+  dropSentNotes,
+  logRow,
+  menuRow,
+  result,
+  trackerRow,
+} from "../rows.mjs";
+import {
+  chip,
   choice,
-  confirmDialog,
+  empty,
   errorBox,
   field,
   fill,
   formDialog,
   h,
+  icon,
+  modal,
   notify,
-  num,
+  PLUS,
+  removeButton,
+  timeField,
+  undoable,
+  unitNum,
+  unitValue,
 } from "../ui.mjs";
-import { builtinText, counted, dropSentNotes, trackerRow } from "./habits.mjs";
-import { activityLine, nightLine } from "../activity.mjs";
-import { distanceText } from "../workouts.mjs";
-import { addWater } from "./finder.mjs";
-import { sessionLine } from "./sessions.mjs";
-
-// A row: what kind it is, the thing itself, then what can be done to it.
-const logRow = (kind, main, ...actions) =>
-  h(
-    "li",
-    { class: "log-row" },
-    h("span", { class: "kind" }, kind),
-    main,
-    actions,
-  );
-
-const removeButton = (label, run) =>
-  h(
-    "button",
-    {
-      type: "button",
-      class: "danger icon",
-      "aria-label": label,
-      onclick: busy(run),
-    },
-    "✕",
-  );
+import { unitOf, unitQty } from "../units.mjs";
+import { addWater, shownBounds } from "../water.mjs";
 
 // A row's main control that opens its dialog.
 const editButton = (text, onclick, label = null) =>
-  h(
-    "button",
-    { type: "button", class: "result", "aria-label": label, onclick },
-    h("span", { class: "name" }, text),
-  );
+  result({ onclick, name: text, "aria-label": label });
 
-// ------------------------------------------------------------- workouts
-
-// A workout planned on the day: Start runs it for that day; ✕ drops the
-// plan (with Undo).
-function plannedRow(day, plan) {
-  const row = logRow(
-    "Planned workout",
-    h("span", { class: "result" }, h("span", { class: "name" }, plan.name)),
-    h(
-      "a",
-      {
-        class: "button",
-        href: `${href.run(plan.workout_id)}?day=${day}`,
-        "aria-label": `Start ${plan.name}`,
-      },
-      "Start",
-    ),
-    removeButton(`Remove the plan for ${plan.name}`, async () => {
-      await api("DELETE", scoped(`/plans/${plan.id}`));
-      goDay(day);
-      notify(`Removed ${plan.name} from ${pretty(day)}`, {
-        action: {
-          label: "Undo",
-          run: async () => {
-            await api("POST", scoped("/plans"), {
-              day,
-              workout_id: plan.workout_id,
+// The day's naps, "13:00–13:25" over its length: the Sleep card's
+// (diary.mjs), under the night. One logged here has ✕ (Undo logs it
+// again); a synced one is removed where it came from.
+export const napRows = ({ day, data }) =>
+  (data.naps ?? [])
+    // A removal waiting to send has taken it already.
+    .filter((n) => latest(scoped(`/naps/${n.uid}`))?.method !== "DELETE")
+    .map((n) => {
+      const span = `${clockAt(n.start_at)}–${clockAt(n.end_at)}`;
+      // Its length; asleep too when the device knew less of it asleep.
+      const asleep =
+        isNil(n.asleep_min) || n.asleep_min === n.in_bed_min
+          ? ""
+          : `, ${duration(n.asleep_min)} asleep`;
+      const row = result({
+        cls: "nap",
+        name: span,
+        detail: `${duration(n.in_bed_min)}${asleep}`,
+      });
+      if (n.source !== "hand") return logRow("Nap", row);
+      return logRow(
+        "Nap",
+        row,
+        removeButton(`Remove nap ${span}`, async () => {
+          // Both wait offline: the delete goes by uid, the Undo is a create.
+          const path = scoped(`/naps/${n.uid}`);
+          const label = `Remove nap ${span}`;
+          const del = () =>
+            api("DELETE", path, undefined, { queue: true, label });
+          if (!(await storedOrKept(del, day))) return;
+          await goDay(day);
+          undoable(`Removed the ${duration(n.in_bed_min)} nap`, async () => {
+            const body = {
               uid: uid(),
-            });
-            goDay(day);
-          },
-        },
-      });
-    }),
-  );
-  row.classList.add("planned");
-  return row;
-}
-
-// A workout done, with what it burned. Burned energy is shown, not taken
-// off the energy target: the activity level behind it already counts
-// training.
-const sessionRow = (s) =>
-  logRow(
-    "Workout",
-    h(
-      "a",
-      { class: "result", href: href.session(s.id) },
-      h("span", { class: "name" }, s.name),
-      h("span", { class: "muted" }, sessionLine(s)),
-    ),
-  );
-
-// ------------------------------------------------------------ activity
-
-// "Running · 07:00 · 30 min · 8.2 km": a watch workout waiting (ask mode,
-// or one the watch detected by itself), with Add (it becomes a workout
-// done) and Dismiss (it never comes back). Both are safe to repeat, so
-// they queue offline. `withDay`: where days mix, the row is
-// headed by its day, not "From watch", and the buttons name it. `after`
-// shows the result.
-export function pendingRow(p, after, { withDay = false } = {}) {
-  const act = (method, done) => async () => {
-    try {
-      await api(method, scoped(`/sync/health/workouts/${p.key}`), undefined, {
-        queue: true,
-        label: p.name,
-      });
-      notify(done);
-    } catch (err) {
-      if (!isQueued(err)) throw err;
-      notify(err.message);
-    }
-    after();
-  };
-  const start = clockAt(p.start_at);
-  const what = withDay ? `${p.name} on ${pretty(p.day)}` : p.name;
-  const row = logRow(
-    withDay ? pretty(p.day) : "From watch",
-    h(
-      "span",
-      { class: "result" },
-      h("span", { class: "name" }, p.name),
-      h(
-        "span",
-        { class: "muted" },
-        [start, qty(p.minutes, "min", 0), distanceText(p.distance_m)]
-          .filter(Boolean)
-          .join(" · "),
-      ),
-    ),
-    h(
-      "button",
-      {
-        type: "button",
-        "aria-label": `Add ${what} at ${start}`,
-        onclick: busy(act("POST", `Added ${p.name}`)),
-      },
-      "Add",
-    ),
-    h(
-      "button",
-      {
-        type: "button",
-        class: "secondary",
-        "aria-label": `Dismiss ${what} at ${start}`,
-        onclick: busy(async () => {
-          const sure = await confirmDialog(`Dismiss ${what} at ${start}?`, {
-            detail:
-              "It won't be added, now or on a later sync. To count it, log it by hand.",
-            confirm: "Dismiss",
+              day,
+              start_at: n.start_at,
+              end_at: n.end_at,
+            };
+            const add = () =>
+              api("POST", scoped("/naps"), body, {
+                queue: true,
+                label: "Nap",
+              });
+            if (await storedOrKept(add, day)) goDay(day);
           });
-          if (sure) await act("DELETE", `Dismissed ${p.name}`)();
         }),
-      },
-      "Dismiss",
-    ),
+      );
+    });
+
+// Log sheet → Nap: when it began and ended on this device's clock (an end
+// before the start began the day before), sent in UTC with a uid, so it
+// waits offline like any create.
+async function logNap(day) {
+  const id = createId();
+  const start = timeField({ name: "start_at", required: true });
+  const end = timeField({ name: "end_at", required: true });
+  let minutes = 0;
+  const done = await formDialog(`Nap on ${pretty(day)}`, {
+    body: [field("Fell asleep", start), field("Woke up", end)],
+    submit: "Save",
+    run: async () => {
+      const to = new Date(`${day}T${end.value}`);
+      const from = new Date(`${day}T${start.value}`);
+      if (from >= to) from.setDate(from.getDate() - 1);
+      minutes = Math.round((to - from) / 60_000);
+      const body = {
+        uid: id.get(),
+        day,
+        start_at: from.toISOString(),
+        end_at: to.toISOString(),
+      };
+      const saved = await stored(() =>
+        api("POST", scoped("/naps"), body, { queue: true, label: "Nap" }),
+      );
+      if (saved === true) id.done();
+      return saved;
+    },
+  });
+  if (!done) return;
+  await goDay(day);
+  notify(
+    done === true ? `Logged a ${duration(minutes)} nap` : done.queued.message,
   );
-  row.classList.add("pending");
-  return row;
 }
 
-// The Android companion's day from Health Connect: a muted line of active
-// energy and steps (shown, never added to targets), the night
-// that ended the day with its heart, and the watch workouts waiting to be
-// added. Added ones are ordinary workout rows.
-function activityRows(day, activity, pending) {
-  const line = activityLine(activity ?? {});
-  const night = nightLine(activity ?? {});
-  return [
-    line
-      ? logRow(
-          "Activity",
-          h("span", { class: "result muted activity-line" }, line),
-        )
-      : null,
-    night
-      ? logRow("Night", h("span", { class: "result muted night-line" }, night))
-      : null,
-    ...pending.map((p) => pendingRow(p, () => goDay(day))),
-  ];
-}
-
-// ------------------------------------------------------- per-day records
-
-// "Weight" → "weight", inside a sentence.
-const lower = (s) => s.charAt(0).toLowerCase() + s.slice(1);
-
-// Each write queued: true when all were stored, else `{queued}`
-// (one kept on this device says so for all; the rest still go out).
-async function writeAll(writes) {
-  let kept = null;
-  for (const { method, path, body, label } of writes) {
-    const done = await stored(() =>
-      api(method, path, body, { queue: true, label }),
-    );
-    kept = done.queued ?? kept;
-  }
-  return kept ? { queued: kept } : true;
-}
+// -------------------------------------------------------- per-day logs
 
 // The day's record as last written here: a PUT or DELETE still waiting to
 // send is newer than the Day view's (last arrival wins, whole record).
-function currentDayRecord(path, fromDay) {
+function currentDayLog(path, fromDay) {
   const last = latest(path);
   if (!last) return fromDay;
   return last.method === "PUT" ? last.body : null;
@@ -248,7 +164,7 @@ function currentDayRecord(path, fromDay) {
 const rowKind = (rec, key) => (key ? `${rec.kind}:${key}` : rec.kind);
 
 // After a same-screen re-render focus goes back to the record's row (else
-// to + Log), never to the page.
+// to the card's +), never to the page.
 function focusRow(kind) {
   const card = document.querySelector(".log-card");
   (
@@ -260,13 +176,14 @@ function focusRow(kind) {
 // After a record's writes: the day re-renders (the profile first when it
 // follows the record: estimates use the weight), focus returns to the row,
 // and a toast says what was done, or that it waits on this device.
-async function settle(day, rec, key, done, message, action = null) {
+async function settle(day, rec, key, done, message, undo = null) {
   if (done === true && rec.reload) await loadProfiles();
   const same = showsDay(day);
   await goDay(day);
   if (same) focusRow(rowKind(rec, key));
   if (done !== true) notify(done.queued.message);
-  else if (message) notify(message, { action });
+  else if (message && undo) undoable(message, undo);
+  else if (message) notify(message);
 }
 
 const putOf = (rec, day, key, body) => ({
@@ -279,18 +196,16 @@ const putOf = (rec, day, key, body) => ({
 // A record gone (✕, or its dialog emptied): "Removed weight" with Undo,
 // which puts it back through the outbox too.
 const removed = (day, rec, key, value, done) =>
-  settle(day, rec, key, done, `Removed ${lower(rec.name(key))}`, {
-    label: "Undo",
-    run: async () =>
-      settle(
-        day,
-        rec,
-        key,
-        await writeAll([putOf(rec, day, key, rec.undoBody(value))]),
-      ),
-  });
+  settle(day, rec, key, done, `Removed ${lower(rec.name(key))}`, async () =>
+    settle(
+      day,
+      rec,
+      key,
+      await writeAll([putOf(rec, day, key, rec.undoBody(value))]),
+    ),
+  );
 
-async function removeDayRecord(day, rec, key, value) {
+async function removeDayLog(day, rec, key, value) {
   const done = await writeAll([
     {
       method: "DELETE",
@@ -303,23 +218,24 @@ async function removeDayRecord(day, rec, key, value) {
 
 // A record's dialog closed: `done` is what `writeAll` gave (null: nothing
 // was sent).
-const saveDayRecord = (day, rec, key, done, message) =>
+const saveDayLog = (day, rec, key, done, message) =>
   done ? settle(day, rec, key, done, message) : null;
 
 // The record's value on the day: what waits here, else the Day view's.
 const valueOf = (rec, { day, data }, key) =>
-  currentDayRecord(rec.path(day, key), rec.fromDay(data, key));
+  currentDayLog(rec.path(day, key), rec.fromDay(data, key));
 
-// A record's row: its kind, its value opening the dialog, then ✕ (or
-// `instead`, a note on why it can't be removed here).
-function recordRow(rec, ctx, key, value, text, label, instead = null) {
+// A record's row: its kind, its value opening the dialog, then ✕ when it
+// is `removable` here.
+function dayLogRow(rec, ctx, key, value, text, label, removable = true) {
   const row = logRow(
     rec.name(key),
     editButton(text, () => rec.edit(ctx, key), label),
-    instead ??
-      removeButton(`Remove ${lower(rec.name(key))}`, () =>
-        removeDayRecord(ctx.day, rec, key, value),
-      ),
+    removable
+      ? removeButton(`Remove ${lower(rec.name(key))}`, () =>
+          removeDayLog(ctx.day, rec, key, value),
+        )
+      : null,
   );
   row.dataset.kind = rowKind(rec, key);
   return row;
@@ -329,11 +245,14 @@ const one = () => [null];
 
 // ---------------------------------------------------------------- body
 
-// A weight from the scale (openScale), not typed here.
-const fromScale = (source) => Boolean(source) && source !== "manual";
+// A weight from the scale (openScale) or Health Connect, not typed here.
+const fromScale = (source) => Boolean(source) && source !== "hand";
 
 const WEIGHT = {
   kind: "weight",
+  section: "Body",
+  // The scale's body composition reads under the weight.
+  after: ({ data }) => compositionRow(data.composition ?? null),
   label: "Weight",
   name: () => "Weight",
   keys: one,
@@ -345,41 +264,36 @@ const WEIGHT = {
   reload: true,
   // `set_at`: when it was typed, so a later scale reading wins.
   undoBody: (v) => ({ kg: v.kg, set_at: Date.now() }),
-  // A scale's weight goes only with its reading in openScale.
+  // A synced weight goes only with its reading at its source.
   row: (ctx, v) => {
     if (!v) return null;
-    const kg = qty(v.kg, "kg", 1);
-    return recordRow(
+    const kg = unitQty(v.kg, "kg", 1);
+    return dayLogRow(
       WEIGHT,
       ctx,
       null,
       v,
       kg,
       `Change weight, ${kg}`,
-      fromScale(v.source)
-        ? h(
-            "span",
-            { class: "muted scale-hint" },
-            "From the scale: delete the reading in openScale to remove it.",
-          )
-        : null,
+      !fromScale(v.source),
     );
   },
   edit: async (ctx) => {
     const { day } = ctx;
     const v = valueOf(WEIGHT, ctx, null);
     // No `step`: a scale weight off any grid saves as stored.
-    const kg = num({
+    const kg = unitNum({
       name: "kg",
-      value: v?.kg ?? "",
+      value: v?.kg,
+      unit: "kg",
       min: meta.limits.body_kg[0],
       max: meta.limits.body_kg[1],
       required: true,
     });
-    const label = () => `Weight ${qty(Number(kg.value), "kg", 1)}`;
+    const label = () => `Weight ${unitQty(unitValue(kg), "kg", 1)}`;
     const done = await formDialog(`Weight on ${pretty(day)}`, {
       body: [
-        field("Weight (kg)", kg),
+        field(`Weight (${unitOf("kg")})`, kg),
         fromScale(v?.source)
           ? h(
               "p",
@@ -393,14 +307,14 @@ const WEIGHT = {
         writeAll([
           {
             ...putOf(WEIGHT, day, null, {
-              kg: Number(kg.value),
+              kg: unitValue(kg),
               set_at: Date.now(),
             }),
             label: label(),
           },
         ]),
     });
-    await saveDayRecord(day, WEIGHT, null, done, `Logged ${lower(label())}`);
+    await saveDayLog(day, WEIGHT, null, done, `Logged ${lower(label())}`);
   },
 };
 
@@ -415,14 +329,7 @@ function compositionRow(c) {
     .map(([label, v]) => `${label} ${qty(v, "%", 1)}`)
     .join(" · ");
   return text
-    ? logRow(
-        "Body",
-        h(
-          "span",
-          { class: "result composition" },
-          h("span", { class: "name" }, text),
-        ),
-      )
+    ? logRow("Body", result({ cls: "composition", name: text }))
     : null;
 }
 
@@ -432,6 +339,7 @@ const measured = (key) => meta.measurements.find((m) => m.key === key);
 // every kind is edited in one dialog.
 const MEASUREMENT = {
   kind: "measurement",
+  section: "Body",
   label: "Measurements",
   name: (key) => measured(key).label,
   keys: () => meta.measurements.map((m) => m.key),
@@ -444,8 +352,8 @@ const MEASUREMENT = {
   row: (ctx, v, key) => {
     if (!v) return null;
     const m = measured(key);
-    const text = qty(v.value, m.unit, 1);
-    return recordRow(
+    const text = unitQty(v.value, m.unit, 1);
+    return dayLogRow(
       MEASUREMENT,
       ctx,
       key,
@@ -458,23 +366,27 @@ const MEASUREMENT = {
   // at `focusKey`.
   edit: async (ctx, focusKey) => {
     const { day } = ctx;
-    const [min, max] = meta.limits.measure_cm;
     const inputs = meta.measurements.map((m) => {
       const before = valueOf(MEASUREMENT, ctx, m.key)?.value ?? null;
-      return [m, before, num({ name: m.key, value: before ?? "", min, max })];
+      const input = unitNum({ name: m.key, value: before, unit: m.unit });
+      // As shown, rounded inward: either end saves.
+      [input.min, input.max] = shownBounds(meta.limits.measure_cm, m.unit);
+      return [m, before, input];
     });
     let first = null;
     const asked = formDialog(`Measurements on ${pretty(day)}`, {
       body: h(
         "div",
         { class: "measures" },
-        inputs.map(([m, , input]) => field(withUnit(m), input)),
+        inputs.map(([m, , input]) =>
+          field(withUnit({ ...m, unit: unitOf(m.unit) }), input),
+        ),
       ),
       submit: "Save",
       run: () => {
         const writes = inputs.flatMap(([m, before, input]) => {
           const path = MEASUREMENT.path(day, m.key);
-          const value = input.value === "" ? null : Number(input.value);
+          const value = unitValue(input);
           if (value === before) return [];
           first ??= m.key;
           return value === null
@@ -484,7 +396,7 @@ const MEASUREMENT = {
                   method: "PUT",
                   path,
                   body: { value },
-                  label: `${m.label} ${qty(value, m.unit, 1)}`,
+                  label: `${m.label} ${unitQty(value, m.unit, 1)}`,
                 },
               ];
         });
@@ -493,7 +405,7 @@ const MEASUREMENT = {
     });
     inputs.find(([m]) => m.key === focusKey)?.[2].focus();
     const done = await asked;
-    await saveDayRecord(
+    await saveDayLog(
       day,
       MEASUREMENT,
       focusKey ?? first,
@@ -508,23 +420,11 @@ const MEASUREMENT = {
 // Your own tags from the last year, most used first, per profile; the last
 // list is kept on this device for offline use.
 const TAGS_KEY = "checkin-tags";
-function keptTags() {
-  try {
-    return JSON.parse(localStorage.getItem(TAGS_KEY))?.[profileId] ?? [];
-  } catch {
-    return [];
-  }
-}
+const keptTags = () => readJson(TAGS_KEY, {})[profileId] ?? [];
 async function freshTags() {
   const list = await get(scoped(`/check-ins?from=${shift(today(), -365)}`));
   const tags = customTags(list, meta.check_in_tags);
-  let all = {};
-  try {
-    all = JSON.parse(localStorage.getItem(TAGS_KEY)) ?? {};
-  } catch {
-    // A corrupt store is replaced.
-  }
-  localStorage.setItem(TAGS_KEY, JSON.stringify({ ...all, [profileId]: tags }));
+  writeJson(TAGS_KEY, { ...readJson(TAGS_KEY, {}), [profileId]: tags });
   return tags;
 }
 
@@ -541,7 +441,7 @@ async function editCheckIn(ctx) {
   let custom = keptTags();
   // Each scale as the server bounds it (1–5).
   const [low, high] = meta.limits.check_in_scale;
-  const scales = METRICS.map(([key, label]) => {
+  const scales = CHECK_IN_SCALES.map(([key, label]) => {
     const ends = `${label} · ${low} low, ${high} high`;
     const control = choice({
       name: key,
@@ -583,19 +483,13 @@ async function editCheckIn(ctx) {
     fill(
       chips,
       offered(meta.check_in_tags, own, custom).map((tag) =>
-        h(
-          "button",
-          {
-            type: "button",
-            class: "chip",
-            "aria-pressed": String(picked.has(tag)),
-            disabled: full && !picked.has(tag),
-            onclick: () => {
-              if (!picked.delete(tag)) picked.add(tag);
-              paint();
-            },
-          },
+        chip(
           tag,
+          () => {
+            if (!picked.delete(tag)) picked.add(tag);
+            paint();
+          },
+          { pressed: picked.has(tag), disabled: full && !picked.has(tag) },
         ),
       ),
     );
@@ -608,7 +502,7 @@ async function editCheckIn(ctx) {
       paint();
     })
     .catch(() => {});
-  let empty = false;
+  let cleared = false;
   const done = await formDialog(`Check-in on ${pretty(day)}`, {
     body: [
       scales.map(([, , node]) => node),
@@ -625,11 +519,11 @@ async function editCheckIn(ctx) {
       const body = { tags: tagsOf([...picked, added.value], max) };
       for (const [key, control] of scales)
         if (control.value !== "") body[key] = Number(control.value);
-      empty = Object.keys(body).length === 1 && !body.tags.length;
+      cleared = Object.keys(body).length === 1 && body.tags.length === 0;
       // Nothing to save and nothing to remove: no request.
-      if (empty && !current) return null;
+      if (cleared && !current) return null;
       return writeAll([
-        empty
+        cleared
           ? {
               method: "DELETE",
               path: CHECK_IN.path(day),
@@ -639,14 +533,15 @@ async function editCheckIn(ctx) {
       ]);
     },
   });
-  if (done && empty) await removed(day, CHECK_IN, null, current, done);
-  else await saveDayRecord(day, CHECK_IN, null, done, "Saved check-in");
+  if (done && cleared) await removed(day, CHECK_IN, null, current, done);
+  else await saveDayLog(day, CHECK_IN, null, done, "Saved check-in");
 }
 
 // The check-in reads as itself; today without one asks for it, other days
 // show nothing.
 const CHECK_IN = {
   kind: "check-in",
+  section: "Day",
   label: "Check-in",
   name: () => "Check-in",
   keys: one,
@@ -659,8 +554,8 @@ const CHECK_IN = {
   undoBody: (v) => v,
   row: (ctx, v) => {
     if (v) {
-      const text = checkInLine(v);
-      return recordRow(
+      const text = checkInLine(v, meta.limits.check_in_scale[1]);
+      return dayLogRow(
         CHECK_IN,
         ctx,
         null,
@@ -686,13 +581,14 @@ const CHECK_IN = {
 // The note is the row's button and reads as itself; emptied, it goes.
 const NOTE = {
   kind: "note",
+  section: "Day",
   label: "Note",
   name: () => "Note",
   keys: one,
   path: (day) => scoped(`/notes/${day}`),
   fromDay: (data) => (data.note ? { text: data.note } : null),
   undoBody: (v) => v,
-  row: (ctx, v) => (v ? recordRow(NOTE, ctx, null, v, v.text, null) : null),
+  row: (ctx, v) => (v ? dayLogRow(NOTE, ctx, null, v, v.text, null) : null),
   edit: async (ctx) => {
     const { day } = ctx;
     const current = valueOf(NOTE, ctx, null);
@@ -704,33 +600,36 @@ const NOTE = {
       value: current?.text ?? "",
       "aria-labelledby": "form-dialog-title",
     });
-    let empty = false;
+    let cleared = false;
     const done = await formDialog(`Note on ${pretty(day)}`, {
       body: text,
       submit: "Save",
       run: () => {
-        empty = !text.value.trim();
-        if (empty && !current) return null;
+        cleared = !text.value.trim();
+        if (cleared && !current) return null;
         return writeAll([
-          empty
+          cleared
             ? { method: "DELETE", path: NOTE.path(day), label: "Remove note" }
             : putOf(NOTE, day, null, { text: text.value }),
         ]);
       },
     });
-    if (done && empty) await removed(day, NOTE, null, current, done);
-    else await saveDayRecord(day, NOTE, null, done, "Saved note");
+    if (done && cleared) await removed(day, NOTE, null, current, done);
+    else await saveDayLog(day, NOTE, null, done, "Saved note");
   },
 };
 
-// Logged once a day, the same way: a row each, a button in + Log (not
-// ahead of today), edit, ✕ with Undo, all through the outbox; a new one is
-// one more entry here (its server triple and the export).
-const DAY_RECORDS = [WEIGHT, MEASUREMENT, CHECK_IN, NOTE];
+// Logged once a day, the same way: a row each in its card `section`, a button
+// in the Log sheet (not ahead of today), edit, ✕ with Undo, all through the
+// outbox. A new one is one more entry here (its server triple and the export):
+// its rows and its button follow.
+const DAY_LOGS = [WEIGHT, MEASUREMENT, CHECK_IN, NOTE];
 
-// A record's rows on the day, one per key.
-const recordRows = (rec) => (ctx) =>
-  rec.keys().map((key) => rec.row(ctx, valueOf(rec, ctx, key), key));
+// A record's rows on the day, one per key, then what goes with them.
+const dayLogRows = (rec) => (ctx) => [
+  ...rec.keys().map((key) => rec.row(ctx, valueOf(rec, ctx, key), key)),
+  rec.after?.(ctx),
+];
 
 // -------------------------------------------------------------- habits
 
@@ -750,40 +649,36 @@ function trackerRows({ day, habits, counts }) {
     );
 }
 
-// What the day's food held of the built-in habits (water, alcohol, fruit
-// and vegetables…), one row.
-function fromFoodRow({ data }) {
-  const text = builtinText(data.builtins ?? []);
-  return text
-    ? logRow(
-        "From food",
-        h(
-          "span",
-          { class: "result habit-builtins" },
-          h("span", { class: "name" }, text),
-        ),
-      )
-    : null;
-}
-
 // ---------------------------------------------------------------- card
 
-// The card's rows in order, each `(ctx) => row(s) | null`: the per-day
-// records (DAY_RECORDS) among what else the day holds. A new kind of log is
-// one more entry here.
-const ROWS = [
-  ({ day, data }) => (data.plans ?? []).map((p) => plannedRow(day, p)),
-  ({ data }) => (data.sessions ?? []).map(sessionRow),
-  ({ day, data }) =>
-    activityRows(day, data.activity, data.pending_sessions ?? []),
-  recordRows(WEIGHT),
-  ({ data }) => compositionRow(data.composition ?? null),
-  recordRows(MEASUREMENT),
-  trackerRows,
-  fromFoodRow,
-  recordRows(CHECK_IN),
-  recordRows(NOTE),
+// The card's sections (Body · Habits · Day; activity is the Activity
+// card's, web/screens/day-activity.mjs), each its rows in order,
+// `(ctx) => row(s) | null`: what else the day holds, then the per-day logs
+// of that section, in their order.
+const HEADS = [
+  ["Body", []],
+  ["Habits", [trackerRows]],
+  ["Day", []],
 ];
+
+export function cardSections(logs) {
+  const unknown = logs.find((r) => !HEADS.some(([head]) => head === r.section));
+  if (unknown)
+    throw new Error(`${unknown.kind}: no section ${unknown.section}`);
+  return HEADS.map(([head, rows]) => [
+    head,
+    [
+      ...rows,
+      ...logs.filter((r) => r.section === head).map((x) => dayLogRows(x)),
+    ],
+  ]);
+}
+
+const SECTIONS = cardSections(DAY_LOGS);
+
+// The card's rows, section by section.
+const cardRows = (ctx) =>
+  SECTIONS.flatMap(([, rows]) => rows.flatMap((row) => row(ctx)));
 
 // `habits`: the profile's trackers, or the Error loading them.
 export function logCard(day, data, habits) {
@@ -794,12 +689,12 @@ export function logCard(day, data, habits) {
   const ctx = { day, data, habits, counts };
   const rows = h("div");
   const paint = () => {
-    const list = ROWS.flatMap((row) => row(ctx)).filter(Boolean);
+    const list = cardRows(ctx).filter(Boolean);
     fill(
       rows,
-      list.length
+      list.length > 0
         ? h("ul", { class: "log-rows" }, list)
-        : h("p", { class: "muted" }, "Nothing logged yet. Use + Log."),
+        : empty("Nothing logged."),
     );
   };
   const node = h(
@@ -813,8 +708,10 @@ export function logCard(day, data, habits) {
         "button",
         {
           type: "button",
+          class: "icon",
           "data-add": true,
           "aria-haspopup": "dialog",
+          "aria-label": `Log on ${pretty(day)}`,
           onclick: () =>
             logSheet({
               ...ctx,
@@ -826,7 +723,7 @@ export function logCard(day, data, habits) {
               },
             }),
         },
-        "+ Log",
+        icon(PLUS),
       ),
     ),
     rows,
@@ -835,46 +732,24 @@ export function logCard(day, data, habits) {
   return node;
 }
 
-// ---------------------------------------------------------------- sheet
+// --------------------------------------------------------------- sheet
 
-const linkRow = (label, to) =>
-  h(
-    "li",
-    {},
-    h(
-      "a",
-      { class: "menu-row", href: to },
-      h("span", { class: "name" }, label),
-    ),
-  );
+const linkRow = (name, to) => menuRow({ href: to, name });
+const buttonRow = (name, onclick) => menuRow({ onclick, name });
 
-const buttonRow = (label, onclick) =>
-  h(
-    "li",
-    {},
-    h(
-      "button",
-      { type: "button", class: "menu-row", onclick },
-      h("span", { class: "name" }, label),
-    ),
-  );
-
-// "+ Log": what can be logged on the day. A modal on the page's body, so a
-// re-render of the day behind (a count kept offline) leaves it open; it
-// closes when the address leaves this day's diary. `onClose(changed)` runs
-// when it closes on the day: whether a count changed. Water, a habit read
-// from food, logs to Eaten as "+ Water" does.
+// The Log sheet: what can be logged on the day. A modal on the page's
+// body, so a re-render of the day behind (a count kept offline) leaves it
+// open; it closes when the address leaves this day's diary.
+// `onClose(changed)` runs when it closes on the day: whether a count
+// changed. Hydration, a habit read from food, logs water to Eaten as the
+// Add screen's Water does.
 function logSheet({ day, data, habits, counts, onClose }) {
   const stop = new AbortController();
   // Known before it's needed: a tap made offline still finds the food.
   const water = get(scoped("/water-food")).catch(() => null);
   let changed = false;
-  const close = (onDay = true) => {
-    stop.abort();
-    dialog.close();
-    dialog.remove();
-    if (onDay) onClose(changed);
-  };
+  // Left for another address: closed without telling the day.
+  let onDay = true;
   // Another dialog opens instead: never one modal over the other.
   const instead = (open) => () => {
     close();
@@ -894,66 +769,69 @@ function logSheet({ day, data, habits, counts, onClose }) {
               waitNote: true,
             }),
           );
-  const dialog = h(
-    "dialog",
-    {
-      class: "confirm sheet",
-      "aria-labelledby": "log-sheet-title",
-      oncancel: (e) => {
-        e.preventDefault();
-        close();
-      },
-    },
-    h("h2", { id: "log-sheet-title" }, "Log"),
-    h("p", { class: "muted" }, pretty(day)),
-    h(
-      "ul",
-      { class: "menu" },
-      linkRow("Log a workout done", href.session("new", { day })),
-      linkRow("Plan a workout", href.plan(day)),
-      linkRow("Start a saved workout", href.plan(day, { start: 1 })),
-      // Per-day records, not written ahead of today.
-      day <= today()
-        ? DAY_RECORDS.map((rec) =>
-            buttonRow(
-              rec.label,
-              instead(() => rec.edit({ day, data }, null)),
-            ),
-          )
-        : null,
-    ),
-    h("h3", { class: "category" }, "Habits"),
-    h(
-      "ul",
-      { class: "menu" },
-      buttonRow(
-        "Water",
-        instead(() => addWater(day, CONSUMED, water)),
+  const { dialog, close } = modal(
+    { class: "confirm sheet", "aria-labelledby": "log-sheet-title" },
+    [
+      h("h2", { id: "log-sheet-title" }, "Log"),
+      h("p", { class: "muted" }, pretty(day)),
+      h(
+        "ul",
+        { class: "menu" },
+        // Per-day records and naps, not written ahead of today.
+        day <= today()
+          ? [
+              ...DAY_LOGS.map((rec) =>
+                buttonRow(
+                  rec.label,
+                  instead(() => rec.edit({ day, data }, null)),
+                ),
+              ),
+              buttonRow(
+                "Nap",
+                instead(() => logNap(day)),
+              ),
+            ]
+          : null,
       ),
-    ),
-    Array.isArray(trackers)
-      ? trackers.length
-        ? h("ul", { class: "habit-rows" }, trackers)
-        : null
-      : trackers,
-    h("ul", { class: "menu" }, linkRow("Manage habits…", href.habits())),
-    h(
-      "div",
-      { class: "actions" },
-      h("button", { type: "button", onclick: () => close() }, "Done"),
-    ),
+      h("h3", { class: "category" }, "Habits"),
+      h(
+        "ul",
+        { class: "menu" },
+        buttonRow(
+          "Hydration",
+          instead(() => addWater(day, EATEN, water)),
+        ),
+      ),
+      Array.isArray(trackers)
+        ? trackers.length > 0
+          ? h("ul", { class: "habit-rows" }, trackers)
+          : null
+        : trackers,
+      h("ul", { class: "menu" }, linkRow("Manage habits…", href.habits())),
+      h(
+        "div",
+        { class: "actions" },
+        h("button", { type: "button", onclick: () => close() }, "Done"),
+      ),
+    ],
+    {
+      onClose: () => {
+        stop.abort();
+        if (onDay) onClose(changed);
+      },
+      focus: "a, button",
+    },
   );
   addEventListener(
     "hashchange",
     () => {
-      if (!showsDay(day)) close(false);
+      if (showsDay(day)) return;
+      onDay = false;
+      close();
     },
     { signal: stop.signal },
   );
   addEventListener("outbox", () => dropSentNotes(dialog, day), {
     signal: stop.signal,
   });
-  document.body.append(dialog);
-  dialog.showModal();
-  dialog.querySelector("a, button").focus();
 }

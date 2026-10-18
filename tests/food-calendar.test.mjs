@@ -4,7 +4,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { judge, shade, tally } from "../web/food-calendar.mjs";
+import { shade, standing, tally, verdictWords } from "../web/food-calendar.mjs";
+import { judge } from "../web/nutrients.mjs";
 
 // As /targets serves them: "about" 2000 kcal (max +10 %), "at least" 100 g,
 // "at most" 50 g.
@@ -28,7 +29,7 @@ test("judge: at least is never over, at most never under", () => {
 });
 
 test("judge: no target, no verdict", () => {
-  assert.equal(judge(100, undefined), null);
+  assert.equal(judge(100), null);
   assert.equal(judge(100, { value: null, min: null, max: null }), null);
 });
 
@@ -59,6 +60,7 @@ test("tally: on, over and under of the logged days, total and mean", () => {
     under: 1,
     total: 7900,
     mean: 1975,
+    partly: false,
   });
   assert.deepEqual(tally([], about), {
     days: 0,
@@ -67,5 +69,53 @@ test("tally: on, over and under of the logged days, total and mean", () => {
     under: 0,
     total: 0,
     mean: 0,
+    partly: false,
   });
+});
+
+// A partly known day's amount is a floor. Over a max it is
+// surely over; at an "at least" minimum surely on; under, or a range's
+// minimum met, nothing is proven: unshaded, and not tallied under.
+test("standing: a floor proves only an excess or an at-least minimum", () => {
+  assert.equal(standing(1848, about, true), null);
+  assert.equal(standing(2100, about, true), null);
+  assert.equal(standing(2300, about, true), "over");
+  assert.equal(standing(120, atLeast, true), "on");
+  assert.equal(standing(40, atMost, true), null);
+  assert.equal(standing(1848, about, false), "under");
+});
+
+test("shade: a floor under its target stays unshaded", () => {
+  assert.equal(shade(1848, about, null, true), 0);
+  assert.equal(shade(2300, about, null, true), 0);
+  assert.equal(shade(120, atLeast, null, true), 4);
+});
+
+test("tally: a floor day is never counted under; any floor marks the mean", () => {
+  const t = tally([1848, 2300, 2100], about, [true, true, false]);
+  assert.equal(t.under, 0);
+  assert.equal(t.over, 1);
+  assert.equal(t.on, 1);
+  assert.equal(t.partly, true);
+  assert.equal(tally([2100], about).partly, false);
+});
+
+const say = (v) => `${v} kcal`;
+
+test("verdictWords: a floor says at most under, never plain under", () => {
+  assert.equal(verdictWords(1848, about, { say }), ", 152 kcal under");
+  assert.equal(
+    verdictWords(1848, about, { floor: true, say }),
+    ", at most 152 kcal under",
+  );
+  assert.equal(
+    verdictWords(1848, about, { floor: true, known: false, say }),
+    "",
+  );
+  assert.equal(
+    verdictWords(2100, about, { floor: true, say }),
+    ", minimum met",
+  );
+  assert.equal(verdictWords(2300, about, { floor: true, say }), ", over");
+  assert.equal(verdictWords(40, atMost, { floor: true, say }), "");
 });

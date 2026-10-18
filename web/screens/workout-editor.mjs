@@ -1,64 +1,61 @@
 // Building a workout: steps one line each (opened to edit), repeats, drag by
 // pointer or keyboard, select and wrap, Undo; time and energy estimated.
 
-import { api, get, meta, profileId, weightKg } from "../api.mjs";
-import { href } from "../nav.mjs";
-import { plural } from "../nutrients.mjs";
+import { copyForm } from "../actions.mjs";
+import { kcalFor, metOf } from "../activities.mjs";
+import { api, createId, get, meta, profileId, uid, weightKg } from "../api.mjs";
+import { stepDrag } from "../drag.mjs";
+import { activeEnergyText } from "../energy-text.mjs";
+import { activeEnergy } from "../expenditure.mjs";
+import { plural } from "../format.mjs";
+import { go, href, safeBack } from "../nav.mjs";
+import { shownEnergy } from "../nutrients.mjs";
+import { exerciseRow, loadResting, workoutEnergy } from "../rows.mjs";
 import {
   busy,
+  chip,
   choice,
   editor,
+  energyLabel,
+  energyNum,
+  energyOf,
   field,
   fill,
+  GRIP,
   h,
+  icon,
+  nameInput,
   notify,
   num,
   numberOrNull,
   picker,
   POSITIVE,
+  undoable,
+  unitNum,
+  unitValue,
 } from "../ui.mjs";
+import { unitOf } from "../units.mjs";
 import {
-  amount,
   at,
-  clock,
-  details,
   effort,
   exerciseIds,
   fit,
   fitsAt,
   insert,
-  kcalFor,
+  library,
   listAt,
-  move,
+  pathKey,
+  pathLabel,
+  pathOf,
   remove,
-  repeatText,
-  stepError,
+  replaceAt,
+  STEP_KINDS,
   unwrap,
   update,
-  wrap,
-} from "../workouts.mjs";
-import {
-  exerciseRow,
-  library,
   variantLabel,
   workoutLine,
-} from "./workouts.mjs";
-
-// A step's path as text ("1.0"), back, and as people count it ("2.1").
-const key = (path) => path.join(".");
-const unkey = (k) => (k === "" ? [] : k.split(".").map(Number));
-const label = (path) => path.map((i) => i + 1).join(".");
-
-// Every place a step could go in `list`, in reading order.
-function slots(list, listPath = []) {
-  return [
-    ...list.flatMap((s, i) => [
-      { list: listPath, index: i },
-      ...(s.kind === "repeat" ? slots(s.steps, [...listPath, i]) : []),
-    ]),
-    { list: listPath, index: list.length },
-  ];
-}
+  wrap,
+} from "../workouts.mjs";
 
 // A number typed into a panel changes the step in place; its line follows.
 function fieldInput(step, prop, labelText, attrs, refresh) {
@@ -76,36 +73,414 @@ function fieldInput(step, prop, labelText, attrs, refresh) {
   });
 }
 
+// A step's weight in this device's units (kg, or lb in US units); left as
+// shown, its kg stay as they were.
+function weightInput(step, labelText, required, refresh) {
+  const input = unitNum({
+    value: step.kg,
+    unit: "kg",
+    min: Number(POSITIVE),
+    max: meta.limits.kg,
+    required,
+    "aria-label": labelText,
+    oninput: () => {
+      const kg = unitValue(input);
+      if (kg === null) delete step.kg;
+      else step.kg = kg;
+      refresh();
+    },
+  });
+  return input;
+}
+
+// The panels and the selection bar below draw from the editor's `ed`:
+// {lib, depth, steps() (now), change(result, opts) (an edit, with Undo),
+// paint(focus, target), open(path) (its panel open), replaceExercise(path)
+// (the picker opens to replace its exercise), selection() and select(s)}.
+
+const removeButton = (ed, path, text) =>
+  h(
+    "button",
+    {
+      type: "button",
+      class: "danger",
+      "aria-label": `Remove ${text} (step ${pathLabel(path)})`,
+      onclick: () => {
+        const parent = path.slice(0, -1);
+        const next = remove(ed.steps(), path);
+        const left = listAt(next, parent).length;
+        ed.change(
+          {
+            steps: next,
+            path: left ? [...parent, Math.min(path.at(-1), left - 1)] : null,
+          },
+          { message: `Removed ${text}` },
+        );
+      },
+    },
+    "Remove",
+  );
+
+function exercisePanel(ed, path, step, e, refresh) {
+  const stepNo = pathLabel(path);
+  const root = e ? ed.lib.rootOf(e) : null;
+  const family = root ? [root, ...(ed.lib.variants.get(root.id) ?? [])] : [];
+  const switchTo = (v) => {
+    const { step: next, dropped } = fit(v, step);
+    ed.open(path);
+    // Focus stays on the variant: the select, or the chosen radio.
+    const variant = `[aria-label="Step ${stepNo} variant"]`;
+    ed.change(
+      { steps: replaceAt(ed.steps(), path, next), path },
+      { target: `:is(select${variant}, ${variant} [aria-checked="true"])` },
+    );
+    if (dropped.length > 0)
+      notify(`${v.name} takes no ${dropped.join(" or ")}: removed`);
+  };
+  const timed = e?.measure === "time";
+  const load = e?.load ?? "optional";
+  return [
+    h(
+      "div",
+      { class: "row" },
+      h(
+        "button",
+        {
+          type: "button",
+          onclick: () => ed.replaceExercise(path),
+        },
+        "Change exercise…",
+      ),
+    ),
+    family.length > 1
+      ? choice({
+          label: `Step ${stepNo} variant`,
+          options: family.map((v) => [
+            v.id,
+            v === root ? "Standard" : variantLabel(v, root),
+          ]),
+          value: e.id,
+          onChange: (vid) => switchTo(ed.lib.byId.get(Number(vid))),
+        })
+      : null,
+    h(
+      "div",
+      { class: "row step-fields" },
+      timed
+        ? field(
+            "Time (s)",
+            fieldInput(
+              step,
+              "seconds",
+              `Step ${stepNo} seconds`,
+              { max: meta.limits.step_seconds },
+              refresh,
+            ),
+            { inline: true },
+          )
+        : field(
+            "Reps",
+            fieldInput(
+              step,
+              "reps",
+              `Step ${stepNo} reps`,
+              { max: meta.limits.reps },
+              refresh,
+            ),
+            { inline: true },
+          ),
+      load === "none"
+        ? null
+        : field(
+            `Weight (${unitOf("kg")})`,
+            weightInput(
+              step,
+              `Step ${stepNo} weight`,
+              load === "required",
+              refresh,
+            ),
+            { inline: true },
+          ),
+    ),
+    e?.laterality === "unilateral"
+      ? choice({
+          label: `Step ${stepNo} side`,
+          options: [
+            ["", "Each side"],
+            ["left", "Left"],
+            ["right", "Right"],
+          ],
+          value: step.side ?? "",
+          onChange: (side) => {
+            ed.open(path);
+            ed.change(
+              {
+                steps: update(ed.steps(), path, (s) => {
+                  if (side) s.side = side;
+                  else delete s.side;
+                }),
+                path,
+              },
+              {
+                target: `[aria-label="Step ${stepNo} side"] [aria-checked="true"]`,
+              },
+            );
+          },
+        })
+      : null,
+    h(
+      "div",
+      { class: "actions" },
+      h(
+        "button",
+        {
+          type: "button",
+          onclick: () => {
+            const result = wrap(
+              ed.steps(),
+              path.slice(0, -1),
+              path.at(-1),
+              path.at(-1),
+              ed.depth,
+            );
+            if (result) ed.open(result.path);
+            ed.change(result, {
+              message: "Wrapped in a repeat",
+              target: ".step-panel input",
+            });
+          },
+        },
+        "Wrap in repeat",
+      ),
+      removeButton(ed, path, e?.name ?? "step"),
+    ),
+  ];
+}
+
+// Each kind's panel, by STEP_KINDS' keys: (ed, path, step, its exercise,
+// refresh) → its nodes.
+const PANELS = {
+  exercise: exercisePanel,
+  rest: (ed, path, step, e, refresh) => [
+    field(
+      "Time (s)",
+      fieldInput(
+        step,
+        "seconds",
+        `Step ${pathLabel(path)} rest seconds`,
+        { max: meta.limits.step_seconds },
+        refresh,
+      ),
+      { inline: true },
+    ),
+    h("div", { class: "actions" }, removeButton(ed, path, "Rest")),
+  ],
+  note: (ed, path, step, e, refresh) => {
+    const text = h("textarea", {
+      maxLength: meta.limits.notes,
+      rows: 4,
+      "aria-label": `Step ${pathLabel(path)} note`,
+      oninput: () => {
+        step.text = text.value;
+        refresh();
+      },
+    });
+    text.value = step.text ?? "";
+    // Unlabelled, as wide as the text under it: the name is a note too.
+    return [
+      nameInput({
+        max: meta.limits.label,
+        name: null,
+        required: false,
+        value: step.name ?? "",
+        placeholder: "Name (shown when closed)",
+        "aria-label": `Step ${pathLabel(path)} note name`,
+        oninput: (ev) => {
+          const v = ev.target.value.trim();
+          if (v) step.name = v;
+          else delete step.name;
+          refresh();
+        },
+      }),
+      text,
+      h("div", { class: "actions" }, removeButton(ed, path, "Note")),
+    ];
+  },
+  repeat: (ed, path, step, e, refresh) => [
+    h(
+      "div",
+      { class: "row step-fields" },
+      field(
+        "Rounds",
+        fieldInput(
+          step,
+          "times",
+          `Step ${pathLabel(path)} rounds`,
+          { max: meta.limits.times },
+          refresh,
+        ),
+        { inline: true },
+      ),
+      field(
+        "Every (s)",
+        fieldInput(
+          step,
+          "every",
+          `Step ${pathLabel(path)} every (s)`,
+          { max: meta.limits.step_seconds, placeholder: "optional" },
+          refresh,
+        ),
+        { inline: true },
+      ),
+      field(
+        "Name",
+        h("input", {
+          value: step.name ?? "",
+          placeholder: "optional",
+          "aria-label": `Step ${pathLabel(path)} name`,
+          oninput: (ev) => {
+            const v = ev.target.value.trim();
+            if (v) step.name = v;
+            else delete step.name;
+            refresh();
+          },
+        }),
+        { inline: true },
+      ),
+    ),
+    h(
+      "div",
+      { class: "actions" },
+      h(
+        "button",
+        {
+          type: "button",
+          onclick: () =>
+            ed.change(
+              {
+                steps: unwrap(ed.steps(), path),
+                path: step.steps.length > 0 ? path : null,
+              },
+              { message: "Unwrapped the repeat" },
+            ),
+        },
+        "Unwrap",
+      ),
+      removeButton(
+        ed,
+        path,
+        `Repeat and its ${plural(step.steps.length, "step")}`,
+      ),
+    ),
+  ],
+};
+
+function selectionBar(ed) {
+  const selection = ed.selection();
+  if (!selection) return null;
+  const listPath = selection.list === null ? [] : pathOf(selection.list);
+  const chosen = [...selection.indices].toSorted((a, b) => a - b);
+  const first = chosen[0];
+  const last = chosen.at(-1);
+  const span =
+    first === last
+      ? `step ${pathLabel([...listPath, first])}`
+      : `steps ${pathLabel([...listPath, first])}–${pathLabel([...listPath, last])}`;
+  const wrapped =
+    chosen.length > 0
+      ? wrap(ed.steps(), listPath, first, last, ed.depth)
+      : null;
+  return h(
+    "div",
+    { class: "select-bar" },
+    h("span", { class: "muted" }, `${plural(chosen.length, "step")} selected`),
+    h(
+      "button",
+      {
+        type: "button",
+        onclick: () => {
+          ed.select(null);
+          ed.paint();
+        },
+      },
+      "Cancel",
+    ),
+    h(
+      "button",
+      {
+        type: "button",
+        class: "danger",
+        disabled: chosen.length === 0,
+        onclick: () => {
+          let next = ed.steps();
+          for (const i of chosen.toReversed())
+            next = remove(next, [...listPath, i]);
+          ed.select(null);
+          ed.change(
+            { steps: next },
+            { message: `Removed ${plural(chosen.length, "step")}` },
+          );
+        },
+      },
+      "Remove",
+    ),
+    h(
+      "button",
+      {
+        type: "button",
+        disabled: !wrapped,
+        onclick: () => {
+          ed.select(null);
+          ed.open(wrapped.path);
+          ed.change(wrapped, {
+            message: "Wrapped in a repeat",
+            target: ".step-panel input",
+          });
+        },
+      },
+      chosen.length > 0 ? `Wrap ${span} in repeat` : "Wrap in repeat",
+    ),
+    // Why Wrap can't, said: a disabled button's title never shows on a
+    // phone.
+    chosen.length > 0 && !wrapped
+      ? h("small", { class: "muted" }, `Repeats nest at most ${ed.depth} deep.`)
+      : null,
+  );
+}
+
 // A workout is a list of steps (exercises, rests, repeats holding more
 // steps), each one line until you open it. Steps move by dragging their
 // handle (or with the keyboard on it); several can be wrapped in a repeat
 // at once. Edits are made on a copy of the steps, saved with Save; every
 // structural change can be undone. Panels are built when opened, so a long
-// workout stays quick to edit.
-export async function workoutEditor(id) {
-  const [workout, exercises] = await Promise.all([
+// workout stays quick to edit. `back` is where Back and Save lead (the
+// workout's view, from its pencil); without one, Save stays here.
+export async function workoutEditor(id, params = new URLSearchParams()) {
+  const back = safeBack(params.get("back"));
+  const [workout, exercises, usage] = await Promise.all([
     id === "new"
-      ? { name: "", steps: [], minutes: null }
+      ? { name: "", steps: [], minutes: null, notes: null, archived: false }
       : get(`/workouts/${id}`),
     get("/exercises"),
+    id === "new" ? null : get(`/workouts/${id}/usage`),
+    loadResting(),
   ]);
+  // Used by an activity or plan in any profile: archived, never deleted.
+  const used = usage ? usage.activities + usage.plans : 0;
   // Repeats nest at most this deep: the server's rule, read where it's served.
   const { depth } = meta.limits;
   const lib = library(exercises);
   const isNew = id === "new";
   let steps = structuredClone(workout.steps);
-  let open = null; // the step whose panel is open ("2.1" by index)
-  let adding = null; // the list the picker adds to ("" for the workout)
-  let replacing = null; // the step whose exercise the picker replaces
-  let selection = null; // {list, indices} while selecting
-  let held = null; // keyboard drag: {path, before, origin}
+  // The step whose panel is open ("2.1" by index); the list the picker
+  // adds to ("" for the workout); the step whose exercise the picker
+  // replaces; {list, indices} while selecting.
+  let open = null;
+  let adding = null;
+  let replacing = null;
+  let selection = null;
 
-  const name = h("input", {
-    name: "name",
-    value: workout.name,
-    required: true,
-    maxLength: meta.limits.name,
-  });
+  const name = nameInput({ max: meta.limits.name, value: workout.name });
   const minutes = num({
     name: "minutes",
     value: workout.minutes ?? "",
@@ -114,16 +489,25 @@ export async function workoutEditor(id) {
     max: meta.limits.minutes,
     oninput: () => recount(),
   });
-  const kcal = num({
+  const kcal = energyNum({
     name: "kcal",
-    value: workout.kcal ?? "",
-    step: 1,
+    value: workout.kcal,
     min: 1,
     max: meta.limits.kcal,
     oninput: () => recount(),
   });
+  const notes = h("textarea", {
+    name: "notes",
+    maxLength: meta.limits.notes,
+    rows: 4,
+    placeholder: "Optional: how it's done, or anything",
+  });
+  notes.value = workout.notes ?? "";
   const blocks = h("div", { class: "steps-editor" });
   const line = h("p", { class: "muted" });
+  // Under the energy, its active part as the workout's line reads it: a
+  // total typed less resting, or, empty, the estimate.
+  const active = h("span", { class: "energy-active", "aria-live": "polite" });
   const announcer = h("p", { class: "sr-only", "aria-live": "polite" });
   const announce = (text) => {
     announcer.textContent = text;
@@ -131,29 +515,47 @@ export async function workoutEditor(id) {
 
   function recount() {
     const e = effort({ steps }, lib.byId, weightKg());
-    const est = kcalFor(numberOrNull(minutes) ?? e.minutes, weightKg());
+    const est = kcalFor(
+      numberOrNull(minutes) ?? e.minutes,
+      weightKg(),
+      metOf("workout"),
+    );
     minutes.placeholder = `≈ ${e.minutes}`;
-    kcal.placeholder = est === null ? "" : `≈ ${est}`;
+    kcal.placeholder = est === null ? "" : `≈ ${shownEnergy(est)}`;
+    const time = numberOrNull(minutes) ?? e.minutes;
+    const energy =
+      time &&
+      activeEnergy(
+        {
+          kcal: energyOf(kcal),
+          minutes: time,
+          type: "workout",
+          weight_kg: weightKg(),
+        },
+        workoutEnergy().bmr,
+      );
+    active.textContent = (energy && activeEnergyText(energy)) ?? "";
     fill(
       line,
       ...[
-        steps.length
+        steps.length > 0
           ? workoutLine(
               {
                 steps,
                 minutes: numberOrNull(minutes),
-                kcal: numberOrNull(kcal),
+                kcal: energyOf(kcal),
               },
               lib,
+              workoutEnergy(),
             )
           : "",
-        steps.length && weightKg() === null && kcal.value === ""
+        steps.length > 0 && weightKg() === null && kcal.value === ""
           ? [
               " · ",
               h(
                 "a",
                 { href: href.profileEdit(profileId) },
-                "set your weight for kcal",
+                "set your weight to estimate energy",
               ),
             ]
           : "",
@@ -163,12 +565,14 @@ export async function workoutEditor(id) {
 
   // Draw the steps again, then put focus back where the edit happened.
   function paint(focus = null, target = ".drag") {
-    fill(blocks, stepList([], steps), selectionBar());
+    fill(blocks, stepList([], steps), selectionBar(ed));
     recount();
     // Nothing to run until it's saved with steps.
-    start.hidden = isNew || !steps.length;
+    start.hidden = isNew || steps.length === 0;
     if (focus)
-      blocks.querySelector(`[data-path="${key(focus)}"] ${target}`)?.focus();
+      blocks
+        .querySelector(`[data-path="${pathKey(focus)}"] ${target}`)
+        ?.focus();
   }
 
   // A structural edit: new steps, focus at its result, and Undo.
@@ -181,37 +585,59 @@ export async function workoutEditor(id) {
     steps = result.steps ?? result;
     paint(result.path ?? null, target);
     if (message)
-      notify(message, {
-        travels: false,
-        action: {
-          label: "Undo",
-          run: () => {
-            steps = before;
-            paint();
-          },
+      undoable(
+        message,
+        () => {
+          steps = before;
+          paint();
         },
-      });
+        { travels: false },
+      );
   }
 
-  // Replace a step's fields in place (variant or exercise switch).
-  const replaceAt = (path, step) =>
-    update(steps, path, (s) => {
-      for (const k of Object.keys(s)) delete s[k];
-      Object.assign(s, step);
-    });
+  const ed = {
+    lib,
+    depth,
+    blocks,
+    announce,
+    steps: () => steps,
+    change,
+    paint,
+    restore: (next, focus = null) => {
+      steps = next;
+      paint(focus);
+    },
+    open: (path) => {
+      open = pathKey(path);
+    },
+    replaceExercise: (path) => {
+      replacing = pathKey(path);
+      adding = pathKey(path.slice(0, -1));
+      paint();
+      blocks.querySelector(`[data-picker="${adding}"] input`)?.focus();
+    },
+    selection: () => selection,
+    select: (s) => {
+      selection = s;
+    },
+  };
+  const drag = stepDrag(ed);
 
   function exercisePicker(listPath) {
     const usedIds = exerciseIds(steps);
     const onPick = ({ root, hit }) => {
       const e = hit ?? root;
       if (replacing !== null) {
-        const path = unkey(replacing);
+        const path = pathOf(replacing);
         const { step, dropped } = fit(e, at(steps, path));
         replacing = null;
         adding = null;
-        open = key(path);
-        change({ steps: replaceAt(path, step), path }, { target: "input" });
-        if (dropped.length)
+        open = pathKey(path);
+        change(
+          { steps: replaceAt(steps, path, step), path },
+          { target: "input" },
+        );
+        if (dropped.length > 0)
           notify(`${e.name} takes no ${dropped.join(" or ")}: removed`);
         return;
       }
@@ -223,12 +649,12 @@ export async function workoutEditor(id) {
         depth,
       );
       adding = null;
-      open = key(result.path);
+      open = pathKey(result.path);
       change(result, { target: ".step-panel input" });
     };
     return h(
       "div",
-      { class: "step-picker", "data-picker": key(listPath) },
+      { class: "step-picker", "data-picker": pathKey(listPath) },
       picker({
         placeholder: "Search exercises",
         search: (q) => lib.search(q),
@@ -236,7 +662,7 @@ export async function workoutEditor(id) {
         onPick,
         // Until you type: what this workout already uses.
         empty: (pick) =>
-          usedIds.size
+          usedIds.size > 0
             ? [
                 h(
                   "li",
@@ -246,15 +672,7 @@ export async function workoutEditor(id) {
                     .map((i) => lib.byId.get(i))
                     .filter(Boolean)
                     .map((e) =>
-                      h(
-                        "button",
-                        {
-                          type: "button",
-                          class: "chip",
-                          onclick: () => pick({ root: lib.rootOf(e), hit: e }),
-                        },
-                        e.name,
-                      ),
+                      chip(e.name, () => pick({ root: lib.rootOf(e), hit: e })),
                     ),
                 ),
               ]
@@ -266,12 +684,13 @@ export async function workoutEditor(id) {
   function addBar(listPath) {
     // Selecting: the selection bar is the only way on.
     if (selection) return null;
-    const k = key(listPath);
-    const where = listPath.length ? `repeat ${label(listPath)}` : "the workout";
+    const k = pathKey(listPath);
+    const where =
+      listPath.length > 0 ? `repeat ${pathLabel(listPath)}` : "the workout";
     const end = () => listAt(steps, listPath).length;
     const add = (step, target) => {
       const result = insert(steps, listPath, end(), step, depth);
-      open = key(result.path);
+      open = pathKey(result.path);
       change(result, { target });
     };
     return h(
@@ -304,6 +723,16 @@ export async function workoutEditor(id) {
         },
         "+ Rest",
       ),
+      h(
+        "button",
+        {
+          type: "button",
+          "aria-label": `Add note to ${where}`,
+          onclick: () =>
+            add({ kind: "note", text: "" }, ".step-panel textarea"),
+        },
+        "+ Note",
+      ),
       fitsAt({ kind: "repeat", times: 2, steps: [] }, listPath, depth)
         ? h(
             "button",
@@ -319,7 +748,7 @@ export async function workoutEditor(id) {
             "+ Repeat",
           )
         : null,
-      listPath.length
+      listPath.length > 0
         ? null
         : h(
             "button",
@@ -338,11 +767,11 @@ export async function workoutEditor(id) {
   }
 
   function stepList(listPath, list) {
-    const k = key(listPath);
+    const k = pathKey(listPath);
     return h(
       "div",
       { class: "step-list" },
-      list.length
+      list.length > 0
         ? h(
             "ol",
             { class: "steps", "data-list": k },
@@ -351,7 +780,7 @@ export async function workoutEditor(id) {
         : h(
             "p",
             { class: "muted step-empty", "data-list": k },
-            listPath.length
+            listPath.length > 0
               ? "Empty repeat: add steps or drop them here."
               : "Add the first step.",
           ),
@@ -360,327 +789,12 @@ export async function workoutEditor(id) {
     );
   }
 
-  // Keyboard drag on the handle: Space picks up and drops, arrows move
-  // through every valid place (into and out of repeats), Escape cancels.
-  function keyboardDrag(ev, path, title) {
-    const isHeld = held && key(held.path) === key(path);
-    if (ev.key === " " || ev.key === "Enter") {
-      ev.preventDefault();
-      if (!isHeld) {
-        held = { path, before: steps, origin: path };
-        announce(
-          `Picked up ${title}, step ${label(path)}. Arrow keys move it, Space drops it, Escape cancels.`,
-        );
-      } else {
-        const before = held.before;
-        held = null;
-        announce(`Dropped ${title} at step ${label(path)}.`);
-        if (before !== steps)
-          notify(`Moved ${title}`, {
-            travels: false,
-            action: {
-              label: "Undo",
-              run: () => {
-                steps = before;
-                paint();
-              },
-            },
-          });
-      }
-      paint(path);
-    } else if (isHeld && (ev.key === "ArrowUp" || ev.key === "ArrowDown")) {
-      ev.preventDefault();
-      const dir = ev.key === "ArrowDown" ? 1 : -1;
-      const all = slots(steps);
-      const parent = key(path.slice(0, -1));
-      const i = path.at(-1);
-      const from = all.findIndex(
-        (s) => key(s.list) === parent && s.index === i + (dir > 0 ? 1 : 0),
-      );
-      for (let j = from + dir; j >= 0 && j < all.length; j += dir) {
-        const result = move(steps, path, all[j].list, all[j].index, depth);
-        if (result && key(result.path) !== key(path)) {
-          steps = result.steps;
-          held.path = result.path;
-          paint(result.path);
-          announce(
-            `Step ${label(result.path)}${result.path.length > 1 ? `, in repeat ${label(result.path.slice(0, -1))}` : ""}.`,
-          );
-          return;
-        }
-      }
-    } else if (isHeld && ev.key === "Escape") {
-      ev.preventDefault();
-      steps = held.before;
-      const { origin } = held;
-      held = null;
-      announce("Move cancelled.");
-      paint(origin);
-    }
-  }
-
-  // Where a pointer at (x, y) would drop the step from `from`: a list, an
-  // index in it, and where to draw the line. Null over nowhere valid.
-  function dropTarget(x, y, from) {
-    const el = document.elementFromPoint(x, y);
-    const empty = el?.closest(".step-empty");
-    const row = el?.closest("li.step");
-    let place = null;
-    if (empty && blocks.contains(empty)) {
-      const r = empty.getBoundingClientRect();
-      place = {
-        list: unkey(empty.dataset.list),
-        index: 0,
-        x: r.left,
-        y: r.top,
-      };
-    } else if (row && blocks.contains(row)) {
-      const path = unkey(row.dataset.path);
-      const head = row
-        .querySelector(":scope > .step-head")
-        .getBoundingClientRect();
-      const lower = y > head.top + head.height / 2;
-      if (at(steps, path).kind === "repeat" && lower)
-        place = { list: path, index: 0, x: head.left + 16, y: head.bottom };
-      else
-        place = {
-          list: path.slice(0, -1),
-          index: path.at(-1) + (lower ? 1 : 0),
-          x: head.left,
-          y: lower ? row.getBoundingClientRect().bottom : head.top,
-        };
-    }
-    return place && move(steps, from, place.list, place.index, depth)
-      ? place
-      : null;
-  }
-
-  // Pointer drag (mouse, touch, pen) from the handle only, so scrolling and
-  // typing elsewhere stay as they are.
-  function pointerDrag(ev, path, title) {
-    if (ev.pointerType === "mouse" && ev.button !== 0) return;
-    ev.preventDefault();
-    const handle = ev.currentTarget;
-    handle.setPointerCapture(ev.pointerId);
-    const row = handle.closest("li.step");
-    row.classList.add("dragging");
-    const marker = h("div", { class: "drop-line", hidden: true });
-    blocks.append(marker);
-    let target = null;
-    const onMove = (e) => {
-      target = dropTarget(e.clientX, e.clientY, path);
-      marker.hidden = !target;
-      if (target) {
-        const box = blocks.getBoundingClientRect();
-        marker.style.top = `${target.y - box.top}px`;
-        marker.style.left = `${target.x - box.left}px`;
-      }
-      if (e.clientY < 48) scrollBy(0, -12);
-      else if (e.clientY > innerHeight - 96) scrollBy(0, 12);
-    };
-    const onEnd = (e) => {
-      handle.removeEventListener("pointermove", onMove);
-      handle.removeEventListener("pointerup", onEnd);
-      handle.removeEventListener("pointercancel", onEnd);
-      marker.remove();
-      row.classList.remove("dragging");
-      if (e.type === "pointerup" && target)
-        change(move(steps, path, target.list, target.index, depth), {
-          message: `Moved ${title}`,
-        });
-    };
-    handle.addEventListener("pointermove", onMove);
-    handle.addEventListener("pointerup", onEnd);
-    handle.addEventListener("pointercancel", onEnd);
-  }
-
-  const removeButton = (path, text) =>
-    h(
-      "button",
-      {
-        type: "button",
-        class: "danger",
-        "aria-label": `Remove ${text} (step ${label(path)})`,
-        onclick: () => {
-          const parent = path.slice(0, -1);
-          const next = remove(steps, path);
-          const left = listAt(next, parent).length;
-          change(
-            {
-              steps: next,
-              path: left ? [...parent, Math.min(path.at(-1), left - 1)] : null,
-            },
-            { message: `Removed ${text}` },
-          );
-        },
-      },
-      "Remove",
-    );
-
-  function exercisePanel(path, step, e, refresh) {
-    const stepNo = label(path);
-    const root = e ? lib.rootOf(e) : null;
-    const family = root ? [root, ...(lib.variants.get(root.id) ?? [])] : [];
-    const switchTo = (v) => {
-      const { step: next, dropped } = fit(v, step);
-      open = key(path);
-      // Focus stays on the variant: the select, or the chosen radio.
-      const variant = `[aria-label="Step ${stepNo} variant"]`;
-      change(
-        { steps: replaceAt(path, next), path },
-        { target: `:is(select${variant}, ${variant} [aria-checked="true"])` },
-      );
-      if (dropped.length)
-        notify(`${v.name} takes no ${dropped.join(" or ")}: removed`);
-    };
-    const timed = e?.measure === "time";
-    const load = e?.load ?? "optional";
-    return [
-      h(
-        "div",
-        { class: "row" },
-        h(
-          "button",
-          {
-            type: "button",
-            onclick: () => {
-              replacing = key(path);
-              adding = key(path.slice(0, -1));
-              paint();
-              blocks.querySelector(`[data-picker="${adding}"] input`)?.focus();
-            },
-          },
-          "Change exercise…",
-        ),
-      ),
-      family.length > 1
-        ? choice({
-            label: `Step ${stepNo} variant`,
-            options: family.map((v) => [
-              v.id,
-              v === root ? "Standard" : variantLabel(v, root),
-            ]),
-            value: e.id,
-            onChange: (vid) => switchTo(lib.byId.get(Number(vid))),
-          })
-        : null,
-      h(
-        "div",
-        { class: "row step-fields" },
-        timed
-          ? field(
-              "Time (s)",
-              fieldInput(
-                step,
-                "seconds",
-                `Step ${stepNo} seconds`,
-                { max: meta.limits.step_seconds },
-                refresh,
-              ),
-              { inline: true },
-            )
-          : field(
-              "Reps",
-              fieldInput(
-                step,
-                "reps",
-                `Step ${stepNo} reps`,
-                { max: meta.limits.reps },
-                refresh,
-              ),
-              { inline: true },
-            ),
-        load === "none"
-          ? null
-          : field(
-              "Weight (kg)",
-              fieldInput(
-                step,
-                "kg",
-                `Step ${stepNo} weight`,
-                {
-                  step: "any",
-                  min: POSITIVE,
-                  max: meta.limits.kg,
-                  required: load === "required",
-                },
-                refresh,
-              ),
-              { inline: true },
-            ),
-      ),
-      e?.laterality === "unilateral"
-        ? choice({
-            label: `Step ${stepNo} side`,
-            options: [
-              ["", "Each side"],
-              ["left", "Left"],
-              ["right", "Right"],
-            ],
-            value: step.side ?? "",
-            onChange: (side) => {
-              open = key(path);
-              change(
-                {
-                  steps: update(steps, path, (s) => {
-                    if (side) s.side = side;
-                    else delete s.side;
-                  }),
-                  path,
-                },
-                {
-                  target: `[aria-label="Step ${stepNo} side"] [aria-checked="true"]`,
-                },
-              );
-            },
-          })
-        : null,
-      h(
-        "div",
-        { class: "actions" },
-        h(
-          "button",
-          {
-            type: "button",
-            onclick: () => {
-              const result = wrap(
-                steps,
-                path.slice(0, -1),
-                path.at(-1),
-                path.at(-1),
-                depth,
-              );
-              if (result) open = key(result.path);
-              change(result, {
-                message: "Wrapped in a repeat",
-                target: ".step-panel input",
-              });
-            },
-          },
-          "Wrap in repeat",
-        ),
-        removeButton(path, e?.name ?? "step"),
-      ),
-    ];
-  }
-
   function stepRow(path, step) {
-    const k = key(path);
-    const e = step.kind === "exercise" ? lib.byId.get(step.exercise_id) : null;
-    const title = () =>
-      step.kind === "rest"
-        ? "Rest"
-        : step.kind === "repeat"
-          ? (step.name ?? "Repeat")
-          : (e?.name ?? `Exercise ${step.exercise_id}`);
-    const sub = () =>
-      step.kind === "rest"
-        ? clock(step.seconds || 0)
-        : step.kind === "repeat"
-          ? repeatText(step)
-          : [step.reps || step.seconds ? amount(step) : "", details(step, e)]
-              .filter(Boolean)
-              .join(" · ");
+    const k = pathKey(path);
+    const e = lib.byId.get(step.exercise_id) ?? null;
+    const kind = STEP_KINDS[step.kind];
+    const title = () => kind.title(step, e);
+    const sub = () => kind.line(step, e);
     const nameEl = h("span", { class: "name" }, title());
     const subEl = h("span", { class: "muted" }, sub());
     const refresh = () => {
@@ -688,11 +802,11 @@ export async function workoutEditor(id) {
       subEl.textContent = sub();
       recount();
     };
-    const parentKey = key(path.slice(0, -1));
+    const parentKey = pathKey(path.slice(0, -1));
     const lead = selection
       ? h("input", {
           type: "checkbox",
-          "aria-label": `Select step ${label(path)}`,
+          "aria-label": `Select step ${pathLabel(path)}`,
           checked:
             selection.list === parentKey && selection.indices.has(path.at(-1)),
           onchange: (ev) => {
@@ -708,98 +822,14 @@ export async function workoutEditor(id) {
           {
             type: "button",
             class: "drag icon",
-            "aria-label": `Move ${title()} (step ${label(path)})`,
-            "aria-pressed": String(Boolean(held && key(held.path) === k)),
-            onpointerdown: (ev) => pointerDrag(ev, path, title()),
-            onkeydown: (ev) => keyboardDrag(ev, path, title()),
+            "aria-label": `Move ${title()} (step ${pathLabel(path)})`,
+            "aria-pressed": String(drag.holds(path)),
+            onpointerdown: (ev) => drag.pointer(ev, path, title()),
+            onkeydown: (ev) => drag.keyboard(ev, path, title()),
           },
-          "⠿",
+          icon(GRIP),
         );
-    const buildPanel = () => {
-      if (step.kind === "exercise")
-        return exercisePanel(path, step, e, refresh);
-      if (step.kind === "rest")
-        return [
-          field(
-            "Time (s)",
-            fieldInput(
-              step,
-              "seconds",
-              `Step ${label(path)} rest seconds`,
-              { max: meta.limits.step_seconds },
-              refresh,
-            ),
-            { inline: true },
-          ),
-          h("div", { class: "actions" }, removeButton(path, "Rest")),
-        ];
-      return [
-        h(
-          "div",
-          { class: "row step-fields" },
-          field(
-            "Rounds",
-            fieldInput(
-              step,
-              "times",
-              `Step ${label(path)} rounds`,
-              { max: meta.limits.times },
-              refresh,
-            ),
-            { inline: true },
-          ),
-          field(
-            "Every (s)",
-            fieldInput(
-              step,
-              "every",
-              `Step ${label(path)} every (s)`,
-              { max: meta.limits.step_seconds, placeholder: "optional" },
-              refresh,
-            ),
-            { inline: true },
-          ),
-          field(
-            "Name",
-            h("input", {
-              value: step.name ?? "",
-              placeholder: "optional",
-              "aria-label": `Step ${label(path)} name`,
-              oninput: (ev) => {
-                const v = ev.target.value.trim();
-                if (v) step.name = v;
-                else delete step.name;
-                refresh();
-              },
-            }),
-            { inline: true },
-          ),
-        ),
-        h(
-          "div",
-          { class: "actions" },
-          h(
-            "button",
-            {
-              type: "button",
-              onclick: () =>
-                change(
-                  {
-                    steps: unwrap(steps, path),
-                    path: step.steps.length ? path : null,
-                  },
-                  { message: "Unwrapped the repeat" },
-                ),
-            },
-            "Unwrap",
-          ),
-          removeButton(
-            path,
-            `Repeat and its ${plural(step.steps.length, "step")}`,
-          ),
-        ),
-      ];
-    };
+    const buildPanel = () => PANELS[step.kind](ed, path, step, e, refresh);
     const panel = h("div", { class: "step-panel" });
     // Built when first opened: a closed step costs one line.
     const build = () => {
@@ -834,121 +864,89 @@ export async function workoutEditor(id) {
     );
   }
 
-  function selectionBar() {
-    if (!selection) return null;
-    const listPath = selection.list === null ? [] : unkey(selection.list);
-    const chosen = [...selection.indices].toSorted((a, b) => a - b);
-    const first = chosen[0];
-    const last = chosen.at(-1);
-    const span =
-      first === last
-        ? `step ${label([...listPath, first])}`
-        : `steps ${label([...listPath, first])}–${label([...listPath, last])}`;
-    const wrapped = chosen.length
-      ? wrap(steps, listPath, first, last, depth)
-      : null;
-    return h(
-      "div",
-      { class: "select-bar" },
-      h(
-        "span",
-        { class: "muted" },
-        `${plural(chosen.length, "step")} selected`,
-      ),
-      h(
-        "button",
-        {
-          type: "button",
-          onclick: () => {
-            selection = null;
-            paint();
-          },
-        },
-        "Cancel",
-      ),
-      h(
-        "button",
-        {
-          type: "button",
-          class: "danger",
-          disabled: !chosen.length,
-          onclick: () => {
-            let next = steps;
-            for (const i of chosen.toReversed())
-              next = remove(next, [...listPath, i]);
-            selection = null;
-            change(
-              { steps: next },
-              { message: `Removed ${plural(chosen.length, "step")}` },
-            );
-          },
-        },
-        "Remove",
-      ),
-      h(
-        "button",
-        {
-          type: "button",
-          disabled: !wrapped,
-          title:
-            chosen.length && !wrapped
-              ? `Repeats nest at most ${depth} deep`
-              : null,
-          onclick: () => {
-            selection = null;
-            open = key(wrapped.path);
-            change(wrapped, {
-              message: "Wrapped in a repeat",
-              target: ".step-panel input",
-            });
-          },
-        },
-        chosen.length ? `Wrap ${span} in repeat` : "Wrap in repeat",
-      ),
-    );
-  }
-
   // Every step fits its exercise and has its numbers; else the first that
   // doesn't opens, focused, and says why.
   function check(list = steps, parent = []) {
     for (const [i, step] of list.entries()) {
       const path = [...parent, i];
-      const problem =
-        step.kind === "repeat"
-          ? !(step.times >= 1)
-            ? "set how many rounds"
-            : null
-          : step.kind === "rest"
-            ? !(step.seconds >= 1)
-              ? "set how long"
-              : null
-            : (() => {
-                const e = lib.byId.get(step.exercise_id);
-                if (!e) return `unknown exercise ${step.exercise_id}`;
-                if (step.reps === 0 || step.seconds === 0)
-                  return `${e.name} needs more than 0`;
-                return stepError(e, step);
-              })();
+      const problem = STEP_KINDS[step.kind].problem(
+        step,
+        lib.byId.get(step.exercise_id),
+      );
       if (problem) {
-        open = key(path);
-        paint(path, ".step-panel input");
-        throw new Error(`Step ${label(path)}: ${problem}.`);
+        open = pathKey(path);
+        paint(path, ".step-panel :is(input, textarea)");
+        throw new Error(`Step ${pathLabel(path)}: ${problem}.`);
       }
       if (step.kind === "repeat") check(step.steps, path);
     }
   }
-  const body = () => ({
+  const body = (over = {}) => ({
     name: name.value,
     minutes: numberOrNull(minutes),
-    kcal: numberOrNull(kcal),
+    kcal: energyOf(kcal),
+    notes: notes.value,
     steps,
+    archived: workout.archived,
     ...(isNew ? {} : { rev: workout.rev }),
+    ...over,
   });
-  const send = () => {
+  // Archive (or unarchive) saves what's on screen with it.
+  const archive = h(
+    "button",
+    {
+      type: "button",
+      onclick: busy(async () => {
+        if (!shell.form.reportValidity()) return;
+        try {
+          check();
+          const saved = await api(
+            "PUT",
+            `/workouts/${id}`,
+            body({ archived: !workout.archived }),
+          );
+          shell.markClean();
+          await go(location.hash);
+          notify(
+            saved.archived
+              ? `Archived ${saved.name}: hidden where you plan or start one`
+              : `Unarchived ${saved.name}`,
+          );
+        } catch (err) {
+          shell.failed(err);
+        }
+      }),
+    },
+    workout.archived ? "Unarchive" : "Archive",
+  );
+  // Copy: a new workout of what's on screen (each press its own), opened
+  // in its editor; this one stays as saved.
+  const copy = copyForm(
+    "/workouts",
+    body,
+    () => shell,
+    (made) => href.workoutEdit(made.id, href.workout(made.id)),
+    () => {
+      check();
+      return { uid: uid() };
+    },
+  );
+  // A create carries its key: sent again after a lost answer it
+  // answers the workout saved the first time, which then takes what the
+  // form holds now.
+  const key = createId();
+  let sent = false;
+  const send = async () => {
     check();
-    return isNew
-      ? api("POST", "/workouts", body())
-      : api("PUT", `/workouts/${id}`, body());
+    if (!isNew) return api("PUT", `/workouts/${id}`, body());
+    const again = sent;
+    sent = true;
+    let made = await api("POST", "/workouts", body({ uid: key.get() }));
+    if (again)
+      made = await api("PUT", `/workouts/${made.id}`, body({ rev: made.rev }));
+    key.done();
+    sent = false;
+    return made;
   };
   // Start runs what's on screen: edits are saved first.
   const start = h(
@@ -972,9 +970,16 @@ export async function workoutEditor(id) {
   paint();
   const shell = editor({
     title: isNew ? "New workout" : workout.name,
-    back: href.workouts(),
+    back: back ?? (isNew ? href.activity() : href.workout(id)),
     action: start,
     body: [
+      used
+        ? h(
+            "p",
+            { class: "note" },
+            `Done or planned ${plural(used, "time")}. Past activities keep their sets; a new name reaches them.`,
+          )
+        : null,
       field("Name", name),
       h(
         "fieldset",
@@ -983,6 +988,9 @@ export async function workoutEditor(id) {
         line,
         blocks,
       ),
+      field("Notes", notes, {
+        hint: "Shown on each step of a run. Line breaks are kept.",
+      }),
       h(
         "details",
         {
@@ -999,23 +1007,34 @@ export async function workoutEditor(id) {
           "div",
           { class: "pair" },
           field("Duration (min)", minutes),
-          field("Energy (kcal)", kcal),
+          // A typed value is the total, as a device or a machine shows it,
+          // read as active (resting taken off); empty, it is estimated.
+          field(energyLabel("total"), kcal, {
+            hint: [
+              weightKg() === null
+                ? "What your device or machine says, resting included. Log a weight to estimate it."
+                : "What your device or machine says, resting included. Empty: estimated from time and weight.",
+              active,
+            ],
+          }),
         ),
       ),
       announcer,
     ],
     state: () => steps,
     save: send,
-    after: (saved) => href.workout(saved.id),
-    remove: isNew
-      ? null
-      : {
-          ask: `Delete ${workout.name}?`,
-          detail: "Workouts done with it stay in the diary.",
-          run: () => api("DELETE", `/workouts/${id}`),
-          after: href.workouts(),
-          done: `Deleted ${workout.name}`,
-        },
+    after: (saved) => back ?? href.workoutEdit(saved.id),
+    secondary: isNew ? [] : [used ? archive : null, copy],
+    remove:
+      isNew || used
+        ? null
+        : {
+            ask: `Delete ${workout.name}?`,
+            detail: "Workouts done with it stay in the Diary.",
+            run: () => api("DELETE", `/workouts/${id}`),
+            after: href.activity(),
+            done: `Deleted ${workout.name}`,
+          },
   });
   return shell.node;
 }

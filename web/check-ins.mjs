@@ -2,28 +2,30 @@
 // tag counts, the Highlights series and the tags the dialog offers. No DOM
 // here, so `node --test` covers it.
 
+import { isNil } from "./format.mjs";
+import { present } from "./insights.mjs";
+
 // The scales, in order: [key, label].
-export const METRICS = [
+export const CHECK_IN_SCALES = [
   ["mood", "Mood"],
   ["energy", "Energy"],
   ["stress", "Stress"],
 ];
 
-const isSet = (v) => v !== null && v !== undefined;
-
 // A tag as the server stores it: trimmed, inner spaces collapsed,
 // lowercase.
-export const normalTag = (t) => t.trim().split(/\s+/).join(" ").toLowerCase();
+export const normalTag = (t) => t.trim().split(/\s+/u).join(" ").toLowerCase();
 
 // `list` normalised, blanks and repeats dropped, order kept, at most `max`.
 export const tagsOf = (list, max = Infinity) =>
-  [...new Set(list.map(normalTag).filter(Boolean))].slice(0, max);
+  [...new Set(list.map((x) => normalTag(x)).filter(Boolean))].slice(0, max);
 
-// "Mood 4 · Energy 3 · Stress 2 · travel": unset scales left out.
-export const line = (c) =>
+// "Mood 4 · Energy 3 · Stress 2 · travel": unset scales left out; with the
+// scale's `top`, each reads against it ("Mood 4/5").
+export const line = (c, top = null) =>
   [
-    ...METRICS.filter(([key]) => isSet(c[key])).map(
-      ([key, label]) => `${label} ${c[key]}`,
+    ...CHECK_IN_SCALES.filter(([key]) => !isNil(c[key])).map(
+      ([key, label]) => `${label} ${c[key]}${top ? `/${top}` : ""}`,
     ),
     ...(c.tags ?? []),
   ].join(" · ");
@@ -32,8 +34,8 @@ export const line = (c) =>
 // and lowest value with the days that have it and the latest of them.
 // Null when no day has it.
 export function stats(list, metric) {
-  const rated = list.filter((c) => isSet(c[metric]));
-  if (!rated.length) return null;
+  const rated = list.filter((c) => !isNil(c[metric]));
+  if (rated.length === 0) return null;
   const values = rated.map((c) => c[metric]);
   const extreme = (value) => {
     const days = rated.filter((c) => c[metric] === value).map((c) => c.day);
@@ -61,13 +63,9 @@ export function tagCounts(list) {
 // are the days that have it. Scales no day has are left out.
 export function series(list) {
   const out = {};
-  for (const [key] of METRICS) {
-    const rated = list.filter((c) => isSet(c[key]));
-    if (rated.length)
-      out[`checkin:${key}`] = {
-        values: new Map(rated.map((c) => [c.day, c[key]])),
-        samples: rated.map((c) => c.day),
-      };
+  for (const [key] of CHECK_IN_SCALES) {
+    const rated = present(list, key);
+    if (rated.samples.length > 0) out[`checkin:${key}`] = rated;
   }
   return out;
 }

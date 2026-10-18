@@ -3,7 +3,7 @@
 
 use super::prelude::*;
 use axum::extract::DefaultBodyLimit;
-use model::{BindInput, ScaleCounts, ScalePost, ScaleReading, SyncStatus, latest_day, now_ms};
+use model::{BindInput, ScaleCounts, ScalePost, ShownReading, SyncStatus, latest_day, now_ms};
 
 pub(super) fn routes() -> Router<AppState> {
     Router::new()
@@ -28,9 +28,10 @@ async fn webhook(
 ) -> Res<ScaleCounts> {
     let post = ScalePost::read(&body, &s.tz, latest_day(&s.tz))?;
     drop(body);
+    let tz = s.tz.clone();
     Ok(Json(
         on_profile(&s, pid, move |conn| {
-            db::scale_apply(conn, pid, &post, now_ms())
+            db::scale_apply(conn, pid, &post, now_ms(), &tz)
         })
         .await?,
     ))
@@ -48,9 +49,10 @@ async fn bind(
     Path(pid): Path<ProfileId>,
     Json(b): Json<BindInput>,
 ) -> Res<SyncStatus> {
+    let tz = s.tz.clone();
     Ok(Json(
         on_profile(&s, pid, move |conn| {
-            db::sync_bind(conn, pid, b.user_id, now_ms())
+            db::sync_bind(conn, pid, b.user_id, now_ms(), &tz)
         })
         .await?,
     ))
@@ -68,11 +70,12 @@ async fn readings(
     State(s): State<AppState>,
     Path(pid): Path<ProfileId>,
     Query(r): Query<Range>,
-) -> Res<Vec<ScaleReading>> {
+) -> Res<Vec<ShownReading>> {
     r.checked()?;
+    let tz = s.tz.clone();
     Ok(Json(
         on_profile(&s, pid, move |conn| {
-            db::scale_list(conn, pid, r.from.as_deref(), r.to.as_deref())
+            db::scale_shown(conn, pid, r.from.as_deref(), r.to.as_deref(), &tz)
         })
         .await?,
     ))

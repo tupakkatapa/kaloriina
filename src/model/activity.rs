@@ -1,680 +1,659 @@
-//! Activity from the Android companion's Health Connect sync: each day's
-//! active energy, steps, sleep and heart, and the watch's
-//! workouts as it recorded them (the raw copy promoted into sessions). A
-//! POST replaces a window of days; only its envelope can be refused (400),
-//! a bad value is dropped and a bad item skipped, each counted.
+//! Activities: anything you did (ADR 0027): a workout, set by set, or a
+//! whole one (a run, a ride) with its type, distance and start; logged by
+//! hand or from the device. Its sets are rows (`activity_set`): history,
+//! bests and last done are the server's.
 
-use std::collections::BTreeSet;
-
-use jiff::civil::Date;
-use jiff::{Timestamp, ToSpan};
-use serde_json::{Map, Value};
+use jiff::{Timestamp, ToSpan, tz::TimeZone};
 
 use super::prelude::*;
-use super::{SessionType, sneaky};
+use super::{Side, checked_uid};
 
-/// The `sync_state` source of the companion's status row.
-pub const HEALTH_CONNECT: &str = "health_connect";
-/// Health Connect's recording method of a workout the watch detected by
-/// itself: it waits to be added, even in auto mode.
-pub const AUTO_RECORDED: i64 = 2;
-
-/// One day's values, each `None` when Health Connect had none. Sleep is the
-/// night that ended this day; its four main fields come all or none.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ActivityDay {
-    pub day: String,
-    #[serde(default)]
-    pub active_kcal: Option<i64>,
-    #[serde(default)]
-    pub steps: Option<i64>,
-    #[serde(default)]
-    pub resting_hr: Option<i64>,
-    #[serde(default)]
-    pub hrv_ms: Option<i64>,
-    #[serde(default)]
-    pub asleep_min: Option<i64>,
-    #[serde(default)]
-    pub in_bed_min: Option<i64>,
-    /// Local "HH:MM" in the phone's zone.
-    #[serde(default)]
-    pub bedtime: Option<String>,
-    #[serde(default)]
-    pub wake_time: Option<String>,
-    #[serde(default)]
-    pub deep_min: Option<i64>,
-    #[serde(default)]
-    pub rem_min: Option<i64>,
-    #[serde(default)]
-    pub light_min: Option<i64>,
+text_enum! {
+    /// What kind of activity it is: a set-based workout (a workout done
+    /// without sets, too), or a whole one (a run, a ride). The
+    /// vocabulary lives here only; the column has no SQL check.
+    #[derive(Default)]
+    pub enum ActivityType {
+        #[default]
+        Workout = "workout",
+        Run = "run",
+        Walk = "walk",
+        Hike = "hike",
+        Cycling = "cycling",
+        Swim = "swim",
+        Rowing = "rowing",
+        Elliptical = "elliptical",
+        Hiit = "hiit",
+        Yoga = "yoga",
+        Sports = "sports",
+        Ski = "ski",
+        Climb = "climb",
+        Dance = "dance",
+        Other = "other",
+    }
 }
 
-/// "HH:MM", 00:00–23:59.
-fn is_clock(s: &str) -> bool {
-    let b = s.as_bytes();
-    b.len() == 5
-        && b[2] == b':'
-        && s[..2].parse::<u8>().is_ok_and(|h| h < 24)
-        && s[3..].parse::<u8>().is_ok_and(|m| m < 60)
-        && b.iter()
-            .enumerate()
-            .all(|(i, c)| i == 2 || c.is_ascii_digit())
-}
-
-impl ActivityDay {
-    /// The day with every value out of bounds dropped (a bad sleep field
-    /// drops the night, the stages go with it), and whether any was.
+impl ActivityType {
     #[must_use]
-    pub fn trimmed(mut self) -> (Self, bool) {
-        let mut dropped = false;
-        let mut keep = |v: &mut Option<i64>, lo: i64, hi: i64| {
-            if v.is_some_and(|v| !(lo..=hi).contains(&v)) {
-                *v = None;
-                dropped = true;
-            }
-        };
-        keep(&mut self.active_kcal, 0, ACTIVE_KCAL_MAX);
-        keep(&mut self.steps, 0, STEPS_MAX);
-        keep(&mut self.resting_hr, RESTING_HR_MIN, RESTING_HR_MAX);
-        keep(&mut self.hrv_ms, HRV_MS_MIN, HRV_MS_MAX);
-        let night = [
-            self.in_bed_min.is_some(),
-            self.asleep_min.is_some(),
-            self.bedtime.is_some(),
-            self.wake_time.is_some(),
-        ];
-        let whole = self.in_bed_min.is_some_and(|b| (1..=1440).contains(&b))
-            && self
-                .asleep_min
-                .is_some_and(|a| (0..=self.in_bed_min.unwrap_or(0)).contains(&a))
-            && self.bedtime.as_deref().is_some_and(is_clock)
-            && self.wake_time.as_deref().is_some_and(is_clock);
-        if !whole && night.contains(&true) {
-            dropped = true;
-            (self.in_bed_min, self.asleep_min) = (None, None);
-            (self.bedtime, self.wake_time) = (None, None);
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Workout => "Workout",
+            Self::Run => "Run",
+            Self::Walk => "Walk",
+            Self::Hike => "Hike",
+            Self::Cycling => "Cycling",
+            Self::Swim => "Swimming",
+            Self::Rowing => "Rowing",
+            Self::Elliptical => "Elliptical",
+            Self::Hiit => "HIIT",
+            Self::Yoga => "Yoga",
+            Self::Sports => "Sports",
+            Self::Ski => "Skiing",
+            Self::Climb => "Climbing",
+            Self::Dance => "Dance",
+            Self::Other => "Other",
         }
-        let in_bed = self.in_bed_min.unwrap_or(-1);
-        for stage in [&mut self.deep_min, &mut self.rem_min, &mut self.light_min] {
-            if stage.is_some_and(|m| !(0..=in_bed).contains(&m)) {
-                *stage = None;
-                dropped = true;
-            }
-        }
-        (self, dropped)
     }
 
-    /// Whether anything is left to store.
+    /// Whether a session of this type takes a distance: the ones that
+    /// cover ground, and "other" (whatever the device measured).
     #[must_use]
-    pub fn has_value(&self) -> bool {
-        self.active_kcal.is_some()
-            || self.steps.is_some()
-            || self.resting_hr.is_some()
-            || self.hrv_ms.is_some()
-            || self.in_bed_min.is_some()
+    pub fn distance(self) -> bool {
+        matches!(
+            self,
+            Self::Run
+                | Self::Walk
+                | Self::Hike
+                | Self::Cycling
+                | Self::Swim
+                | Self::Rowing
+                | Self::Ski
+                | Self::Other
+        )
+    }
+
+    /// The slowest a session of this type moves (km/h) for its distance
+    /// to have a pace: slower is a phone's step-count leftover (317 m in 19
+    /// min is no walk). `web/activities.mjs` `MIN_KMH` says the same.
+    #[must_use]
+    pub fn min_kmh(self) -> f64 {
+        match self {
+            Self::Walk => 2.0,
+            Self::Run | Self::Cycling => 5.0,
+            _ => 0.0,
+        }
+    }
+
+    /// How a session's pace reads: `per_km` ("5:37 /km"), `speed`
+    /// ("24.3 km/h") or `per_100m` ("2:05 /100 m"); `None` for a type with
+    /// no distance or no one way to read it (rowing, skiing, other).
+    #[must_use]
+    pub fn pace(self) -> Option<&'static str> {
+        match self {
+            Self::Run | Self::Walk | Self::Hike => Some("per_km"),
+            Self::Cycling => Some("speed"),
+            Self::Swim => Some("per_100m"),
+            _ => None,
+        }
+    }
+
+    /// Its metabolic equivalent (MET) at a moderate effort, for an
+    /// energy estimate of (MET − 1) × kg × hours (clients; a run with its
+    /// distance at its net cost per km instead). 2024 Adult Compendium of
+    /// Physical Activities (Herrmann et al., J Sport Health Sci 2024,
+    /// pacompendium.com); codes noted.
+    #[must_use]
+    pub fn met(self) -> f64 {
+        match self {
+            // 12050 running, 6–6.3 mph (a client takes a run's distance
+            // when known)
+            Self::Run => 9.3,
+            // 15533 rock or mountain climbing
+            Self::Climb => 8.0,
+            // 02040 circuit training, some aerobic movement with minimal
+            // rest, vigorous
+            Self::Hiit => 7.5,
+            // 01014 bicycling, general; 15610 soccer, casual, general;
+            // 19075 skiing, general
+            Self::Cycling | Self::Sports | Self::Ski => 7.0,
+            // 17080 hiking, cross country
+            Self::Hike => 6.0,
+            // 18240 swimming laps, freestyle, slow, recreational
+            Self::Swim => 5.8,
+            // 02052 resistance training, squats, deadlift; 02048
+            // elliptical trainer, moderate; 02071 rowing, stationary,
+            // under 100 W, moderate; 03010 ballet, modern or jazz, class
+            Self::Workout | Self::Elliptical | Self::Rowing | Self::Dance => 5.0,
+            // a light-to-moderate activity
+            Self::Other => 4.0,
+            // 17160 walking for pleasure
+            Self::Walk => 3.5,
+            // 02150 yoga, hatha
+            Self::Yoga => 2.3,
+        }
+    }
+
+    /// Whether a session logged by hand as `hand` may be the device's
+    /// `device` session: the same type, or a hand-logged workout and a
+    /// device workout, HIIT or unmapped ("other") session.
+    #[must_use]
+    pub fn compatible(hand: Self, device: Self) -> bool {
+        hand == device
+            || (hand == Self::Workout && matches!(device, Self::Workout | Self::Hiit | Self::Other))
     }
 }
 
-/// One workout the watch recorded, as it recorded it: the raw copy a
-/// session is promoted from.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ActivitySession {
-    /// Health Connect's record id.
-    pub key: String,
-    /// The phone's local day of its start.
-    pub day: String,
-    /// UTC, RFC 3339.
-    pub start_at: String,
-    pub end_at: String,
-    /// Health Connect's exercise type number.
-    #[serde(rename = "type")]
-    pub kind: i64,
-    pub name: String,
-    #[serde(default)]
-    pub kcal: Option<i64>,
-    /// Whole metres, distance types only.
-    #[serde(default)]
-    pub distance_m: Option<i64>,
-    /// Health Connect's: 0 unknown, 1 active, 2 automatic, 3 manual entry.
-    #[serde(default)]
-    pub recording_method: i64,
-}
-
-/// A watch workout's session type.
-#[must_use]
-pub fn hc_type(kind: i64) -> SessionType {
-    match kind {
-        33 | 34 => SessionType::Run,
-        4 | 5 => SessionType::Cycling,
-        48 | 49 => SessionType::Swim,
-        53 => SessionType::Walk,
-        21 => SessionType::Hike,
-        _ => SessionType::Other,
-    }
-}
-
-/// A range of days' activity.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Activity {
-    pub days: Vec<ActivityDay>,
-    pub sessions: Vec<ActivitySession>,
-}
-
-/// What one POST did: its whole answer.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HealthCounts {
-    pub days: u64,
-    pub sessions: u64,
-    /// Days that carry a night's sleep.
-    #[serde(default)]
-    pub nights: u64,
-    /// Items refused (unreadable, out of bounds, outside the window or
-    /// repeated) or stored with a value dropped, each once.
-    pub skipped: u64,
-}
-
-/// The last POST, as Profile → Connections shows it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HealthResult {
-    #[serde(flatten)]
-    pub counts: HealthCounts,
-    pub from: String,
-    pub to: String,
-    pub device: Option<String>,
-    /// The device of the POST before: two phones on one profile replace
-    /// each other's days.
-    pub previous_device: Option<String>,
+/// A session type that may be sent as `null` (an older client's set-based
+/// session): a workout.
+pub(super) fn workout_if_null<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<ActivityType, D::Error> {
+    Ok(Option::<ActivityType>::deserialize(d)?.unwrap_or_default())
 }
 
 text_enum! {
-    /// What a sync does with a new watch workout: add it, or list it to be
-    /// added or dismissed.
-    #[derive(Default)]
-    pub enum SyncedWorkouts {
-        #[default]
-        Auto = "auto",
-        Ask = "ask",
+    /// Where a session's energy came from: typed by hand, the device's
+    /// active energy, the device's total (resting included: a device that
+    /// writes no active energy), or an import's. A sync refreshes all but a
+    /// hand's ([`super::Provenance`]).
+    pub enum KcalSource {
+        Hand = "hand",
+        HealthConnect = "health_connect",
+        HealthConnectTotal = "health_connect_total",
+        Import = "import",
     }
 }
 
-/// `PUT …/sync/health/workouts`.
-#[derive(Debug, Clone, Copy, Deserialize)]
-pub struct WorkoutsMode {
-    pub mode: SyncedWorkouts,
+text_enum! {
+    /// Where a session came from: logged here (`hand`), promoted from the
+    /// device, or added by a Google Health import (editable; removing the
+    /// import removes it).
+    #[derive(Default)]
+    pub enum ActivitySource {
+        #[default]
+        Hand = "hand",
+        HealthConnect = "health_connect",
+        Import = "import",
+    }
+}
+/// One exercise as it was done in an activity: reps or seconds (exactly
+/// one), the weight actually used and the side. The server keeps the
+/// exercise's name with it (one sent is overwritten), so the set still
+/// reads once the exercise is deleted: its `exercise_id` is then `None`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActivitySet {
+    pub exercise_id: Option<i64>,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reps: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kg: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side: Option<Side>,
 }
 
-/// A profile's Health Connect sync status.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct HealthStatus {
-    /// Epoch milliseconds of the last POST, if any.
-    pub last_seen: Option<i64>,
-    pub last_result: Option<HealthResult>,
-    pub workouts: SyncedWorkouts,
-}
-
-/// A watch workout waiting to be added or dismissed (the Day view's
-/// `pending_sessions`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct PendingSession {
-    pub key: String,
+/// A workout done on a day by one profile: from a run or logged by hand.
+/// `workout_id` links the workout it came from, if any (and while it lasts).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ActivityInput {
     pub day: String,
-    pub start_at: String,
-    pub end_at: String,
-    #[serde(rename = "type")]
-    pub kind: SessionType,
+    #[serde(default)]
+    pub workout_id: Option<i64>,
     pub name: String,
     pub minutes: u32,
-    pub kcal: Option<i64>,
-    pub distance_m: Option<i64>,
+    #[serde(default)]
+    pub kcal: Option<u32>,
+    #[serde(default)]
+    pub sets: Vec<ActivitySet>,
+    /// Absent or `null`: a workout.
+    #[serde(default, rename = "type", deserialize_with = "workout_if_null")]
+    pub kind: ActivityType,
+    #[serde(default)]
+    pub distance_m: Option<u32>,
+    /// When it started: RFC 3339, stored in UTC.
+    #[serde(default)]
+    pub start_at: Option<String>,
+    /// The client's id for a new session: sending it again saves nothing
+    /// more and answers with the first one.
+    #[serde(default)]
+    pub uid: Option<String>,
+    /// The revision an update was made from (required on update).
+    #[serde(default)]
+    pub rev: Option<i64>,
 }
 
-/// A watch workout's minutes: rounded, at least 1, at most a day.
-#[must_use]
-pub fn session_minutes(seconds: i64) -> u32 {
-    u32::try_from(((seconds + 30) / 60).clamp(1, i64::from(SESSION_MINUTES_MAX))).unwrap_or(1)
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Activity {
+    pub id: i64,
+    pub day: String,
+    pub workout_id: Option<i64>,
+    pub name: String,
+    pub minutes: u32,
+    /// As set; `None`: clients show their estimate.
+    pub kcal: Option<u32>,
+    pub sets: Vec<ActivitySet>,
+    #[serde(rename = "type")]
+    pub kind: ActivityType,
+    pub distance_m: Option<u32>,
+    /// UTC, RFC 3339.
+    pub start_at: Option<String>,
+    pub source: ActivitySource,
+    /// The record it holds: the device workout it was promoted from, the
+    /// imported workout it is (`gh-…`), or either one claimed by a hand log.
+    pub source_key: Option<String>,
+    /// Where `kcal` came from; `None` without one.
+    pub kcal_source: Option<KcalSource>,
+    /// The device's average and peak heart rate (bpm).
+    pub avg_hr: Option<u32>,
+    pub max_hr: Option<u32>,
+    /// The weigh-in in effect on its day: the latest on or before it, else
+    /// the earliest after (`None` without any). What its energy is
+    /// estimated from, so a past session never follows a new weigh-in.
+    pub weight_kg: Option<f64>,
+    /// The resting energy in effect on its day (kcal a day): Health
+    /// Connect's, carried up to 6 days; `None` without one (clients then
+    /// take Mifflin–St Jeor at `weight_kg`). What a total is netted of.
+    pub bmr_kcal: Option<f64>,
+    pub uid: String,
+    pub rev: i64,
 }
 
-/// A sync body, read: the window it replaces and the valid items in it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HealthPost {
-    pub from: String,
-    pub to: String,
-    pub device: Option<String>,
-    pub days: Vec<ActivityDay>,
-    pub sessions: Vec<ActivitySession>,
-    pub skipped: u64,
-}
-
-/// A whole number in `0..=max`, `Ok(None)` when absent or null, `Err`
-/// when anything else (a fraction included: the phone rounds).
-fn amount(m: &Map<String, Value>, key: &str, max: i64) -> Result<Option<i64>, ()> {
-    match m.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(v) => v
-            .as_i64()
-            .filter(|n| (0..=max).contains(n))
-            .map(Some)
-            .ok_or(()),
+impl Activity {
+    /// Where it sits in time, for matching.
+    #[must_use]
+    pub fn span(&self) -> Span<'_> {
+        let start = self.start_at.as_deref().and_then(|s| s.parse().ok());
+        Span {
+            day: &self.day,
+            kind: self.kind,
+            any_type: false,
+            start,
+            end: start
+                .and_then(|s: Timestamp| s.checked_add(i64::from(self.minutes).minutes()).ok()),
+        }
     }
 }
 
-/// A whole number as sent, `None` when absent, null or not one (`*bad`
-/// then set): bounds are [`ActivityDay::trimmed`]'s.
-fn whole(m: &Map<String, Value>, key: &str, bad: &mut bool) -> Option<i64> {
-    let v = m.get(key).filter(|v| !v.is_null())?;
-    let n = v.as_i64();
-    *bad |= n.is_none();
-    n
+/// A session's day, type and time, for matching a device workout to one
+/// logged. `any_type`: one person, one workout at a time, whatever the
+/// types (an imported workout against what is there).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span<'a> {
+    pub day: &'a str,
+    pub kind: ActivityType,
+    pub any_type: bool,
+    pub start: Option<Timestamp>,
+    pub end: Option<Timestamp>,
 }
 
-/// Text as sent, `None` when absent, null or not text (`*bad` then set).
-fn string(m: &Map<String, Value>, key: &str, bad: &mut bool) -> Option<String> {
-    let v = m.get(key).filter(|v| !v.is_null())?;
-    let s = v.as_str().map(str::to_owned);
-    *bad |= s.is_none();
-    s
-}
+impl Span<'_> {
+    /// Seconds `self` and `other` overlap, if both have times.
+    #[must_use]
+    pub fn overlap(&self, other: &Span) -> Option<i64> {
+        let (a0, a1, b0, b1) = (self.start?, self.end?, other.start?, other.end?);
+        Some((a1.min(b1).as_second() - a0.max(b0).as_second()).max(0))
+    }
 
-/// `field`, an optional list of at most `max` items.
-fn list<'a>(obj: &'a Map<String, Value>, field: &str, max: usize) -> Result<&'a [Value], Error> {
-    match obj.get(field) {
-        None => Ok(&[]),
-        Some(Value::Array(items)) if items.len() <= max => Ok(items),
-        Some(Value::Array(_)) => Err(Error::invalid_field(
-            field,
-            format!("{field} holds at most {max} items"),
-        )),
-        Some(_) => Err(Error::invalid_field(
-            field,
-            format!("{field} must be a list"),
-        )),
+    fn seconds(&self) -> Option<i64> {
+        Some(self.end?.as_second() - self.start?.as_second())
     }
 }
 
-/// `field`, an ISO day.
-fn day_field(obj: &Map<String, Value>, field: &str) -> Result<Date, Error> {
-    obj.get(field)
-        .and_then(Value::as_str)
-        .filter(|d| is_date(d))
-        .and_then(|d| d.parse().ok())
-        .ok_or_else(|| Error::invalid_field(field, format!("{field} must be YYYY-MM-DD")))
-}
-
-/// A label as text: control characters dropped, trimmed, at most `max`
-/// characters; `None` when nothing is left.
-fn label(s: &str, max: usize) -> Option<String> {
-    let s: String = s.chars().filter(|c| !sneaky(*c)).collect();
-    let s: String = s.trim().chars().take(max).collect();
-    let s = s.trim_end();
-    (!s.is_empty()).then(|| s.to_owned())
-}
-
-/// A Health Connect record id: 1–128 of `[A-Za-z0-9-]`.
+/// Whether the device's `w` is the workout `m` (logged, or already held
+/// from the device): the same day, [`ActivityType::compatible`] types (or
+/// either span `any_type`), and both timed, overlapping by at least half of
+/// the shorter. Without times nothing matches.
 #[must_use]
-pub fn is_key(s: &str) -> bool {
-    (1..=ACTIVITY_KEY_MAX).contains(&s.len())
-        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-}
-
-/// A day's values all in bounds with one at least, or `None` (a file's
-/// check: nothing is dropped quietly).
-#[must_use]
-pub fn checked_day(d: ActivityDay) -> Option<ActivityDay> {
-    let (d, dropped) = d.trimmed();
-    (is_date(&d.day) && !dropped && d.has_value()).then_some(d)
-}
-
-/// A session's values in bounds, or `None` to skip it.
-#[must_use]
-pub fn checked_session(s: ActivitySession) -> Option<ActivitySession> {
-    let start: Timestamp = s.start_at.parse().ok()?;
-    let end: Timestamp = s.end_at.parse().ok()?;
-    let long = end.duration_since(start).as_secs();
-    let ok = is_key(&s.key)
-        && is_date(&s.day)
-        && (1..=86_400).contains(&long)
-        && (0..=ACTIVITY_TYPE_MAX).contains(&s.kind)
-        && s.kcal
-            .is_none_or(|k| (0..=i64::from(KCAL_MAX)).contains(&k))
-        && s.distance_m
-            .is_none_or(|d| (0..=i64::from(DISTANCE_M_MAX)).contains(&d))
-        && (0..=3).contains(&s.recording_method);
-    ok.then(|| ActivitySession {
-        start_at: start.to_string(),
-        end_at: end.to_string(),
-        name: label(&s.name, ACTIVITY_NAME_MAX).unwrap_or_else(|| "Workout".to_owned()),
-        ..s
-    })
-}
-
-/// A day item: `None` to skip it (no day, or nothing left), else the day
-/// and whether a value was dropped.
-fn read_day(m: &Map<String, Value>) -> Option<(ActivityDay, bool)> {
-    let mut bad = false;
-    let d = ActivityDay {
-        day: m.get("day")?.as_str()?.to_owned(),
-        active_kcal: whole(m, "active_kcal", &mut bad),
-        steps: whole(m, "steps", &mut bad),
-        resting_hr: whole(m, "resting_hr", &mut bad),
-        hrv_ms: whole(m, "hrv_ms", &mut bad),
-        asleep_min: whole(m, "asleep_min", &mut bad),
-        in_bed_min: whole(m, "in_bed_min", &mut bad),
-        bedtime: string(m, "bedtime", &mut bad),
-        wake_time: string(m, "wake_time", &mut bad),
-        deep_min: whole(m, "deep_min", &mut bad),
-        rem_min: whole(m, "rem_min", &mut bad),
-        light_min: whole(m, "light_min", &mut bad),
+pub fn matches(m: &Span, w: &Span) -> bool {
+    let (Some(overlap), Some(a), Some(b)) = (m.overlap(w), m.seconds(), w.seconds()) else {
+        return false;
     };
-    // A non-number reads as absent: in the sleep group, that drops the night.
-    let (d, dropped) = d.trimmed();
-    (is_date(&d.day) && d.has_value()).then_some((d, dropped || bad))
+    m.day == w.day
+        && (m.any_type || w.any_type || ActivityType::compatible(m.kind, w.kind))
+        && a.min(b) > 0
+        && 2 * overlap >= a.min(b)
 }
 
-/// A workout item: `None` to skip it, else the workout and whether its
-/// energy, distance or recording method was dropped.
-fn read_session(m: &Map<String, Value>) -> Option<(ActivitySession, bool)> {
-    let text = |k: &str| m.get(k).and_then(Value::as_str).map(str::to_owned);
-    let mut bad = false;
-    let mut soft = |k: &str, max: i64| {
-        amount(m, k, max).unwrap_or_else(|()| {
-            bad = true;
-            None
-        })
-    };
-    let kcal = soft("kcal", i64::from(KCAL_MAX));
-    let distance_m = soft("distance_m", i64::from(DISTANCE_M_MAX));
-    let recording_method = soft("recording_method", 3).unwrap_or(0);
-    let s = checked_session(ActivitySession {
-        key: text("key")?,
-        day: text("day")?,
-        start_at: text("start_at")?,
-        end_at: text("end_at")?,
-        kind: m.get("type")?.as_i64()?,
-        name: match m.get("name") {
-            None | Some(Value::Null) => String::new(),
-            Some(v) => v.as_str()?.to_owned(),
-        },
-        kcal,
-        distance_m,
-        recording_method,
-    })?;
-    Some((s, bad))
-}
-
-impl HealthPost {
-    /// Read a sync body. `latest` is the last day `to` may name: tomorrow
-    /// in the server's time zone.
+impl ActivityInput {
+    /// A date, trimmed names, numbers within limits, each set done for reps
+    /// or for seconds; errors name the set ("set 3: …"). Whether each
+    /// exercise exists and takes a side is the store's check.
     ///
     /// # Errors
-    /// A broken envelope (400): not an object; `from`/`to` missing, not
-    /// days, reversed, more than [`ACTIVITY_WINDOW_MAX`] days apart or `to`
-    /// after `latest`; `days`/`sessions` not lists or too long.
-    pub fn read(body: &Value, latest: Date) -> Result<Self, Error> {
-        let Some(obj) = body.as_object() else {
-            return Err(bad("the body must be a JSON object"));
-        };
-        let (from, to) = (day_field(obj, "from")?, day_field(obj, "to")?);
-        if from > to {
-            return Err(Error::invalid_field("from", "from must not be after to"));
+    /// Blank or long names, numbers out of range, too many sets.
+    pub fn checked(mut self) -> Result<Self, Error> {
+        if !is_date(&self.day) {
+            return Err(Error::invalid_field("day", "day must be YYYY-MM-DD"));
         }
-        let window = i64::try_from(ACTIVITY_WINDOW_MAX).unwrap_or(i64::MAX);
-        if from < to.saturating_sub((window - 1).days()) {
+        if let Some(uid) = &self.uid {
+            checked_uid(uid)?;
+        }
+        self.name = text(&self.name, "name", NAME_MAX)?;
+        if !(1..=ACTIVITY_MINUTES_MAX).contains(&self.minutes) {
             return Err(Error::invalid_field(
-                "to",
-                format!("a sync covers at most {ACTIVITY_WINDOW_MAX} days"),
+                "minutes",
+                format!("minutes must be 1–{ACTIVITY_MINUTES_MAX}"),
             ));
         }
-        if to > latest {
-            return Err(Error::invalid_field("to", "to can't be in the future"));
+        if !self.kind.distance() && self.distance_m.is_some() {
+            return Err(Error::invalid_field(
+                "distance_m",
+                format!("{} activities have no distance", self.kind.label()),
+            ));
         }
-        let days = list(obj, "days", ACTIVITY_WINDOW_MAX)?;
-        let sessions = list(obj, "sessions", ACTIVITY_SESSIONS_MAX)?;
-        let (from, to) = (from.to_string(), to.to_string());
-        let within = |d: &str| (from.as_str()..=to.as_str()).contains(&d);
-        let mut post = Self {
-            device: obj
-                .get("device")
-                .and_then(Value::as_str)
-                .and_then(|d| label(d, LABEL_MAX)),
-            days: Vec::new(),
-            sessions: Vec::new(),
-            skipped: 0,
-            from: from.clone(),
-            to: to.clone(),
-        };
-        let mut seen = BTreeSet::new();
-        for item in days {
-            match item.as_object().and_then(read_day) {
-                Some((d, dropped)) if within(&d.day) && seen.insert(d.day.clone()) => {
-                    post.skipped += u64::from(dropped);
-                    post.days.push(d);
-                }
-                _ => post.skipped += 1,
+        if self.distance_m.is_some_and(|d| d > DISTANCE_M_MAX) {
+            return Err(Error::invalid_field(
+                "distance_m",
+                format!("distance_m must be 0–{DISTANCE_M_MAX}"),
+            ));
+        }
+        if let Some(at) = &self.start_at {
+            self.start_at = Some(checked_start(at, &self.day)?);
+        }
+        if self.kcal.is_some_and(|k| k > KCAL_MAX) {
+            return Err(Error::invalid_field(
+                "kcal",
+                format!("kcal must be 0–{KCAL_MAX}"),
+            ));
+        }
+        if self.sets.len() > SETS_MAX {
+            return Err(bad(format!("an activity has at most {SETS_MAX} sets")));
+        }
+        for (i, set) in self.sets.iter_mut().enumerate() {
+            let here = |msg: String| bad(format!("set {}: {msg}", i + 1));
+            if set.reps.is_some() == set.seconds.is_some() {
+                return Err(here("give reps or seconds".to_owned()));
+            }
+            if set.reps.is_some_and(|r| r > REPS_MAX) {
+                return Err(here(format!("reps must be 0–{REPS_MAX}")));
+            }
+            if set.seconds.is_some_and(|s| s > STEP_SECONDS_MAX) {
+                return Err(here(format!("seconds must be 0–{STEP_SECONDS_MAX}")));
+            }
+            if set
+                .kg
+                .is_some_and(|kg| !(kg.is_finite() && (0.0..=KG_MAX).contains(&kg)))
+            {
+                return Err(here(format!("kg must be 0–{KG_MAX}")));
             }
         }
-        let mut seen = BTreeSet::new();
-        for item in sessions {
-            match item.as_object().and_then(read_session) {
-                Some((s, dropped)) if within(&s.day) && seen.insert(s.key.clone()) => {
-                    post.skipped += u64::from(dropped);
-                    post.sessions.push(s);
-                }
-                _ => post.skipped += 1,
-            }
+        Ok(self)
+    }
+}
+
+/// `at` as UTC RFC 3339, its UTC date within a day of `day` (any time zone).
+fn checked_start(at: &str, day: &str) -> Result<String, Error> {
+    let wrong =
+        || Error::invalid_field("start_at", "start_at must be a time on the activity's day");
+    let ts: Timestamp = at.parse().map_err(|_| wrong())?;
+    let day: jiff::civil::Date = day.parse().map_err(|_| wrong())?;
+    let on = ts.to_zoned(TimeZone::UTC).date();
+    if on < day.yesterday().map_err(|_| wrong())? || on > day.tomorrow().map_err(|_| wrong())? {
+        return Err(wrong());
+    }
+    Ok(ts.to_string())
+}
+
+/// A set at its best and where it was done.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BestSet {
+    pub set: ActivitySet,
+    pub day: String,
+    pub activity_id: i64,
+}
+
+/// An exercise's bests: the set with the most reps, the longest and the
+/// heaviest; `None` for one it never had. The latest wins a tie: a record
+/// is when you last reached it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Bests {
+    pub reps: Option<BestSet>,
+    pub seconds: Option<BestSet>,
+    pub kg: Option<BestSet>,
+}
+
+/// One activity's sets of an exercise, in order.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HistoryDay {
+    pub day: String,
+    pub activity_id: i64,
+    pub sets: Vec<ActivitySet>,
+}
+
+/// An exercise as a profile did it: its bests and its sets by activity,
+/// newest first.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ExerciseHistory {
+    pub bests: Bests,
+    pub days: Vec<HistoryDay>,
+}
+
+/// An exercise's bests, for the records.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ExerciseRecord {
+    pub exercise_id: i64,
+    /// The exercise's name now.
+    pub name: String,
+    #[serde(flatten)]
+    pub bests: Bests,
+}
+
+/// An activity type's bests, each the activity holding it: the longest
+/// distance and time and the fastest pace (over 1 km or more). No "most
+/// energy": a session's energy is a device's measure, a typed total or an
+/// estimate, no record. The later day wins a tie.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct TypeBests {
+    pub distance: Option<Activity>,
+    pub minutes: Option<Activity>,
+    pub pace: Option<Activity>,
+}
+
+/// A profile's records: each exercise's bests by name, and each activity
+/// type's (by its key) that has any.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Records {
+    pub exercises: Vec<ExerciseRecord>,
+    pub types: std::collections::BTreeMap<&'static str, TypeBests>,
+}
+
+/// A workout and the day a profile last did it (`None`: never).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct WorkoutDone {
+    #[serde(flatten)]
+    pub workout: super::Workout,
+    pub last_done: Option<String>,
+}
+
+/// A workout planned on a day. Saving a session of that workout on that
+/// day takes the plan away.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlanInput {
+    pub day: String,
+    pub workout_id: i64,
+    /// The client's id for the plan: sending it again saves nothing more.
+    #[serde(default)]
+    pub uid: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Plan {
+    pub id: i64,
+    pub uid: Option<String>,
+    pub day: String,
+    pub workout_id: i64,
+    /// The workout's name.
+    pub name: String,
+}
+
+impl PlanInput {
+    /// A date no further ahead than [`PLAN_DAYS_AHEAD`] (counted from
+    /// tomorrow in UTC, the furthest ahead any time zone is) and a valid uid.
+    ///
+    /// # Errors
+    /// A bad or too distant day, a bad uid.
+    pub fn checked(self) -> Result<Self, Error> {
+        if !is_date(&self.day) {
+            return Err(Error::invalid_field("day", "day must be YYYY-MM-DD"));
         }
-        Ok(post)
+        let last = super::day_so_far().saturating_add(i64::from(PLAN_DAYS_AHEAD).days());
+        if self.day > last.to_string() {
+            return Err(Error::invalid_field(
+                "day",
+                format!("plan at most {PLAN_DAYS_AHEAD} days ahead"),
+            ));
+        }
+        if let Some(uid) = &self.uid {
+            checked_uid(uid)?;
+        }
+        Ok(self)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
-    fn far() -> Date {
-        jiff::civil::date(2100, 1, 1)
-    }
-
-    fn session(key: &str, start: &str, end: &str) -> Value {
-        json!({ "key": key, "day": "2026-10-08", "start_at": start, "end_at": end,
-                "type": 33, "name": "Running", "kcal": 410 })
-    }
-
-    #[test]
-    fn items_out_of_bounds_are_skipped_and_counted() {
-        let post = HealthPost::read(
-            &json!({ "from": "2026-10-02", "to": "2026-10-08", "device": " Pixel\u{1b} 9 ",
-                "days": [
-                    { "day": "2026-10-08", "active_kcal": 512, "steps": 9120 },
-                    { "day": "2026-10-07", "active_kcal": 511.6 },
-                    { "day": "2026-10-08", "steps": 1 },
-                    { "day": "2026-10-01", "steps": 1 },
-                    { "day": "2026-10-03" },
-                    { "day": "2026-10-04", "active_kcal": -1 },
-                    { "day": "2026-10-05", "steps": "many" },
-                    7,
-                ],
-                "sessions": [
-                    session("a-1", "2026-10-08T14:02:00Z", "2026-10-08T14:48:00Z"),
-                    session("a-1", "2026-10-08T15:02:00Z", "2026-10-08T15:48:00Z"),
-                    session("a-2", "2026-10-08T14:02:00Z", "2026-10-08T14:02:00Z"),
-                    session("a-3", "2026-10-08T14:02:00Z", "2026-10-09T14:02:01Z"),
-                    session("a/4", "2026-10-08T14:02:00Z", "2026-10-08T14:48:00Z"),
-                    { "key": "a-5", "day": "2026-10-08", "start_at": "2026-10-08T16:00:00+03:00",
-                      "end_at": "2026-10-08T16:30:00+03:00", "type": 9999 },
-                    { "key": "a-6", "day": "2026-10-08", "start_at": "2026-10-08T16:00:00+03:00",
-                      "end_at": "2026-10-08T16:30:00+03:00", "type": 0, "name": "  " },
-                ] }),
-            far(),
-        )
-        .unwrap();
-        assert_eq!(post.device.as_deref(), Some("Pixel 9"));
-        assert_eq!(
-            post.days,
-            [ActivityDay {
-                day: "2026-10-08".into(),
-                active_kcal: Some(512),
-                steps: Some(9120),
-                ..ActivityDay::default()
-            }]
-        );
-        assert_eq!(
-            post.sessions
-                .iter()
-                .map(|s| (s.key.as_str(), s.name.as_str(), s.start_at.as_str(), s.kcal))
-                .collect::<Vec<_>>(),
-            [
-                ("a-1", "Running", "2026-10-08T14:02:00Z", Some(410)),
-                ("a-6", "Workout", "2026-10-08T13:00:00Z", None),
-            ]
-        );
-        assert_eq!(post.skipped, 7 + 5);
-    }
-
-    fn night() -> Value {
-        json!({ "in_bed_min": 475, "asleep_min": 440, "bedtime": "23:10", "wake_time": "07:05" })
-    }
-
-    fn one_day(extra: &Value) -> (Vec<ActivityDay>, u64) {
-        let mut item = json!({ "day": "2026-10-08", "steps": 100 });
-        for (k, v) in extra.as_object().unwrap() {
-            item[k] = v.clone();
+    fn span(kind: ActivityType, start: &str, end: &str) -> Span<'static> {
+        Span {
+            day: "2026-10-09",
+            kind,
+            any_type: false,
+            start: Some(start.parse().unwrap()),
+            end: Some(end.parse().unwrap()),
         }
-        let post = HealthPost::read(
-            &json!({ "from": "2026-10-08", "to": "2026-10-08", "days": [item] }),
-            far(),
-        )
-        .unwrap();
-        (post.days, post.skipped)
+    }
+
+    fn input(start_at: Option<&str>) -> ActivityInput {
+        ActivityInput {
+            day: "2026-10-09".into(),
+            workout_id: None,
+            name: "Run".into(),
+            minutes: 30,
+            kcal: None,
+            sets: Vec::new(),
+            kind: ActivityType::Run,
+            distance_m: Some(5000),
+            start_at: start_at.map(str::to_owned),
+            uid: None,
+            rev: None,
+        }
     }
 
     #[test]
-    fn a_bad_value_is_dropped_and_the_day_kept() {
-        let (days, skipped) = one_day(&json!({ "resting_hr": 54, "hrv_ms": 48,
-            "deep_min": 70, "rem_min": 90, "light_min": 200 }));
-        assert_eq!(skipped, 1);
-        // Stages need a night: dropped, counted.
-        assert_eq!((days[0].resting_hr, days[0].deep_min), (Some(54), None));
-        // Each bound: the field goes, steps stay, the item counts once.
-        for bad in [
-            json!({ "resting_hr": 19 }),
-            json!({ "resting_hr": 251 }),
-            json!({ "hrv_ms": 0 }),
-            json!({ "hrv_ms": 501 }),
-            json!({ "hrv_ms": 48.5 }),
-            json!({ "hrv_ms": "48" }),
-            json!({ "hrv_ms": 600, "resting_hr": 300 }),
+    fn matches_needs_half_the_shorter_and_times() {
+        let run = ActivityType::Run;
+        // 100 s against 100 s: 50 s overlap matches, 49 s doesn't.
+        let w = span(run, "2026-10-09T17:00:00Z", "2026-10-09T17:01:40Z");
+        let half = span(run, "2026-10-09T17:00:50Z", "2026-10-09T17:02:30Z");
+        let less = span(run, "2026-10-09T17:00:51Z", "2026-10-09T17:02:31Z");
+        assert!(matches(&half, &w));
+        assert!(!matches(&less, &w));
+        // A hand-logged workout isn't a run; any type (an import) is.
+        let workout = span(
+            ActivityType::Workout,
+            "2026-10-09T17:00:00Z",
+            "2026-10-09T17:01:40Z",
+        );
+        assert!(!matches(&workout, &w));
+        let untyped = Span {
+            any_type: true,
+            ..workout
+        };
+        assert!(matches(&untyped, &w));
+        let ride = span(
+            ActivityType::Cycling,
+            "2026-10-09T17:00:00Z",
+            "2026-10-09T17:01:40Z",
+        );
+        assert!(!matches(&ride, &w));
+        // No start on either side: no match (no fallback).
+        let timeless = Span {
+            start: None,
+            end: None,
+            ..untyped
+        };
+        assert!(!matches(&timeless, &w));
+        assert!(!matches(&untyped, &timeless));
+        // Another day never.
+        let other = Span {
+            day: "2026-10-10",
+            ..untyped
+        };
+        assert!(!matches(&other, &w));
+    }
+
+    #[test]
+    fn compatible_types() {
+        use ActivityType::{Cycling, Hiit, Other, Run, Workout, Yoga};
+        for (hand, device, ok) in [
+            (Run, Run, true),
+            (Workout, Workout, true),
+            (Workout, Hiit, true),
+            (Workout, Other, true),
+            (Workout, Run, false),
+            (Run, Other, false),
+            (Hiit, Workout, false),
+            (Yoga, Workout, false),
+            (Cycling, Run, false),
         ] {
-            let (days, skipped) = one_day(&bad);
-            assert_eq!(skipped, 1, "{bad}");
             assert_eq!(
-                (days[0].steps, days[0].resting_hr, days[0].hrv_ms),
-                (Some(100), None, None),
-                "{bad}"
+                ActivityType::compatible(hand, device),
+                ok,
+                "{hand:?} {device:?}"
             );
         }
-        // A distance out of bounds: dropped, the workout kept.
-        let post = HealthPost::read(
-            &json!({ "from": "2026-10-08", "to": "2026-10-08", "sessions": [{
-                "key": "k", "day": "2026-10-08", "start_at": "2026-10-08T14:00:00Z",
-                "end_at": "2026-10-08T14:30:00Z", "type": 33, "distance_m": 1_000_001,
-                "recording_method": 2 }] }),
-            far(),
-        )
-        .unwrap();
-        assert_eq!(post.skipped, 1);
-        assert_eq!(
-            (
-                post.sessions[0].distance_m,
-                post.sessions[0].recording_method
-            ),
-            (None, AUTO_RECORDED)
-        );
     }
 
     #[test]
-    fn sleep_comes_all_or_none() {
-        let mut full = night();
-        full["deep_min"] = json!(70);
-        let (days, skipped) = one_day(&full);
-        assert_eq!(skipped, 0);
-        assert_eq!(
-            (
-                days[0].in_bed_min,
-                days[0].bedtime.as_deref(),
-                days[0].deep_min
-            ),
-            (Some(475), Some("23:10"), Some(70))
-        );
-        let broken = |k: &str, v: &Value| {
-            let mut n = night();
-            if v.is_null() {
-                n.as_object_mut().unwrap().remove(k);
-            } else {
-                n[k] = v.clone();
-            }
-            n["deep_min"] = json!(60);
-            one_day(&n)
+    fn type_distance_and_start_are_checked() {
+        let ok = input(Some("2026-10-09T19:30:00+03:00")).checked().unwrap();
+        assert_eq!(ok.start_at.as_deref(), Some("2026-10-09T16:30:00Z"));
+        // A start in a far time zone: its UTC date may be a day off.
+        assert!(input(Some("2026-10-08T23:30:00Z")).checked().is_ok());
+        assert!(input(Some("2026-10-07T23:59:00Z")).checked().is_err());
+        assert!(input(Some("2026-10-11T00:00:00Z")).checked().is_err());
+        assert!(input(Some("17:00")).checked().is_err());
+        let far = ActivityInput {
+            distance_m: Some(DISTANCE_M_MAX + 1),
+            ..input(None)
         };
-        for (k, v) in [
-            ("in_bed_min", json!(0)),
-            ("in_bed_min", json!(1441)),
-            ("asleep_min", json!(476)),
-            ("asleep_min", json!(-1)),
-            ("bedtime", json!("24:00")),
-            ("wake_time", json!("7:05")),
-            ("wake_time", json!(705)),
-            ("bedtime", Value::Null),
+        assert!(far.checked().is_err());
+        for (minutes, ok) in [
+            (ACTIVITY_MINUTES_MAX, true),
+            (ACTIVITY_MINUTES_MAX + 1, false),
         ] {
-            let (days, skipped) = broken(k, &v);
-            assert_eq!(skipped, 1, "{k} {v}");
-            let d = &days[0];
-            assert_eq!(
-                (
-                    d.in_bed_min,
-                    d.asleep_min,
-                    d.bedtime.as_deref(),
-                    d.wake_time.as_deref()
-                ),
-                (None, None, None, None),
-                "{k} {v}"
-            );
-            assert_eq!((d.deep_min, d.steps), (None, Some(100)), "{k} {v}");
+            let s = ActivityInput {
+                minutes,
+                ..input(None)
+            };
+            assert_eq!(s.checked().is_ok(), ok, "{minutes}");
         }
-        // Stages longer than the night go alone.
-        let mut long = night();
-        long["rem_min"] = json!(476);
-        let (days, skipped) = one_day(&long);
-        assert_eq!(
-            (days[0].rem_min, days[0].in_bed_min, skipped),
-            (None, Some(475), 1)
-        );
-        // A day left with nothing goes.
-        let post = HealthPost::read(
-            &json!({ "from": "2026-10-08", "to": "2026-10-08", "days": [
-                { "day": "2026-10-08", "in_bed_min": 0, "asleep_min": 0,
-                  "bedtime": "23:00", "wake_time": "07:00" }] }),
-            far(),
-        )
+        let typed: ActivityInput =
+            serde_json::from_value(serde_json::json!({"day": "2026-10-09", "name": "x",
+                "minutes": 1, "type": "hike"}))
+            .unwrap();
+        assert_eq!(typed.kind, ActivityType::Hike);
+        // Absent or null: a workout, which has no distance.
+        for kind in [serde_json::json!(null), serde_json::json!("workout")] {
+            let s: ActivityInput = serde_json::from_value(serde_json::json!({"day": "2026-10-09",
+                "name": "x", "minutes": 1, "type": kind, "distance_m": 10}))
+            .unwrap();
+            assert_eq!(s.kind, ActivityType::Workout);
+            assert!(s.checked().is_err());
+        }
+        let sports: ActivityInput = serde_json::from_value(serde_json::json!({"day": "2026-10-09",
+            "name": "x", "minutes": 1, "type": "sports", "distance_m": 10}))
         .unwrap();
-        assert_eq!((post.days.len(), post.skipped), (0, 1));
-        let hrv = |hr| ActivityDay {
-            day: "2026-10-08".into(),
-            hrv_ms: Some(48),
-            resting_hr: hr,
-            ..ActivityDay::default()
-        };
-        assert!(checked_day(hrv(None)).is_some());
-        assert!(checked_day(hrv(Some(5))).is_none());
-    }
-
-    #[test]
-    fn watch_minutes_round_to_at_least_one() {
-        assert_eq!(
-            [1, 59, 89, 90, 2700, 200_000].map(session_minutes),
-            [1, 1, 1, 2, 45, SESSION_MINUTES_MAX]
+        let why = sports.checked().unwrap_err().to_string();
+        assert_eq!(why, "Sports activities have no distance");
+        assert!(
+            serde_json::from_value::<ActivityInput>(serde_json::json!({"day": "2026-10-09",
+                "name": "x", "minutes": 1, "type": "strength"}))
+            .is_err()
         );
-        assert_eq!(hc_type(33), SessionType::Run);
-        assert_eq!(hc_type(56), SessionType::Other);
     }
 }

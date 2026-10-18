@@ -2,10 +2,10 @@
 // /v/<build>/ and are never asked for twice; an upgrade keeps the app
 // opening offline; a phone renders the Summary within budget.
 
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { ownProfile } from "./helpers.js";
 
-const buildOf = (html) => /"\/v\/([^/"]+)\//.exec(html)[1];
+const buildOf = (html) => /"\/v\/([^/"]+)\//u.exec(html)[1];
 const diary = (page) => page.getByRole("heading", { name: "Eaten" });
 
 // The paths the page asks the server for from now on: not those its
@@ -41,7 +41,7 @@ test("app files are immutable under /v/", async ({ page, request }) => {
   await page.goto("/");
   await expect(diary(page)).toBeVisible();
   expect(files.length).toBeGreaterThan(10);
-  for (const p of files) expect(p).toMatch(new RegExp(`^/v/${build}/`));
+  for (const p of files) expect(p).toMatch(new RegExp(`^/v/${build}/`, "u"));
 
   const res = await request.get(`/v/${build}/main.mjs`);
   expect(res.headers()["cache-control"]).toBe(
@@ -75,7 +75,7 @@ test("a warm open asks only for the page and the screen's reads", async ({
   await page.goto("/");
   await expect(diary(page)).toBeVisible();
   const generic = paths.map((p) =>
-    p.replace(/\/\d+\//, "/:id/").replace(/\d{4}-\d{2}-\d{2}/, ":day"),
+    p.replace(/\/\d+\//u, "/:id/").replace(/\d{4}-\d{2}-\d{2}/u, ":day"),
   );
   expect(generic.toSorted()).toEqual(DIARY_READS);
 });
@@ -151,6 +151,8 @@ async function seedYear(request, pid) {
     const per100 = Object.fromEntries(
       nutrients.map((n, k) => [n.key, 1 + ((f + k) % 9)]),
     );
+    // Total carbohydrate is carbohydrate plus fibre (else 400).
+    per100.carbs = per100.net_carbs + per100.fiber;
     foods.push(await send("POST", "/foods", { name: `Perf ${f}`, per100 }));
   }
   const habit = await send("POST", `/profiles/${pid}/habits`, {
@@ -165,7 +167,7 @@ async function seedYear(request, pid) {
         ...Array.from({ length: 8 }, (_, e) =>
           send("POST", `${p}/entries`, {
             day,
-            group: "Consumed",
+            group: "Eaten",
             food_id: foods[(w + i * 7 + e * 13) % foods.length].id,
             grams: 120,
           }),
@@ -183,7 +185,7 @@ async function seedYear(request, pid) {
         ...((w + i) % 2
           ? []
           : [
-              send("POST", `${p}/sessions`, {
+              send("POST", `${p}/activities`, {
                 day,
                 name: "Run",
                 type: "run",
@@ -218,7 +220,7 @@ async function renderMs(page, path) {
 const BUDGETS = [
   ["food/month", 300],
   ["body/month", 300],
-  ["training/month", 300],
+  ["activity/month", 300],
   ["habits/month", 300],
   ["food/year", 750],
 ];
@@ -247,4 +249,41 @@ test("a phone renders each Summary month within budget", async ({
     if (ms > budget) over.push(`${path} ${ms.toFixed(0)} ms > ${budget}`);
   }
   expect(over).toEqual([]);
+});
+
+// Pattern discovery (web/correlate.mjs `discover`) runs in slices.
+// After a Summary navigation's first second (its render and charts), no
+// task of a 4× slower phone runs over 50 ms in the next 3 s.
+test("Summary's pattern discovery never holds the main thread over 50 ms", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.skip(
+    !process.env.KALORIINA_PERF || testInfo.project.name !== "chromium",
+    "opt-in, chromium",
+  );
+  test.setTimeout(300_000);
+  const pid = await ownProfile(page, request, "Perf patterns");
+  await seedYear(request, pid);
+  await page.goto(`/#/summary/body/month/${YEAR}-05-15`);
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+  for (const month of ["06", "09"]) {
+    const long = await page.evaluate(async (hash) => {
+      const tasks = [];
+      new PerformanceObserver((list) => {
+        for (const e of list.getEntries()) tasks.push(e);
+      }).observe({ type: "longtask" });
+      const start = performance.now();
+      location.hash = hash;
+      await new Promise((done) => {
+        setTimeout(done, 4000);
+      });
+      return tasks
+        .filter((e) => e.startTime > start + 1000 && e.duration > 50)
+        .map((e) => Math.round(e.duration));
+    }, `#/summary/body/month/${YEAR}-${month}-15`);
+    expect(long, month).toEqual([]);
+  }
 });

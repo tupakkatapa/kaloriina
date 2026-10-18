@@ -35,7 +35,7 @@ async fn read(State(s): State<AppState>, Path(pid): Path<ProfileId>) -> Res<mode
 /// recommendations need one. The client logs the weight, then sets the
 /// recommended targets.
 async fn create(State(s): State<AppState>, Json(p): Json<ProfileInput>) -> Created<model::Profile> {
-    let p = p.checked(&s.today())?;
+    let p = p.checked(&s.today(), None)?;
     let profile = on_db(&s, move |conn| db::profile_insert(conn, &p, &[])).await?;
     Ok(created(profile))
 }
@@ -43,11 +43,16 @@ async fn create(State(s): State<AppState>, Json(p): Json<ProfileInput>) -> Creat
 async fn update(
     State(s): State<AppState>,
     Path(pid): Path<ProfileId>,
-    Json(p): Json<ProfileInput>,
+    Replace(p): Replace<ProfileInput>,
 ) -> Res<model::Profile> {
-    let p = p.checked(&s.today())?;
+    let today = s.today();
     Ok(Json(
-        on_profile(&s, pid, move |conn| db::profile_update(conn, pid, &p)).await?,
+        on_db(&s, move |conn| {
+            let stored = owner(conn, pid)?.body.goal_date;
+            let p = p.checked(&today, stored.as_deref())?;
+            db::profile_update(conn, pid, &p)
+        })
+        .await?,
     ))
 }
 
@@ -60,25 +65,37 @@ async fn delete(
 }
 
 #[derive(Deserialize)]
-struct Today {
+struct Recommend {
     day: Option<String>,
+    energy: Option<f64>,
 }
 
 /// Targets recommended from the profile's body and its latest weigh-in,
 /// with its age on `?day` (the client's today; the server's without it).
-/// Nothing is saved.
+/// Never energy: the client's model sets it (ADR 0020) and passes it as
+/// `?energy` (kcal a day) for the targets that are a share of it. Nothing
+/// is saved.
 async fn recommended(
     State(s): State<AppState>,
     Path(pid): Path<ProfileId>,
-    Query(q): Query<Today>,
+    Query(q): Query<Recommend>,
 ) -> Res<Vec<Target>> {
     let today = match &q.day {
         Some(d) => checked_date(d)?.to_owned(),
         None => s.today(),
     };
+    if q.energy
+        .is_some_and(|kcal| !(kcal.is_finite() && kcal > 0.0))
+    {
+        return Err(Error::invalid_field(
+            "energy",
+            "energy must be a positive number of kcal",
+        ));
+    }
     let profile = on_db(&s, move |conn| owner(conn, pid)).await?;
     Ok(Json(dri::recommend(
         &profile.body.person(profile.latest_weight_kg, &today)?,
+        q.energy,
     )))
 }
 
@@ -93,9 +110,10 @@ async fn targets_update(
     Path(pid): Path<ProfileId>,
     Json(input): Json<TargetsInput>,
 ) -> Res<Vec<Target>> {
-    let list = input.checked()?;
     Ok(Json(
-        on_profile(&s, pid, move |conn| {
+        on_db(&s, move |conn| {
+            // The body goals are checked against the profile's sex and height.
+            let list = input.checked_for(&owner(conn, pid)?.body)?;
             db::target_replace(conn, pid, input.rev, &list)?;
             db::target_list(conn, pid)
         })
@@ -128,9 +146,10 @@ async fn weight_set(
     model::checked_day_so_far(&day)?;
     let w = w.checked()?;
     let set_at = w.set_at(model::now_ms());
+    let tz = s.tz.clone();
     Ok(Json(
         on_profile(&s, pid, move |conn| {
-            db::weight_set(conn, pid, &day, w.kg, set_at)
+            db::weight_set(conn, pid, &day, w.kg, set_at, &tz)
         })
         .await?,
     ))
@@ -141,8 +160,9 @@ async fn weight_delete(
     Path((pid, day)): Path<(ProfileId, String)>,
 ) -> Result<StatusCode, Error> {
     checked_date(&day)?;
+    let tz = s.tz.clone();
     on_profile(&s, pid, move |conn| {
-        db::weight_delete(conn, pid, &day, model::now_ms())
+        db::weight_delete(conn, pid, &day, model::now_ms(), &tz)
     })
     .await?;
     Ok(StatusCode::NO_CONTENT)

@@ -25,7 +25,24 @@ pub enum BuiltinSource {
     /// The grams eaten of foods in the category; a recipe without one of
     /// its own counts its ingredients' share.
     Category(FoodCategory),
+    /// Water in what was eaten and drunk (a food's water value; a drink
+    /// without one, an estimate; a recipe through its parts), less
+    /// [`ALCOHOL_ML_PER_G`] a gram of alcohol, never below 0 for an entry
+    /// (an imported group total is one entry) (ADR 0020).
+    Hydration,
 }
+
+/// Water (ml) a gram of alcohol may take back: its acute diuresis, about
+/// 10 ml/g (Eggleton, J Physiol 1942). An upper estimate: beer up to ~4 %
+/// shows no net diuresis (Hobson & Maughan, Alcohol Alcohol. 2010), and
+/// stronger drinks only a transient one (Polhuis et al., Nutrients 2017);
+/// the entries don't carry a drink's strength, so it applies to every gram.
+/// Caffeine takes none: coffee hydrates as water does at habitual intake
+/// (Killer et al., `PLoS ONE` 2014; Maughan et al., Am J Clin Nutr 2016,
+/// beverage hydration index), and the acute diuresis of a large dose
+/// (≥ ~300 mg, Maughan & Griffin, J Hum Nutr Diet 2003) gives no
+/// defensible ml per mg (ADR 0020).
+pub const ALCOHOL_ML_PER_G: f64 = 10.0;
 
 /// A habit read from food. Amounts are in the source's
 /// stored unit (g, mg); shown as `amount × factor` in `unit`.
@@ -84,7 +101,7 @@ const fn category(
 pub const BUILTINS: &[Builtin] = &[
     Builtin {
         key: "water",
-        name: "Water",
+        name: "Hydration",
         unit: "L",
         one: "L",
         factor: 0.001,
@@ -92,8 +109,10 @@ pub const BUILTINS: &[Builtin] = &[
         metric: "water",
         goal_dir: GoalDir::AtLeast,
         per: Per::Day,
-        note: None,
-        source: BuiltinSource::Nutrient("water"),
+        note: Some(
+            "Water in what you eat and drink (a drink without a water value, estimated), less alcohol's effect.",
+        ),
+        source: BuiltinSource::Hydration,
     },
     Builtin {
         key: "alcohol",
@@ -149,6 +168,21 @@ pub const BUILTINS: &[Builtin] = &[
         note: None,
         source: BuiltinSource::Nutrient("sodium"),
     },
+    Builtin {
+        key: "creatine",
+        name: "Creatine",
+        unit: "g",
+        one: "g",
+        factor: 1.0,
+        bounds: [1.0, 2.0, 2.5],
+        metric: "creatine",
+        goal_dir: GoalDir::AtLeast,
+        per: Per::Day,
+        note: Some(
+            "Counts foods with creatine set, like Creatine monohydrate; meat's own creatine isn't in Fineli.",
+        ),
+        source: BuiltinSource::Nutrient("creatine"),
+    },
     category(
         "sweets_snacks",
         FoodCategory::SweetsSnacks,
@@ -163,13 +197,21 @@ pub const BUILTINS: &[Builtin] = &[
         "g",
         [100.0, 250.0, 500.0],
     ),
-    category(
-        "sugary_drinks",
-        FoodCategory::SugaryDrinks,
-        "category:sugary_drinks",
-        "ml",
-        [100.0, 250.0, 500.0],
-    ),
+    // Drunk, so in litres: a gram of a drink is a millilitre, as
+    // Hydration has it.
+    Builtin {
+        unit: "L",
+        one: "L",
+        factor: 0.001,
+        bounds: [0.1, 0.25, 0.5],
+        ..category(
+            "sugary_drinks",
+            FoodCategory::SugaryDrinks,
+            "category:sugary_drinks",
+            "L",
+            [0.1, 0.25, 0.5],
+        )
+    },
     Builtin {
         goal_dir: GoalDir::AtLeast,
         per: Per::Day,
@@ -197,6 +239,16 @@ pub struct HabitDayRow {
     pub habit: String,
     pub day: String,
     pub amount: f64,
+    /// Whether `amount` is the day's (ADR 0030): a nutrient built-in's only
+    /// once foods carrying its nutrient were [`KNOWN`] of the day's food
+    /// (by dry matter; caffeine, alcohol and creatine by what could hold
+    /// them), hydration's of foods whose water is known, a category's once
+    /// every food eaten has a category (imported totals carry only energy,
+    /// the macros and alcohol); else it is a lower bound, not to be
+    /// compared. Trackers' always are.
+    ///
+    /// [`KNOWN`]: crate::nutrients::KNOWN
+    pub known: bool,
 }
 
 /// A tracker of your own.
@@ -228,6 +280,10 @@ pub struct HabitInput {
     pub archived: bool,
     #[serde(default)]
     pub rev: Option<i64>,
+    /// A create's retry key: a create naming one saved before
+    /// answers with that record. Ignored by an update.
+    #[serde(default)]
+    pub uid: Option<String>,
 }
 
 /// A checked [`HabitInput`]: what is stored.
@@ -239,6 +295,7 @@ pub struct CheckedHabit {
     pub goal_dir: GoalDir,
     pub archived: bool,
     pub rev: Option<i64>,
+    pub uid: Option<String>,
 }
 
 impl HabitInput {
@@ -255,6 +312,7 @@ impl HabitInput {
         )])?;
         let name = text(&self.name, "name", LABEL_MAX)?;
         let unit = text(&self.unit, "unit", UNIT_MAX)?;
+        super::checked_opt_uid(self.uid.as_deref())?;
         let goal_value = self.goal_value;
         if goal_value.is_some_and(|l| !(l.is_finite() && (0.0..=HABIT_AMOUNT_MAX).contains(&l))) {
             return Err(Error::invalid_field(
@@ -278,6 +336,7 @@ impl HabitInput {
             goal_dir,
             archived: self.archived,
             rev: self.rev,
+            uid: self.uid,
         })
     }
 }
@@ -332,6 +391,7 @@ mod tests {
             day_limit: Gone::default(),
             archived: false,
             rev: None,
+            uid: None,
         }
     }
 
@@ -391,6 +451,7 @@ mod tests {
                     assert_eq!(b.metric, format!("category:{}", c.as_str()));
                     assert_eq!(b.name, c.label());
                 }
+                BuiltinSource::Hydration => assert_eq!(b.metric, "water"),
             }
             assert!(b.bounds.windows(2).all(|w| w[0] < w[1]), "{}", b.key);
         }

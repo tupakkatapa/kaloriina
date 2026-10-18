@@ -1,5 +1,8 @@
 package io.github.tupakkatapa.kaloriina;
 
+import org.json.JSONException;
+import org.json.JSONObject;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -7,16 +10,15 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import org.json.JSONException;
-import org.json.JSONObject;
 
 /**
- * Plain HTTPS to the configured origin: no cookies, no credentials (v1 works only where the
- * network is the login). Trust follows the network security config.
+ * Plain HTTPS to the configured origin: no cookies, no credentials (v1 works only where the network
+ * is the login). Trust follows the network security config.
  */
 final class Net {
     /** The probe's and a page's timeouts; a sync POST may take longer. */
     static final int QUICK_MS = 5_000;
+
     static final int POST_MS = 30_000;
 
     private Net() {}
@@ -87,13 +89,14 @@ final class Net {
             InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
             byte[] body = new byte[0];
             if (in != null) {
-                try (InputStream s = in; ByteArrayOutputStream buf = new ByteArrayOutputStream()) {
+                try (InputStream s = in;
+                        ByteArrayOutputStream buf = new ByteArrayOutputStream()) {
                     s.transferTo(buf);
                     body = buf.toByteArray();
                 }
             }
-            return new Reply(code, body, c.getContentType(),
-                    c.getHeaderField("Content-Disposition"));
+            return new Reply(
+                    code, body, c.getContentType(), c.getHeaderField("Content-Disposition"));
         } finally {
             c.disconnect();
         }

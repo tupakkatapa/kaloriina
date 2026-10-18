@@ -1,10 +1,11 @@
 //! The server must keep serving the diary when no TLS roots load; only the
-//! Open Food Facts lookup depends on them.
+//! Open Food Facts lookup and `https://` hooks depend on them.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::{Mutex, PoisonError};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -26,9 +27,14 @@ fn request(port: u16, raw: &str) -> Option<String> {
     Some(out)
 }
 
-#[test]
-fn serves_without_ca_certificates() {
-    let dir = std::env::temp_dir().join(format!("kaloriina-no-tls-{}", std::process::id()));
+/// One server at a time: a port picked free and let go could otherwise be
+/// another test's stand-in by the time its server binds.
+static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+/// `kaloriina serve` on a free port with no CA certificates to load,
+/// answering.
+fn serve_without_roots(name: &str) -> (Server, u16) {
+    let dir = std::env::temp_dir().join(format!("kaloriina-{name}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let empty = dir.join("empty.pem");
     std::fs::write(&empty, "").unwrap();
@@ -47,7 +53,7 @@ fn serves_without_ca_certificates() {
             .stderr(Stdio::null())
             .spawn()
             .unwrap(),
-        dir.clone(),
+        dir,
     );
 
     let get = "GET /api/meta HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
@@ -63,14 +69,59 @@ fn serves_without_ca_certificates() {
         sleep(Duration::from_millis(50));
     }
     assert!(reply.expect("server answered").starts_with("HTTP/1.1 200"));
+    (server, port)
+}
 
-    let body = "{}";
-    let lookup = format!(
-        "POST /api/foods/barcode/6408430000258 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\
+/// A JSON request.
+fn send_json(port: u16, method: &str, path: &str, body: &str) -> String {
+    let raw = format!(
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\
          Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
         body.len()
     );
-    let reply = request(port, &lookup).unwrap();
+    request(port, &raw).unwrap()
+}
+
+#[test]
+fn serves_without_ca_certificates() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let (_server, port) = serve_without_roots("no-tls");
+    let reply = send_json(port, "POST", "/api/foods/barcode/6408430000258", "{}");
     assert!(reply.starts_with("HTTP/1.1 502"), "{reply}");
     assert!(reply.contains("unavailable"), "{reply}");
+}
+
+#[test]
+fn hooks_work_without_tls_roots() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let (_server, port) = serve_without_roots("no-tls-hooks");
+    // A stand-in Home Assistant: answers one call 200.
+    let ha = TcpListener::bind("127.0.0.1:0").unwrap();
+    let ha_port = ha.local_addr().unwrap().port();
+    let stub = std::thread::spawn(move || {
+        let (mut socket, _) = ha.accept().unwrap();
+        let mut seen = [0; 4096];
+        let n = socket.read(&mut seen).unwrap();
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        String::from_utf8_lossy(&seen[..n]).into_owned()
+    });
+    let hook = "/api/profiles/1/hooks/home-assistant";
+    let body =
+        format!(r#"{{"url":"http://127.0.0.1:{ha_port}","webhook_id":"kaloriina","events":[]}}"#);
+    let reply = send_json(port, "PUT", hook, &body);
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    let reply = send_json(
+        port,
+        "POST",
+        &format!("{hook}/events"),
+        r#"{"event":"test"}"#,
+    );
+    assert!(reply.contains(r#""ok":true"#), "{reply}");
+    assert!(
+        stub.join()
+            .unwrap()
+            .starts_with("POST /api/webhook/kaloriina ")
+    );
 }

@@ -5,16 +5,30 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::model::{FoodCategory, FoodInput, GRAMS_MAX, LABEL_MAX, NAME_MAX, Serving, sneaky};
-use crate::nutrients::{KJ_PER_KCAL, Nutrients, SALT_PER_SODIUM};
+use crate::nutrients::{IU_PER_UG, KJ_PER_KCAL, Nutrients, SALT_PER_SODIUM};
 
 /// Open Food Facts `nutriments` field, the factor converting its
 /// grams-per-100 g value into the registry unit, and the registry key.
-const OFF_FIELDS: [(&str, f64, &str); 25] = [
+const OFF_FIELDS: [(&str, f64, &str); 38] = [
     ("energy-kcal", 1.0, "energy"),
     ("caffeine", 1_000.0, "caffeine"),
+    ("creatine", 1.0, "creatine"),
     ("vitamin-b12", 1_000_000.0, "b12"),
     ("vitamin-a", 1_000_000.0, "vitamin_a"),
     ("vitamin-c", 1_000.0, "vitamin_c"),
+    // Stored in IU: g → µg → IU.
+    ("vitamin-d", 1_000_000.0 * IU_PER_UG, "vitamin_d"),
+    ("vitamin-e", 1_000.0, "vitamin_e"),
+    ("vitamin-k", 1_000_000.0, "vitamin_k"),
+    ("vitamin-b1", 1_000.0, "b1"),
+    ("vitamin-b2", 1_000.0, "b2"),
+    ("vitamin-pp", 1_000.0, "b3"),
+    ("pantothenic-acid", 1_000.0, "b5"),
+    ("vitamin-b6", 1_000.0, "b6"),
+    ("vitamin-b9", 1_000_000.0, "folate"),
+    ("selenium", 1_000_000.0, "selenium"),
+    ("copper", 1_000.0, "copper"),
+    ("manganese", 1_000.0, "manganese"),
     ("calcium", 1_000.0, "calcium"),
     ("iron", 1_000.0, "iron"),
     ("magnesium", 1_000.0, "magnesium"),
@@ -37,6 +51,9 @@ const OFF_FIELDS: [(&str, f64, &str); 25] = [
     ("proteins", 1.0, "protein"),
 ];
 
+/// Ethanol's density, g/ml: % vol to g per 100 ml.
+const ETHANOL_G_PER_ML: f64 = 0.789;
+
 /// Trimmed, non-empty string field without control or bidi characters,
 /// cut to `max` characters so it passes the API's validation.
 fn truncated_text(v: &Value, key: &str, max: usize) -> Option<String> {
@@ -56,9 +73,12 @@ fn truncated_text(v: &Value, key: &str, max: usize) -> Option<String> {
     })
 }
 
-/// OFF reports numbers as JSON numbers or numeric strings.
+/// OFF reports numbers as JSON numbers or numeric strings, some with a
+/// decimal comma ("12,5").
 fn number(v: &Value) -> Option<f64> {
-    let n = v.as_f64().or_else(|| v.as_str()?.trim().parse().ok())?;
+    let n = v
+        .as_f64()
+        .or_else(|| v.as_str()?.trim().replace(',', ".").parse().ok())?;
     (n.is_finite() && n >= 0.0).then_some(n)
 }
 
@@ -124,6 +144,15 @@ fn category(product: &Value) -> Option<FoodCategory> {
         .and_then(|(_, c)| *c)
 }
 
+/// Whether a product is a drink: tagged `en:beverages` (alcoholic and
+/// plant-based drinks are under it too).
+fn drink(product: &Value) -> bool {
+    product
+        .get("categories_tags")
+        .and_then(Value::as_array)
+        .is_some_and(|tags| tags.iter().any(|t| t == "en:beverages"))
+}
+
 /// Map an OFF `product` object to a food. `None` if it has no name.
 #[must_use]
 pub fn map_product(product: &Value, barcode: &str) -> Option<FoodInput> {
@@ -137,13 +166,18 @@ pub fn map_product(product: &Value, barcode: &str) -> Option<FoodInput> {
             per100.insert(key, v * factor);
         }
     }
+    // OFF's alcohol is % vol, not grams: g/100 ml at ethanol's 0.789 g/ml.
+    if let Some(abv) = get("alcohol") {
+        per100.insert("alcohol", abv * ETHANOL_G_PER_ML);
+    }
     if per100.get("energy").is_none()
         && let Some(kj) = get("energy-kj").or_else(|| get("energy"))
     {
         per100.insert("energy", kj / KJ_PER_KCAL);
     }
     // OFF records labels as printed; EU labels state available carbohydrate
-    // (fibre excluded), mapped to `net_carbs`; the total follows on save.
+    // (fibre excluded), mapped to `net_carbs`; the total follows on save
+    // when fibre is known.
     // ponytail: US-labelled products already state the total, so theirs comes
     // out high by the fibre; fine for an EU user.
     if per100.get("sodium").is_none()
@@ -173,7 +207,10 @@ pub fn map_product(product: &Value, barcode: &str) -> Option<FoodInput> {
         servings,
         archived: false,
         category: category(product).map(|c| c.as_str().to_owned()),
+        basis: None,
         rev: None,
+        uid: None,
+        drink: Some(drink(product)),
     })
 }
 
@@ -205,7 +242,8 @@ pub async fn lookup(http: &reqwest::Client, base: &str, barcode: &str) -> Lookup
     };
     let body = match res {
         Ok(r) => capped_json(r).await,
-        Err(e) => Err(e.to_string()),
+        // Its URL names the barcode: never in the journal.
+        Err(e) => Err(e.without_url().to_string()),
     };
     match body {
         Ok(body) => match body.get("product").and_then(|p| map_product(p, barcode)) {
@@ -214,7 +252,7 @@ pub async fn lookup(http: &reqwest::Client, base: &str, barcode: &str) -> Lookup
                 Ok(()) => Lookup::Found(food),
                 Err((n, max)) => {
                     let why = format!("{} over {max} {} per 100 g", n.label, n.unit);
-                    tracing::warn!(barcode, why, "open food facts product is impossible");
+                    tracing::warn!(why, "open food facts product is impossible");
                     Lookup::Impossible(why)
                 }
             },
@@ -232,7 +270,7 @@ const BODY_MAX: usize = 1024 * 1024;
 /// The response as JSON, read up to [`BODY_MAX`] bytes.
 async fn capped_json(mut r: reqwest::Response) -> Result<Value, String> {
     let mut bytes = Vec::new();
-    while let Some(chunk) = r.chunk().await.map_err(|e| e.to_string())? {
+    while let Some(chunk) = r.chunk().await.map_err(|e| e.without_url().to_string())? {
         if bytes.len() + chunk.len() > BODY_MAX {
             return Err(format!("answer larger than {BODY_MAX} bytes"));
         }
@@ -255,7 +293,8 @@ mod tests {
             "serving_size": "250 ml",
             "nutriments": {
                 "energy-kcal_100g": 46, "proteins_100g": "1.0", "carbohydrates_100g": 6.7,
-                "fiber_100g": 0.8, "sodium_100g": 0.04, "vitamin-b12_100g": 0.000_000_38
+                "fiber_100g": 0.8, "sodium_100g": 0.04, "vitamin-b12_100g": 0.000_000_38,
+                "creatine_100g": 90
             }
         });
         let f = map_product(&p, "7394376616501").unwrap().checked().unwrap();
@@ -265,6 +304,7 @@ mod tests {
         assert_close!(f.per100.get("protein").unwrap(), 1.0);
         assert_close!(f.per100.get("sodium").unwrap(), 40.0);
         assert_close!(f.per100.get("b12").unwrap(), 0.38);
+        assert_close!(f.per100.get("creatine").unwrap(), 90.0);
         // EU labels give available carbohydrate (fibre excluded).
         assert_close!(f.per100.get("net_carbs").unwrap(), 6.7);
         assert_close!(f.per100.get("carbs").unwrap(), 7.5);
@@ -275,6 +315,27 @@ mod tests {
                 grams: 250.0
             }]
         );
+    }
+
+    /// OFF's alcohol (% vol) was dropped, so a beer
+    /// got positives, lights and no hydration deduction.
+    #[test]
+    fn maps_alcohol_by_volume_and_more_vitamins() {
+        let p = json!({
+            "product_name": "Lager",
+            "nutriments": { "alcohol_100g": 4.7, "energy-kcal_100g": 43,
+                            "vitamin-d_100g": 0.000_001_5, "vitamin-b9_100g": 0.000_02,
+                            "selenium_100g": 0.000_011 }
+        });
+        let f = map_product(&p, "1").unwrap();
+        assert_close!(
+            f.per100.get("alcohol").unwrap(),
+            3.7083,
+            "4.7 % vol × 0.789"
+        );
+        assert_close!(f.per100.get("vitamin_d").unwrap(), 60.0, "1.5 µg in IU");
+        assert_close!(f.per100.get("folate").unwrap(), 20.0);
+        assert_close!(f.per100.get("selenium").unwrap(), 11.0);
     }
 
     #[test]
@@ -297,7 +358,7 @@ mod tests {
         let f = map_product(&p, "1234").unwrap().checked().unwrap();
         assert_close!(f.per100.get("sodium").unwrap(), 500.0);
         assert_eq!(f.per100.get("net_carbs"), Some(50.0));
-        assert_eq!(f.per100.get("carbs"), Some(50.0), "no fibre known");
+        assert_eq!(f.per100.get("carbs"), None, "no fibre known: no total");
     }
 
     #[test]
@@ -349,5 +410,82 @@ mod tests {
         assert_eq!(of(&[]), None);
         let untagged = json!({ "product_name": "X", "categories_tags": "en:fruits" });
         assert_eq!(map_product(&untagged, "1").unwrap().category, None);
+    }
+
+    #[test]
+    fn beverages_are_drinks() {
+        let of = |tags: Value| {
+            let p = json!({ "product_name": "X", "categories_tags": tags });
+            map_product(&p, "1").unwrap().drink
+        };
+        assert_eq!(of(json!(["en:beverages", "en:waters"])), Some(true));
+        assert_eq!(of(json!(["en:dairies", "en:milks"])), Some(false));
+        assert_eq!(of(Value::Null), Some(false));
+    }
+
+    #[test]
+    fn a_decimal_comma_string_is_a_number() {
+        let p = json!({
+            "product_name": "Rye bread",
+            "serving_quantity": "12,5",
+            "nutriments": { "fat_100g": " 3,2 " }
+        });
+        let f = map_product(&p, "1").unwrap();
+        assert_close!(f.servings[0].grams, 12.5);
+        assert_close!(f.per100.get("fat").unwrap(), 3.2);
+    }
+
+    /// Log lines written while `f` runs, as text.
+    async fn logged<F: std::future::Future<Output = ()>>(f: F) -> String {
+        use std::sync::{Arc, Mutex};
+        #[derive(Clone)]
+        struct Buf(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Buf {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let buf = Buf(Arc::default());
+        let writer = buf.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+        f.await;
+        drop(guard);
+        String::from_utf8(buf.0.lock().unwrap().clone()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn lookups_never_log_the_barcode() {
+        // A barcode is what someone ate; the journal outlives the diary.
+        const CODE: &str = "6408430000135";
+        let http = reqwest::Client::new();
+        let unreachable = logged(async {
+            let l = lookup(&http, "http://127.0.0.1:9", CODE).await;
+            assert!(matches!(l, Lookup::Unavailable), "{l:?}");
+        })
+        .await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stub = axum::Router::new().fallback(|| async {
+            axum::Json(json!({ "product": {
+                "product_name": "Salt", "nutriments": { "fat_100g": 500 } } }))
+        });
+        tokio::spawn(async move { axum::serve(listener, stub).await.unwrap() });
+        let impossible = logged(async {
+            let l = lookup(&http, &format!("http://{addr}"), CODE).await;
+            assert!(matches!(l, Lookup::Impossible(_)), "{l:?}");
+        })
+        .await;
+        for log in [unreachable, impossible] {
+            assert!(log.contains("open food facts"), "nothing logged: {log}");
+            assert!(!log.contains(CODE), "{log}");
+        }
     }
 }

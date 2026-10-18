@@ -167,7 +167,7 @@ async fn plans_are_validated_and_kept_per_profile() {
 }
 
 #[tokio::test]
-async fn a_session_takes_its_plan_and_a_deleted_workout_its_plans() {
+async fn a_session_takes_its_plan_and_a_used_workout_cant_go() {
     let app = app();
     let pulls = workout(&app, "Pulls").await;
     let other = workout(&app, "Other").await;
@@ -180,7 +180,7 @@ async fn a_session_takes_its_plan_and_a_deleted_workout_its_plans() {
     let (status, _) = call(
         &app,
         "POST",
-        "/api/profiles/1/sessions",
+        "/api/profiles/1/activities",
         Some(session(None)),
     )
     .await;
@@ -190,7 +190,7 @@ async fn a_session_takes_its_plan_and_a_deleted_workout_its_plans() {
     let (status, done) = call(
         &app,
         "POST",
-        "/api/profiles/1/sessions",
+        "/api/profiles/1/activities",
         Some(session(Some(pulls))),
     )
     .await;
@@ -208,23 +208,20 @@ async fn a_session_takes_its_plan_and_a_deleted_workout_its_plans() {
     // Editing a session never touches plans.
     let (status, _) = put_with_rev(
         &app,
-        &format!("/api/profiles/1/sessions/{}", done["id"]),
+        &format!("/api/profiles/1/activities/{}", done["id"]),
         session(Some(pulls)),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(plan_days(&app).await.len(), 3);
 
-    // Deleting the workout deletes its plans; the session stays.
-    let (status, _) = call(&app, "DELETE", &format!("/api/workouts/{pulls}"), None).await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
-    let ids: Vec<i64> = plan_days(&app)
-        .await
-        .into_iter()
-        .map(|(_, id)| id)
-        .collect();
-    assert_eq!(ids, [other_plan["id"].as_i64().unwrap()]);
-    let (_, sessions) = call(&app, "GET", "/api/profiles/1/sessions", None).await;
+    // A workout sessions and plans use can't be deleted: plans and sessions
+    // stay.
+    let (status, err) = call(&app, "DELETE", &format!("/api/workouts/{pulls}"), None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{err}");
+    assert_eq!(err["code"], "workout_in_use");
+    assert_eq!(plan_days(&app).await.len(), 3);
+    let (_, sessions) = call(&app, "GET", "/api/profiles/1/activities", None).await;
     assert_eq!(sessions.as_array().unwrap().len(), 2);
 }
 

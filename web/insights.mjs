@@ -4,19 +4,45 @@
 //
 // A series is {values: Map<day, number>, samples: [day], label?}: the days
 // that count as data (`samples`) and each one's number. A rule is
-// `(ctx) => result | [result] | null`, result = {id, text, margin}; it
-// returns null when a series it needs is absent, so a new data source adds
-// a series and a rule, never plumbing.
+// `(ctx) => result | [result] | null`; it returns null when a series it
+// needs is absent, so a new data source adds a series and a rule, never
+// plumbing. A result is one card (ADR 0030, scannable cards): {id, tone
+// (`warning`, `tip`, `correlation` or `fact`), headline (≤ 5 words:
+// subject and verdict), numbers (one line: the numbers · the period),
+// detail (how it was found: sources, n, ρ, caveats), link? (where it
+// opens: {to: "sources", key} · {to: "metric", metric} · {to:
+// "exercises", q} · {to: "activities"} · {to: "chart", x, y, xs, ys,
+// lag}: series keys `x`, `y`, the series `xs`, `ys`, x read `lag` days
+// before y),
+// margin}.
 
+import { bh, mannWhitney, pairDays, Q } from "./correlate.mjs";
 import { daysIn, duration, shift, weekday } from "./dates.mjs";
-import { judge } from "./food-calendar.mjs";
-import { fmt, isNil, noun, plural } from "./nutrients.mjs";
+import { fmt, fmtNum, isNil, NBSP, noun, plural } from "./format.mjs";
+import {
+  bmiClass,
+  bodyFatTrend,
+  distanceChange,
+  goal,
+  loadChange,
+  lossRate,
+  MEAN_BAR,
+  muscleGaps,
+  recovery,
+  span,
+  targetStreak,
+  valuesOf,
+  wholePct,
+} from "./insights-rules.mjs";
+import { judge } from "./nutrients.mjs";
+import { mean, sum } from "./stats.mjs";
+
+export { TRACKS_WEIGHT, bmi, tracking } from "./insights-rules.mjs";
 
 // Comparisons: samples and coverage per window, the smallest change worth
 // a sentence (a mean's relative change, a count, a count per week).
 const MIN_SAMPLES = 7;
 const MIN_COVERAGE = 0.5;
-const MEAN_BAR = 0.1;
 const COUNT_BAR = 2;
 const PER_WEEK_BAR = 0.5;
 // Weekdays: samples of the weekday (3 of one weekday span 3 weeks); a
@@ -37,9 +63,8 @@ const WEEKEND_LIFT = 0.2;
 // A check-in scale (1–5) moves by half a point before it is a change:
 // contrast's 10 % alone can be a quarter point.
 const SCALE_BAR = 0.5;
-// Ranking: margins past the bar are capped, and so many are shown.
+// Ranking: margins past the bar are capped.
 const MAX_MARGIN = 3;
-const SHOWN = 3;
 
 const WEEKDAYS = [
   "Mondays",
@@ -52,25 +77,14 @@ const WEEKDAYS = [
 ];
 const isWeekend = (day) => weekday(day) >= 5;
 const min = (a, b) => (a < b ? a : b);
-const sum = (list) => list.reduce((t, v) => t + v, 0);
-const valuesOf = (s, days = s.samples) => days.map((d) => s.values.get(d) ?? 0);
-const mean = (list) => (list.length ? sum(list) / list.length : 0);
 const names = (days) =>
   days
     .toSorted((a, b) => a - b)
     .map((d) => WEEKDAYS[d])
     .join(" and ");
-const pct = (change) => Math.round(Math.abs(change) * 100);
-
 // The last day a window counts: `to`, or `last` (yesterday for food and
-// habits, still being logged; today for training) while it runs.
+// habits, still being logged; today for activity) while it runs.
 const through = (to, last) => min(to, last);
-
-// The last day a period's tiles count: as `through`, except that a period
-// wholly after `last` has nothing elapsed and its tiles count what is
-// logged, as its calendar does.
-export const tileThrough = (from, to, last) =>
-  from > last ? to : through(to, last);
 
 // `s` within [from, to].
 function clip(s, from, to) {
@@ -88,10 +102,20 @@ const clipAll = (set, from, to) =>
     Object.entries(set).map(([k, s]) => [k, clip(s, from, to)]),
   );
 
+// The period a card's numbers cover: "this month so far" while it runs,
+// else its days ("Sep 1 – 30"). `through` the last day counted.
+export const periodWords = ({ kind, from, to, through: end }) =>
+  end < to ? `this ${kind} so far` : span(from, end);
+
 // `ctx` ({kind, from, to, last, before: {from, to}, series, prev, targets,
-// say}) clipped to its elapsed days, with `through`, `finished`, `days`
-// (elapsed), `noun` ("last month") and the same for `before`; null when
-// nothing has elapsed.
+// say}; and as a subtab has them: `person` (the profile), `trailing` (the 90
+// days ending `through`, unclipped: series and `activities`), `exercises` (id →
+// exercise), `activities` and `beforeActivities` (the two periods'), `cardio`
+// (summary-load.mjs loadCardio), `warnings`
+// (food) and `correlations` (the subtab's)) clipped to its elapsed days, with
+// `through`, `finished`, `days` (elapsed), `when` (periodWords), `noun` ("the
+// month before": the period shown may not be the current one) and the same for
+// `before`; null when nothing has elapsed.
 export function prepare(ctx) {
   const end = through(ctx.to, ctx.last);
   if (end < ctx.from) return null;
@@ -106,8 +130,9 @@ export function prepare(ctx) {
     ...ctx,
     through: end,
     finished: end === ctx.to,
+    when: periodWords({ ...ctx, through: end }),
     days: daysIn(ctx.from, end),
-    noun: `last ${ctx.kind}`,
+    noun: `the ${ctx.kind} before`,
     series: clipAll(ctx.series ?? {}, ctx.from, end),
     before,
     prev: before && clipAll(ctx.prev, before.from, before.through),
@@ -130,8 +155,16 @@ export function compare(c, name) {
   const now = mean(valuesOf(a));
   const then = mean(valuesOf(b));
   if (!(then > 0)) return null;
-  return { now, was: then, change: (now - then) / then };
+  return {
+    now,
+    was: then,
+    change: (now - then) / then,
+    n: [a.samples.length, b.samples.length],
+  };
 }
+
+// "(12 vs 19 days)": how many samples each side of a comparison holds.
+const counts = ([a, b], unit = "days") => `(${fmt(a)} vs ${fmt(b)} ${unit})`;
 
 const byWeekday = (s) => {
   const out = Array.from({ length: 7 }, () => []);
@@ -156,7 +189,7 @@ function weekdayHigh(s) {
     )
     .toSorted((a, b) => b.lift - a.lift)
     .slice(0, MAX_NAMED);
-  if (!named.length) return null;
+  if (named.length === 0) return null;
   const m = mean(named.flatMap((x) => x.list));
   return {
     days: named.map((x) => x.d),
@@ -185,72 +218,120 @@ function weekdayCounts(s) {
     .toSorted((a, b) => b.ratio - a.ratio)
     .slice(0, MAX_NAMED);
   const held = sum(named.flatMap((x) => x.list));
-  if (!named.length || held < MOSTLY * total) return null;
+  if (named.length === 0 || held < MOSTLY * total) return null;
   return {
     days: named.map((x) => x.d),
     ratio: mean(named.flatMap((x) => x.list)) / overall,
   };
 }
 
-// The most rest days in a row between two training days of [from,
-// through]; the period's edges count only once it is finished.
-function longestGap(s, { from, through: end, finished }) {
-  const trained = s.samples.filter((d) => (s.values.get(d) ?? 0) > 0);
-  if (!trained.length) return finished ? daysIn(from, end) : 0;
-  const gaps = trained.slice(1).map((d, i) => daysIn(trained[i], d) - 2);
-  if (finished)
-    gaps.push(daysIn(from, trained[0]) - 1, daysIn(trained.at(-1), end) - 1);
-  return Math.max(0, ...gaps);
+// The most rest days in a row between two active days of [from,
+// through], as {days, from, to} (the rest days' own span), or null: the
+// period's end counts once it is finished, its start only when activity
+// was logged `before` it (a period before tracking began isn't rest).
+function longestGap(s, { from, through: end, finished }, before) {
+  const edges = [
+    ...(before ? [shift(from, -1)] : []),
+    ...s.samples.filter((d) => (s.values.get(d) ?? 0) > 0),
+    ...(finished ? [shift(end, 1)] : []),
+  ];
+  let best = null;
+  for (let i = 1; i < edges.length; i++) {
+    const days = daysIn(edges[i - 1], edges[i]) - 2;
+    if (days > (best?.days ?? 0))
+      best = { days, from: shift(edges[i - 1], 1), to: shift(edges[i], -1) };
+  }
+  return best;
 }
 
-// ------------------------------------------------------------------ rules
+// --------------------------------------------------------------- rules
 
 const capped = (margin) => min(margin, MAX_MARGIN);
 
-// "Saturdays run highest: 2,650 kcal vs 2,140 kcal on average".
+// "Sat, Sun": weekdays short, for a headline.
+const SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const shortNames = (days) =>
+  days
+    .toSorted((a, b) => a - b)
+    .map((d) => SHORT[d])
+    .join(", ");
+
+// How a series' value reads: the context's `say` for it, else the
+// series' own (a habit's: "2.2 drinks"), else a number.
+const sayOf = (c, name) => c.say?.[name] ?? c.series[name]?.say ?? fmtNum;
+
+// Energy highest on Sat, Sun · 2,650 vs 2,140 kcal average.
 const energyWeekday = (c) => {
-  const w = weekdayHigh(c.series.energy);
+  const s = c.series.energy;
+  const w = weekdayHigh(s);
+  const say = sayOf(c, "energy");
+  // A mean over a day whose energy leaves some out (`s.partly`) is a floor:
+  // "≥" as the Daily averages say it.
+  const floor = (days) =>
+    days.some((d) => s.partly?.has(d)) ? `≥${NBSP}` : "";
   return (
     w && {
       id: "weekday:energy",
-      text: `${names(w.days)} run highest: ${c.say.energy(w.mean)} vs ${c.say.energy(w.overall)} on average`,
+      tone: "fact",
+      headline: `Energy highest ${shortNames(w.days)}`,
+      numbers: `${floor(s.samples.filter((d) => w.days.includes(weekday(d))))}${say(w.mean)} vs ${floor(s.samples)}${say(w.overall)} average · ${c.when}`,
+      detail: `${names(w.days)} ran ${wholePct(w.lift)} above your daily mean, above it on at least two in three of them (${plural(s.samples.length, "day")} logged).`,
       margin: w.lift / HIGH_BAR,
+      link: { to: "sources", key: "energy" },
     }
   );
 };
 
-// "Protein up 12 % from last month": the series named in `list`, each as
-// its label.
-const changes = (list) => (c) =>
-  list(c).map((name) => {
-    const r = compare(c, name);
-    if (!r || Math.abs(r.change) < MEAN_BAR) return null;
-    return {
-      id: `change:${name}`,
-      text: `${c.series[name].label} ${r.change > 0 ? "up" : "down"} ${pct(r.change)} % from ${c.noun}`,
-      margin: Math.abs(r.change) / MEAN_BAR,
-    };
-  });
+// Whether a series' mean is a floor: any of its days leaves some out.
+const floored = (s) => s.samples.some((d) => s.partly?.has(d));
+
+// Protein up 12 % · 31 vs 30 days · from the month before: the series
+// named in `list`, each as its label, over its days (`sampled`: "known"
+// for a built-in habit's, else "logged"); `link` names where one opens.
+const changes =
+  (list, link = () => null) =>
+  (c) =>
+    list(c).map((name) => {
+      const r = compare(c, name);
+      if (!r || Math.abs(r.change) < MEAN_BAR) return null;
+      // A mean over a floor day is a floor (the Daily averages' "≥"): a
+      // floor against anything is no trend.
+      if (floored(c.series[name]) || floored(c.prev[name])) return null;
+      const say = sayOf(c, name);
+      return {
+        id: `change:${name}`,
+        tone: "fact",
+        headline: `${c.series[name].label} ${r.change > 0 ? "up" : "down"} ${wholePct(r.change)}`,
+        numbers: `${say(r.now)} vs ${say(r.was)} a day · ${c.when} vs ${c.noun}`,
+        detail: `Mean of the ${c.series[name].sampled ?? "logged"} days ${counts(r.n)}; a change under ${wholePct(MEAN_BAR)} isn't said.`,
+        margin: Math.abs(r.change) / MEAN_BAR,
+        link: link(name),
+      };
+    });
 
 const FOOD_SERIES = ["energy", "protein", "net_carbs", "fat"];
 
-// "Over your energy target 5 times, 4 on weekends".
+// Weekend energy overs · 4 of 5 overs on weekends.
 const weekendOvers = (c) => {
   const s = c.series.energy;
   const target = c.targets?.energy;
-  if (!s || !s.samples.length || target?.max === undefined) return null;
+  if (!s || s.samples.length === 0 || target?.max === undefined) return null;
   const overs = s.samples.filter(
     (d) => judge(s.values.get(d) ?? 0, target) === "over",
   );
   if (overs.length < MIN_OVERS) return null;
-  const weekend = overs.filter(isWeekend).length;
+  const weekend = overs.filter((x) => isWeekend(x)).length;
   const share = weekend / overs.length;
   const base = s.samples.filter(isWeekend).length / s.samples.length;
   if (share < WEEKEND_SHARE || share - base < WEEKEND_LIFT) return null;
   return {
     id: "overs:energy",
-    text: `Over your energy target ${overs.length} times, ${weekend} on weekends`,
+    tone: "fact",
+    headline: "Weekend energy overs",
+    numbers: `${weekend} of the ${overs.length} days over target were weekends · ${c.when}`,
+    detail: `Weekends are ${wholePct(base)} of the ${plural(s.samples.length, "day")} logged but ${wholePct(share)} of the days over your energy target.`,
     margin: (share - base) / WEEKEND_LIFT,
+    link: { to: "sources", key: "energy" },
   };
 };
 
@@ -258,22 +339,32 @@ const weekendOvers = (c) => {
 // those where it doesn't: day d's outcome against `cond(d − shift)`
 // (true, false, or null when that day doesn't count). Null below
 // MIN_SAMPLES a side, with a mean ≤ 0 on the "doesn't" side, or a change
-// under MEAN_BAR; else {diff, change, margin}.
+// under MEAN_BAR; else {diff, change, margin, n: [yes, no] sample days,
+// p, r: the difference tested (correlate.mjs mannWhitney)}. Whether it is
+// said is `highlights`' (CONTRASTS).
 export function contrast({ cond, outcome, shift: by = 0 }) {
   const yes = [];
   const no = [];
-  for (const d of outcome.samples) {
-    const holds = cond(by ? shift(d, -by) : d);
+  for (const [at, d] of pairDays(outcome, by)) {
+    const holds = cond(at);
     if (holds === true) yes.push(d);
     else if (holds === false) no.push(d);
   }
   if (yes.length < MIN_SAMPLES || no.length < MIN_SAMPLES) return null;
-  const hi = mean(valuesOf(outcome, yes));
-  const lo = mean(valuesOf(outcome, no));
+  const a = valuesOf(outcome, yes);
+  const b = valuesOf(outcome, no);
+  const hi = mean(a);
+  const lo = mean(b);
   if (!(lo > 0)) return null;
   const change = (hi - lo) / lo;
   if (Math.abs(change) < MEAN_BAR) return null;
-  return { diff: hi - lo, change, margin: Math.abs(change) / MEAN_BAR };
+  return {
+    diff: hi - lo,
+    change,
+    margin: Math.abs(change) / MEAN_BAR,
+    n: [yes.length, no.length],
+    ...mannWhitney(a, b),
+  };
 }
 
 // `test` of day d's value of `s` (0 when unset) if d is one of its
@@ -285,15 +376,35 @@ const sampled = (s, test) => {
 
 const moreLess = (diff) => (diff > 0 ? "more" : "less");
 
-// The profile's goal for `metric` (ctx.targets, registry defaults
-// included: web/series.mjs); undefined without one.
-const goal = (c, metric) => {
-  const v = c.targets?.[metric]?.value;
-  return isNil(v) ? undefined : v;
+// What every contrast's detail ends on: what it compares and that it is
+// no cause.
+const SEEN = "Seen together, not shown to cause it.";
+
+// "p 0.012", "p < 0.001".
+const pText = (p) => (p < 0.001 ? "p < 0.001" : `p ${fmt(p, 3)}`);
+
+// A contrast's result (tone `correlation`: its test is a rank-biserial
+// correlation, `p` kept for `highlights`' false discovery rate): `x` the
+// condition's series and `y` the outcome, read `lag` days apart, charted
+// from its link.
+const contrasted = (c, r, fields) => {
+  if (!r) return null;
+  const { id, headline, numbers, detail, x, y, lag = 0 } = fields();
+  return {
+    id,
+    tone: "correlation",
+    headline,
+    numbers: `${numbers} · ${c.when}`,
+    detail: `${detail} Mann–Whitney ${pText(r.p)}, rank-biserial r ${fmt(r.r, 2)}; one of ${CONTRASTS} contrasts, Benjamini–Hochberg q ≤ ${Q}. ${SEEN}`,
+    margin: r.margin,
+    p: r.p,
+    link: { to: "chart", x, y, xs: c.series[x], ys: c.series[y], lag },
+  };
 };
 
-// "On days with 10,000+ steps you eat 300 kcal more": Health Connect steps
-// against energy eaten, on the days that have both; the steps goal splits.
+// Steps → energy eaten · On 10,000+ step days you ate ~300 kcal more
+// (12 vs 19 days): Health Connect steps against energy eaten, on the days
+// that have both; the steps goal splits.
 const stepsEnergy = (c) => {
   const { energy, steps } = c.series;
   const target = goal(c, "steps");
@@ -302,18 +413,19 @@ const stepsEnergy = (c) => {
     cond: sampled(steps, (v) => v >= target),
     outcome: energy,
   });
-  return (
-    r && {
-      id: "steps:energy",
-      text: `On days with ${fmt(target)}+ steps you eat ${c.say.energy(Math.abs(r.diff))} ${moreLess(r.diff)}`,
-      margin: r.margin,
-    }
-  );
+  return contrasted(c, r, () => ({
+    id: "steps:energy",
+    headline: "Steps → energy eaten",
+    numbers: `On ${fmt(target)}+ step days you ate ~${sayOf(c, "energy")(Math.abs(r.diff))} ${moreLess(r.diff)} ${counts(r.n)}`,
+    detail: `Mean energy eaten on days at your ${fmt(target)} steps goal against days under it.`,
+    x: "steps",
+    y: "energy",
+  }));
 };
 
-// "After nights under 7 h you eat 320 kcal more": day d's energy against
-// the night that ended on d; a night under the sleep goal is
-// short.
+// Sleep → energy eaten · After nights under 7 h you ate ~320 kcal more
+// (8 vs 20 days): day d's energy against the night that ended on d; a
+// night under the sleep goal is short.
 const sleepEnergy = (c) => {
   const { energy, sleep } = c.series;
   const short = goal(c, "sleep_min");
@@ -322,36 +434,43 @@ const sleepEnergy = (c) => {
     cond: sampled(sleep, (v) => v < short),
     outcome: energy,
   });
-  return (
-    r && {
-      id: "sleep:energy",
-      text: `After nights under ${duration(short)} you eat ${c.say.energy(Math.abs(r.diff))} ${moreLess(r.diff)}`,
-      margin: r.margin,
-    }
-  );
+  return contrasted(c, r, () => ({
+    id: "sleep:energy",
+    headline: "Sleep → energy eaten",
+    numbers: `After nights under ${duration(short)} you ate ~${sayOf(c, "energy")(Math.abs(r.diff))} ${moreLess(r.diff)} ${counts(r.n)}`,
+    detail: `Mean energy eaten on days after a night under your ${duration(short)} sleep goal against the other days.`,
+    x: "sleep",
+    y: "energy",
+  }));
 };
 
-// "After training days you sleep 25 min more": the night after day d
-// (ending d + 1) against whether d had a workout.
-const trainingSleep = (c) => {
-  const { workouts, sleep } = c.series;
-  if (!workouts || !sleep) return null;
+const longerShorter = (diff) => (diff > 0 ? "longer" : "shorter");
+
+// Activity → sleep · After active days you slept 25 min longer (10 vs 21
+// nights): the night after day d (ending d + 1) against whether d had an
+// activity.
+const activitySleep = (c) => {
+  const { activities, sleep } = c.series;
+  if (!activities || !sleep) return null;
   const r = contrast({
-    cond: sampled(workouts, (v) => v > 0),
+    cond: sampled(activities, (v) => v > 0),
     outcome: sleep,
     shift: 1,
   });
-  return (
-    r && {
-      id: "training:sleep",
-      text: `After training days you sleep ${duration(Math.round(Math.abs(r.diff)))} ${moreLess(r.diff)}`,
-      margin: r.margin,
-    }
-  );
+  return contrasted(c, r, () => ({
+    id: "activity:sleep",
+    headline: "Activity → sleep",
+    numbers: `After active days you slept ${duration(Math.round(Math.abs(r.diff)))} ${longerShorter(r.diff)} ${counts(r.n, "nights")}`,
+    detail:
+      "Mean sleep the night after a day with an activity against the night after a rest day.",
+    x: "activities",
+    y: "sleep",
+    lag: 1,
+  }));
 };
 
-// "After drinking you sleep 40 min less": the night after a logged day
-// against whether it had alcohol.
+// Alcohol → sleep · After drinking you slept 40 min shorter (9 vs 30
+// nights): the night after a logged day against whether it had alcohol.
 const alcoholSleep = (c) => {
   const { "habit:alcohol": alcohol, sleep } = c.series;
   if (!alcohol || !sleep) return null;
@@ -360,13 +479,16 @@ const alcoholSleep = (c) => {
     outcome: sleep,
     shift: 1,
   });
-  return (
-    r && {
-      id: "alcohol:sleep",
-      text: `After drinking you sleep ${duration(Math.round(Math.abs(r.diff)))} ${moreLess(r.diff)}`,
-      margin: r.margin,
-    }
-  );
+  return contrasted(c, r, () => ({
+    id: "alcohol:sleep",
+    headline: "Alcohol → sleep",
+    numbers: `After drinking you slept ${duration(Math.round(Math.abs(r.diff)))} ${longerShorter(r.diff)} ${counts(r.n, "nights")}`,
+    detail:
+      "Mean sleep the night after a logged day with alcohol against one without.",
+    x: "habit:alcohol",
+    y: "sleep",
+    lag: 1,
+  }));
 };
 
 // A contrast whose outcome is a check-in scale: also |diff| ≥ SCALE_BAR,
@@ -380,8 +502,11 @@ const rated = (r) =>
 const points = (diff) =>
   `${fmt(Math.abs(diff), 1)} ${diff > 0 ? "higher" : "lower"}`;
 
-// "After nights under 7 h you rate your mood 0.6 lower": day d's rating
-// against the night that ended on d.
+// The check-in "Energy" is the energy level, told apart from energy eaten.
+const SCALE_WORD = { mood: "mood", energy: "energy level", stress: "stress" };
+
+// Sleep → mood · After nights under 7 h mood rated 0.6 lower (8 vs 20
+// days): day d's rating against the night that ended on d.
 const sleepCheckIn = (metric) => (c) => {
   const { [`checkin:${metric}`]: rating, sleep } = c.series;
   const short = goal(c, "sleep_min");
@@ -389,65 +514,77 @@ const sleepCheckIn = (metric) => (c) => {
   const r = rated(
     contrast({ cond: sampled(sleep, (v) => v < short), outcome: rating }),
   );
-  return (
-    r && {
-      id: `sleep:checkin-${metric}`,
-      text: `After nights under ${duration(short)} you rate your ${metric} ${points(r.diff)}`,
-      margin: r.margin,
-    }
-  );
+  return contrasted(c, r, () => ({
+    id: `sleep:checkin-${metric}`,
+    headline: `Sleep → ${SCALE_WORD[metric]}`,
+    numbers: `After nights under ${duration(short)} ${SCALE_WORD[metric]} rated ${points(r.diff)} ${counts(r.n)}`,
+    detail: `Mean ${SCALE_WORD[metric]} check-in (1–5) after a night under your ${duration(short)} sleep goal against the other days; half a point is the bar.`,
+    x: "sleep",
+    y: `checkin:${metric}`,
+  }));
 };
 
-// "On training days you rate your mood 0.5 higher": the day itself. Today's
-// rating may come before today's workout, so ratings end yesterday.
-const trainingMood = (c) => {
-  const { workouts, "checkin:mood": mood } = c.series;
-  if (!workouts || !mood) return null;
+// Activity → mood · On active days mood rated 0.5 higher (9 vs 20 days):
+// the day itself. Today's rating may come before today's activity, so
+// ratings end yesterday.
+const activityMood = (c) => {
+  const { activities, "checkin:mood": mood } = c.series;
+  if (!activities || !mood) return null;
   const r = rated(
     contrast({
-      cond: sampled(workouts, (v) => v > 0),
+      cond: sampled(activities, (v) => v > 0),
       outcome: clip(mood, c.from, shift(c.last, -1)),
     }),
   );
-  return (
-    r && {
-      id: "training:checkin-mood",
-      text: `On training days you rate your mood ${points(r.diff)}`,
-      margin: r.margin,
-    }
-  );
+  return contrasted(c, r, () => ({
+    id: "activity:checkin-mood",
+    headline: "Activity → mood",
+    numbers: `On active days mood rated ${points(r.diff)} ${counts(r.n)}`,
+    detail:
+      "Mean mood check-in (1–5) on days with an activity against rest days; half a point is the bar.",
+    x: "activities",
+    y: "checkin:mood",
+  }));
 };
 
-// "On days you drink you rate your stress 0.7 higher": logged days only.
+// Alcohol → stress · On days with alcohol stress rated 0.7 higher (6 vs
+// 25 days): logged days only.
 const alcoholStress = (c) => {
   const { "habit:alcohol": alcohol, "checkin:stress": stress } = c.series;
   if (!alcohol || !stress) return null;
   const r = rated(
     contrast({ cond: sampled(alcohol, (v) => v > 0), outcome: stress }),
   );
-  return (
-    r && {
-      id: "alcohol:checkin-stress",
-      text: `On days you drink you rate your stress ${points(r.diff)}`,
-      margin: r.margin,
-    }
-  );
+  return contrasted(c, r, () => ({
+    id: "alcohol:checkin-stress",
+    headline: "Alcohol → stress",
+    numbers: `On days with alcohol stress rated ${points(r.diff)} ${counts(r.n)}`,
+    detail:
+      "Mean stress check-in (1–5) on logged days with alcohol against those without; half a point is the bar.",
+    x: "habit:alcohol",
+    y: "checkin:stress",
+  }));
 };
 
-// "2 more workouts than last month" (finished, equal lengths), "… than at
-// this point last month" (running: the first N days of each, N clamped to
-// the previous period's length), "0.5 more workouts a week than last
-// month" (finished, unequal lengths).
 // The first `k` days of `s`.
 const first = (s, k) => s.samples.toSorted().slice(0, k);
 
-const workoutChange = (c) => {
-  const a = c.series.workouts;
-  const b = c.prev?.workouts;
-  if (!a || !b || (c.kind === "week" && !c.finished)) return null;
-  // Watch workouts arriving mid-comparison are no change in training:
-  // only periods the sync covered from their start compare.
-  if (c.watchFrom && c.watchFrom > c.before.from) return null;
+// Whether activityChange compares `c`'s periods: both counted, a week
+// only once over. Device activities arriving mid-comparison are no change
+// in activity: only periods the sync covered from their start compare.
+const comparable = (c) =>
+  Boolean(c.series.activities && c.prev?.activities) &&
+  (c.kind !== "week" || c.finished) &&
+  !(c.deviceFrom && c.deviceFrom > c.before.from);
+
+// More activities · 2 more than the month before (finished, equal
+// lengths), "… than at this point the month before" (running: the first N
+// days of each, N clamped to the previous period's length), "0.5 more a
+// week …" (finished, unequal lengths).
+const activityChange = (c) => {
+  if (!comparable(c)) return null;
+  const a = c.series.activities;
+  const b = c.prev.activities;
   const n = min(c.days, c.before.days);
   if (n < MIN_SAMPLES) return null;
   const perWeek = c.finished && c.days !== c.before.days;
@@ -459,103 +596,288 @@ const workoutChange = (c) => {
     : now - then;
   const bar = perWeek ? PER_WEEK_BAR : COUNT_BAR;
   if (Math.abs(diff) < bar) return null;
-  // The word follows the number shown: 1.046 a week is "1 more workout".
+  // The word follows the number shown: 1.046 a week is "1 more activity".
   const amount = Math.abs(diff);
   return {
-    id: "change:workouts",
-    text: `${fmt(amount, 1)} ${diff > 0 ? "more" : "fewer"} ${noun(amount, "workout", "workouts", 1)}${perWeek ? " a week" : ""} than ${c.finished ? "" : "at this point "}${c.noun}`,
+    id: "change:activities",
+    tone: "fact",
+    headline: `${diff > 0 ? "More" : "Fewer"} activities`,
+    numbers: `${fmt(amount, 1)} ${diff > 0 ? "more" : "fewer"} ${noun(amount, "activity", "activities", 1)}${perWeek ? " a week" : ""} than ${c.finished ? "" : "at this point "}${c.noun} · ${c.when}`,
+    detail: perWeek
+      ? `${fmt((now * 7) / c.days, 1)} vs ${fmt((then * 7) / c.before.days, 1)} a week over ${plural(c.days, "day")} vs ${plural(c.before.days, "day")}.`
+      : `${fmt(now)} vs ${fmt(then)} over the first ${plural(n, "day")} of each.`,
     margin: Math.abs(diff) / bar,
+    link: { to: "activities" },
   };
 };
 
-// "You train most on Mondays and Thursdays".
-const trainingWeekday = (c) => {
-  const w = weekdayCounts(c.series.workouts);
+// Most active Mon, Thu · 1.8× your daily average.
+const activityWeekday = (c) => {
+  const w = weekdayCounts(c.series.activities);
   return (
     w && {
-      id: "weekday:workouts",
-      text: `You train most on ${names(w.days)}`,
+      id: "weekday:activities",
+      tone: "fact",
+      headline: `Most active ${shortNames(w.days)}`,
+      numbers: `${fmt(w.ratio, 1)}× your daily average · ${c.when}`,
+      detail: `${names(w.days)} hold most of your activities, with one on at least two in three of them.`,
       margin: w.ratio / RATIO_BAR,
+      link: { to: "activities" },
     }
   );
 };
 
-// "Longest gap without training: 9 days".
-const trainingGap = (c) => {
-  const s = c.series.workouts;
+// Long gap without activity · 9 days.
+const activityGap = (c) => {
+  const s = c.series.activities;
   if (!s || sum(valuesOf(s)) < MIN_SESSIONS) return null;
-  const gap = longestGap(s, c);
-  return gap < GAP_BAR
+  const was = c.prev?.activities;
+  const gap = longestGap(s, c, !!was && sum(valuesOf(was)) > 0);
+  return !gap || gap.days < GAP_BAR
     ? null
     : {
         id: "gap",
-        text: `Longest gap without training: ${plural(gap, "day")}`,
-        margin: gap / GAP_BAR,
+        tone: "fact",
+        headline: "Long gap without activity",
+        numbers: `${plural(gap.days, "day")} in a row · ${span(gap.from, gap.to)}`,
+        detail: `The most rest days in a row between activities, ${c.when}; ${plural(GAP_BAR, "day")} is the bar.`,
+        margin: gap.days / GAP_BAR,
+        link: { to: "activities" },
       };
 };
 
 const habitKeys = (c) =>
   Object.keys(c.series).filter((k) => k.startsWith("habit:"));
 
-// "Alcohol mostly on Fridays and Saturdays", per habit.
+// Alcohol mostly Fri, Sat · 2.4× its daily average, per habit.
 const habitWeekdays = (c) =>
   habitKeys(c).map((k) => {
     const w = weekdayCounts(c.series[k]);
     return (
       w && {
         id: `weekday:${k}`,
-        text: `${c.series[k].label} mostly on ${names(w.days)}`,
+        tone: "fact",
+        headline: `${c.series[k].label} mostly ${shortNames(w.days)}`,
+        numbers: `${fmt(w.ratio, 1)}× its daily average · ${c.when}`,
+        detail: `${names(w.days)} hold most of it, logged on at least two in three of them.`,
         margin: w.ratio / RATIO_BAR,
       }
     );
   });
 
+// Under this share of the day's goal, on average, hydration is low.
+const HYDRATION_LOW = 0.7;
+
+// Hydration low · 1.6 L of 2.8 L a day: the built-in's known days against
+// each one's goal, the one the Diary and the calendar judge it by (the
+// water target, more on a day with activity: habits.mjs goalOn), in its
+// own unit.
+const hydrationLow = (c) => {
+  const s = c.series["habit:water"];
+  if (!s?.goalOn || !enough(s, c.days)) return null;
+  const goals = s.samples.map((d) => s.goalOn(d));
+  if (goals.some((x) => isNil(x))) return null;
+  const now = mean(valuesOf(s));
+  const target = mean(goals);
+  if (!(now < HYDRATION_LOW * target)) return null;
+  const say = sayOf(c, "habit:water");
+  return {
+    id: "low:hydration",
+    tone: "warning",
+    headline: "Hydration low",
+    numbers: `${say(now)} of ${say(target)} a day · ${c.when}`,
+    detail: `Under ${wholePct(HYDRATION_LOW)} of the day's goal on average, over ${plural(s.samples.length, "day")} whose hydration is known. A day's goal is your water target, more on a day with activity, as the Diary's.`,
+    margin: now > 0 ? (HYDRATION_LOW * target) / now : MAX_MARGIN,
+  };
+};
+
+// ----------------------------------------------------- food (ADR 0030)
+
+// Low and high nutrients and the vitamin D tip (web/nutrient-warnings.mjs),
+// as the screen worked them out (`c.warnings`, with their sources).
+const foodWarnings = (c) => c.warnings ?? null;
+
 export const RULES = {
   food: [
     energyWeekday,
-    changes(() => FOOD_SERIES),
+    changes(
+      () => FOOD_SERIES,
+      (key) => ({ to: "sources", key }),
+    ),
     weekendOvers,
     stepsEnergy,
     sleepEnergy,
+    foodWarnings,
   ],
-  body: [sleepCheckIn("mood"), sleepCheckIn("energy")],
-  training: [
-    workoutChange,
-    trainingWeekday,
-    trainingGap,
-    trainingSleep,
-    trainingMood,
+  body: [
+    sleepCheckIn("mood"),
+    sleepCheckIn("energy"),
+    bmiClass,
+    lossRate,
+    recovery,
+    bodyFatTrend,
   ],
-  habits: [habitWeekdays, changes(habitKeys), alcoholSleep, alcoholStress],
+  activity: [
+    activityChange,
+    activityWeekday,
+    activityGap,
+    activitySleep,
+    activityMood,
+    muscleGaps,
+    targetStreak,
+    distanceChange,
+    loadChange,
+  ],
+  habits: [
+    hydrationLow,
+    habitWeekdays,
+    changes(habitKeys),
+    alcoholSleep,
+    alcoholStress,
+  ],
 };
 
-// The strongest results first (margins capped), ties in rule order;
-// SHOWN of them.
-export const rank = (list, max = SHOWN) =>
+// The tones in the order a stack reads them: what needs acting on first,
+// a plain fact last.
+const TONE_ORDER = ["warning", "tip", "correlation", "fact"];
+
+// By tone (TONE_ORDER), then the strongest (margins capped), ties in rule
+// order; `max` of them.
+export const rank = (list, max = Infinity) =>
   list
     .map((r) => ({ ...r, margin: capped(r.margin) }))
-    .toSorted((a, b) => b.margin - a.margin)
+    .toSorted(
+      (a, b) =>
+        TONE_ORDER.indexOf(a.tone) - TONE_ORDER.indexOf(b.tone) ||
+        b.margin - a.margin,
+    )
     .slice(0, max);
 
-// The tab's Highlights for `ctx` (see `prepare`), but none of `omit`'s ids.
+// A card's pair of series (`x`, `y`, read `lag` days apart) either way
+// round, or null. A built-in habit's series is its food series
+// ("habit:alcohol" is "alcohol"): one finding, whichever tier read it.
+const PAIR_SAME = /^habit:(?=\D)/u;
+const pairOf = (r) =>
+  r.x && r.y
+    ? `${[r.x, r.y]
+        .map((k) => k.replace(PAIR_SAME, ""))
+        .toSorted()
+        .join("~")}@${r.lag ?? 0}`
+    : null;
+
+// The contrast rules (`contrasted`) across every tab: steps and sleep →
+// energy eaten, sleep → mood and energy level, activity → sleep and mood,
+// alcohol → sleep and stress. One family of tests, whichever tab runs: a
+// contrast is said only when it clears Benjamini–Hochberg at the
+// correlations' Q among CONTRASTS p-values, those not tested here counted
+// as 1 (never more lenient than the whole family).
+const CONTRASTS = 8;
+
+// The tab's Highlights for `ctx` (see `prepare`), ranked (`rank`), but
+// none of `omit`'s ids: the rules' (a contrast only past its test), the
+// subtab's correlations (`ctx.correlations`) and discovered patterns
+// (`ctx.discovered`, web/correlate.mjs `discover`). A contrast whose pair
+// a correlation shown already tests (`covers`) stays out, the
+// pre-registered test the stronger; so does a discovered pattern whose
+// pair a card shown states (`pairOf`).
+// ponytail: a pattern dropped here still took one of the DISCOVERED_SHOWN
+// picked across Summary; pick per tab after this if one goes missing.
 export function highlights(tab, ctx, { omit = [] } = {}) {
   const c = prepare(ctx);
   if (!c) return [];
-  return rank(
-    RULES[tab]
-      .flatMap((rule) => [rule(c)].flat())
-      .filter((r) => r && !omit.includes(r.id)),
+  const kept = (r) => r && !omit.includes(r.id);
+  const ruled = RULES[tab]
+    .flatMap((rule) => [rule(c)].flat())
+    .filter((x) => kept(x));
+  const tested = ruled.filter((r) => r.p !== undefined);
+  const passed = bh(
+    [
+      ...tested.map((r) => r.p),
+      ...Array.from({ length: CONTRASTS }, () => 1),
+    ].slice(0, Math.max(CONTRASTS, tested.length)),
+    Q,
   );
+  const correlated = (c.correlations ?? []).filter((x) => kept(x));
+  const covered = new Set(correlated.map((r) => r.covers));
+  const said = [
+    ...ruled.filter(
+      (r) =>
+        r.p === undefined || (passed[tested.indexOf(r)] && !covered.has(r.id)),
+    ),
+    ...correlated,
+  ];
+  const pairs = new Set(said.map((x) => pairOf(x)).filter(Boolean));
+  const found = (c.discovered ?? []).filter(
+    (r) => kept(r) && !pairs.has(pairOf(r)),
+  );
+  return rank([...said, ...found]);
 }
 
-// The nights among Health Connect `days` as a series: each night's minutes
-// asleep, on the day it ended.
-export function sleepSeries(days) {
-  const nights = days.filter(
-    (d) => d.asleep_min !== null && d.asleep_min !== undefined,
-  );
+// A series (`{values: Map day → value, samples: [day]}`, the shape every
+// rule here reads) of `list` ([{day, …}]): each item's `valueOf` (a key,
+// or a function of it) on its day.
+export function seriesOf(list, valueOf) {
+  const of = typeof valueOf === "function" ? valueOf : (x) => x[valueOf];
   return {
-    values: new Map(nights.map((d) => [d.day, d.asleep_min])),
-    samples: nights.map((d) => d.day),
+    values: new Map(list.map((x) => [x.day, of(x)])),
+    samples: list.map((x) => x.day),
   };
+}
+
+// A series over every day of [from, to] (a day without any is a 0, not
+// missing): what `add` makes of each of `list` ([{day, …}]), summed by day.
+export function everyDay(from, to, list, add) {
+  const values = new Map();
+  for (const x of list) values.set(x.day, (values.get(x.day) ?? 0) + add(x));
+  return {
+    values,
+    samples: Array.from({ length: daysIn(from, to) }, (_, i) => shift(from, i)),
+  };
+}
+
+// `key`'s change a day between consecutive points of `list` ([{day, key}],
+// by day), on the later one's day: a 3-week gap's delta over 21 days, so
+// a steady change reads the same whatever the gap.
+export const changeADay = (list, key) =>
+  list.slice(1).map((t, i) => ({
+    day: t.day,
+    [key]: (t[key] - list[i][key]) / (daysIn(list[i].day, t.day) - 1),
+  }));
+
+// The days of `list` that have `key`, as a series of it.
+export const present = (list, key) =>
+  seriesOf(
+    list.filter((x) => !isNil(x[key])),
+    key,
+  );
+
+// The nights among Health Connect `days` as a series: each night's
+// minutes asleep (`asleep_min`, naps not added, as Summary → Body's
+// "asleep a night" reads it), on the day it ended.
+export const sleepSeries = (days) => present(days, "asleep_min");
+
+// ---------------------------------------------------- Highlights prefs
+
+// Discovered patterns shown across Summary, those marked "Interesting"
+// aside.
+export const DISCOVERED_SHOWN = 2;
+
+// Whether card `r` is shown on `day`: not hidden (`prefs`, web/series.mjs:
+// id → {state, until}) through it.
+export const notHidden = (r, prefs, day) => {
+  const x = prefs.get(r.id);
+  return !(x?.state === "hidden" && x.until >= day);
+};
+
+// The discovered patterns shown of `list` on `day`: not hidden, those
+// marked "Interesting" first (leading their tone), then the strongest up
+// to DISCOVERED_SHOWN in all.
+export function keptPatterns(list, prefs, day) {
+  const visible = list.filter((r) => notHidden(r, prefs, day));
+  const marked = visible.filter((r) => prefs.get(r.id)?.state === "pinned");
+  const rest = visible.filter((r) => !marked.includes(r));
+  return [
+    ...marked.map((r) => ({ ...r, margin: Infinity, pinned: true })),
+    ...rest.slice(0, Math.max(0, DISCOVERED_SHOWN - marked.length)),
+  ];
 }

@@ -1,0 +1,377 @@
+{
+  "_": "Health Connect's ExerciseSessionType numbers (API 35 android.jar, javap -constants): the phone's name for each (Payload.typeName; any other number is \"Activity\") and the server's session type (model::activity::hc_type; any other number is \"other\"). Pinned by PayloadTest and a Rust test.",
+  "types": [
+    {
+      "hc": 0,
+      "jar": "EXERCISE_SESSION_TYPE_UNKNOWN",
+      "name": "Activity",
+      "type": "other"
+    },
+    {
+      "hc": 1,
+      "jar": "EXERCISE_SESSION_TYPE_BADMINTON",
+      "name": "Badminton",
+      "type": "sports"
+    },
+    {
+      "hc": 2,
+      "jar": "EXERCISE_SESSION_TYPE_BASEBALL",
+      "name": "Baseball",
+      "type": "sports"
+    },
+    {
+      "hc": 3,
+      "jar": "EXERCISE_SESSION_TYPE_BASKETBALL",
+      "name": "Basketball",
+      "type": "sports"
+    },
+    {
+      "hc": 4,
+      "jar": "EXERCISE_SESSION_TYPE_BIKING",
+      "name": "Biking",
+      "type": "cycling"
+    },
+    {
+      "hc": 5,
+      "jar": "EXERCISE_SESSION_TYPE_BIKING_STATIONARY",
+      "name": "Stationary biking",
+      "type": "cycling"
+    },
+    {
+      "hc": 6,
+      "jar": "EXERCISE_SESSION_TYPE_BOOT_CAMP",
+      "name": "Boot camp",
+      "type": "other"
+    },
+    {
+      "hc": 7,
+      "jar": "EXERCISE_SESSION_TYPE_BOXING",
+      "name": "Boxing",
+      "type": "other"
+    },
+    {
+      "hc": 8,
+      "jar": "EXERCISE_SESSION_TYPE_CALISTHENICS",
+      "name": "Calisthenics",
+      "type": "workout"
+    },
+    {
+      "hc": 9,
+      "jar": "EXERCISE_SESSION_TYPE_CRICKET",
+      "name": "Cricket",
+      "type": "sports"
+    },
+    {
+      "hc": 10,
+      "jar": "EXERCISE_SESSION_TYPE_DANCING",
+      "name": "Dancing",
+      "type": "dance"
+    },
+    {
+      "hc": 11,
+      "jar": "EXERCISE_SESSION_TYPE_EXERCISE_CLASS",
+      "name": "Exercise class",
+      "type": "workout"
+    },
+    {
+      "hc": 12,
+      "jar": "EXERCISE_SESSION_TYPE_FENCING",
+      "name": "Fencing",
+      "type": "sports"
+    },
+    {
+      "hc": 13,
+      "jar": "EXERCISE_SESSION_TYPE_FOOTBALL_AMERICAN",
+      "name": "American football",
+      "type": "sports"
+    },
+    {
+      "hc": 14,
+      "jar": "EXERCISE_SESSION_TYPE_FOOTBALL_AUSTRALIAN",
+      "name": "Australian football",
+      "type": "sports"
+    },
+    {
+      "hc": 15,
+      "jar": "EXERCISE_SESSION_TYPE_FRISBEE_DISC",
+      "name": "Frisbee",
+      "type": "sports"
+    },
+    {
+      "hc": 16,
+      "jar": "EXERCISE_SESSION_TYPE_GOLF",
+      "name": "Golf",
+      "type": "sports"
+    },
+    {
+      "hc": 17,
+      "jar": "EXERCISE_SESSION_TYPE_GUIDED_BREATHING",
+      "name": "Guided breathing",
+      "type": "other"
+    },
+    {
+      "hc": 18,
+      "jar": "EXERCISE_SESSION_TYPE_GYMNASTICS",
+      "name": "Gymnastics",
+      "type": "other"
+    },
+    {
+      "hc": 19,
+      "jar": "EXERCISE_SESSION_TYPE_HANDBALL",
+      "name": "Handball",
+      "type": "sports"
+    },
+    {
+      "hc": 20,
+      "jar": "EXERCISE_SESSION_TYPE_HIGH_INTENSITY_INTERVAL_TRAINING",
+      "name": "HIIT",
+      "type": "hiit"
+    },
+    {
+      "hc": 21,
+      "jar": "EXERCISE_SESSION_TYPE_HIKING",
+      "name": "Hiking",
+      "type": "hike"
+    },
+    {
+      "hc": 22,
+      "jar": "EXERCISE_SESSION_TYPE_ICE_HOCKEY",
+      "name": "Ice hockey",
+      "type": "sports"
+    },
+    {
+      "hc": 23,
+      "jar": "EXERCISE_SESSION_TYPE_ICE_SKATING",
+      "name": "Ice skating",
+      "type": "other"
+    },
+    {
+      "hc": 24,
+      "jar": "EXERCISE_SESSION_TYPE_MARTIAL_ARTS",
+      "name": "Martial arts",
+      "type": "other"
+    },
+    {
+      "hc": 25,
+      "jar": "EXERCISE_SESSION_TYPE_PADDLING",
+      "name": "Paddling",
+      "type": "other"
+    },
+    {
+      "hc": 26,
+      "jar": "EXERCISE_SESSION_TYPE_PARAGLIDING",
+      "name": "Paragliding",
+      "type": "other"
+    },
+    {
+      "hc": 27,
+      "jar": "EXERCISE_SESSION_TYPE_PILATES",
+      "name": "Pilates",
+      "type": "other"
+    },
+    {
+      "hc": 28,
+      "jar": "EXERCISE_SESSION_TYPE_RACQUETBALL",
+      "name": "Racquetball",
+      "type": "sports"
+    },
+    {
+      "hc": 29,
+      "jar": "EXERCISE_SESSION_TYPE_ROCK_CLIMBING",
+      "name": "Rock climbing",
+      "type": "climb"
+    },
+    {
+      "hc": 30,
+      "jar": "EXERCISE_SESSION_TYPE_ROLLER_HOCKEY",
+      "name": "Roller hockey",
+      "type": "sports"
+    },
+    {
+      "hc": 31,
+      "jar": "EXERCISE_SESSION_TYPE_ROWING",
+      "name": "Rowing",
+      "type": "rowing"
+    },
+    {
+      "hc": 32,
+      "jar": "EXERCISE_SESSION_TYPE_RUGBY",
+      "name": "Rugby",
+      "type": "sports"
+    },
+    {
+      "hc": 33,
+      "jar": "EXERCISE_SESSION_TYPE_RUNNING",
+      "name": "Running",
+      "type": "run"
+    },
+    {
+      "hc": 34,
+      "jar": "EXERCISE_SESSION_TYPE_RUNNING_TREADMILL",
+      "name": "Treadmill running",
+      "type": "run"
+    },
+    {
+      "hc": 35,
+      "jar": "EXERCISE_SESSION_TYPE_SAILING",
+      "name": "Sailing",
+      "type": "other"
+    },
+    {
+      "hc": 36,
+      "jar": "EXERCISE_SESSION_TYPE_SCUBA_DIVING",
+      "name": "Scuba diving",
+      "type": "other"
+    },
+    {
+      "hc": 37,
+      "jar": "EXERCISE_SESSION_TYPE_SKATING",
+      "name": "Skating",
+      "type": "other"
+    },
+    {
+      "hc": 38,
+      "jar": "EXERCISE_SESSION_TYPE_SKIING",
+      "name": "Skiing",
+      "type": "ski"
+    },
+    {
+      "hc": 39,
+      "jar": "EXERCISE_SESSION_TYPE_SNOWBOARDING",
+      "name": "Snowboarding",
+      "type": "other"
+    },
+    {
+      "hc": 40,
+      "jar": "EXERCISE_SESSION_TYPE_SNOWSHOEING",
+      "name": "Snowshoeing",
+      "type": "other"
+    },
+    {
+      "hc": 41,
+      "jar": "EXERCISE_SESSION_TYPE_SOCCER",
+      "name": "Soccer",
+      "type": "sports"
+    },
+    {
+      "hc": 42,
+      "jar": "EXERCISE_SESSION_TYPE_SOFTBALL",
+      "name": "Softball",
+      "type": "sports"
+    },
+    {
+      "hc": 43,
+      "jar": "EXERCISE_SESSION_TYPE_SQUASH",
+      "name": "Squash",
+      "type": "sports"
+    },
+    {
+      "hc": 44,
+      "jar": "EXERCISE_SESSION_TYPE_STAIR_CLIMBING",
+      "name": "Stair climbing",
+      "type": "other"
+    },
+    {
+      "hc": 45,
+      "jar": "EXERCISE_SESSION_TYPE_STRENGTH_TRAINING",
+      "name": "Strength training",
+      "type": "workout"
+    },
+    {
+      "hc": 46,
+      "jar": "EXERCISE_SESSION_TYPE_STRETCHING",
+      "name": "Stretching",
+      "type": "other"
+    },
+    {
+      "hc": 47,
+      "jar": "EXERCISE_SESSION_TYPE_SURFING",
+      "name": "Surfing",
+      "type": "other"
+    },
+    {
+      "hc": 48,
+      "jar": "EXERCISE_SESSION_TYPE_SWIMMING_OPEN_WATER",
+      "name": "Open water swimming",
+      "type": "swim"
+    },
+    {
+      "hc": 49,
+      "jar": "EXERCISE_SESSION_TYPE_SWIMMING_POOL",
+      "name": "Pool swimming",
+      "type": "swim"
+    },
+    {
+      "hc": 50,
+      "jar": "EXERCISE_SESSION_TYPE_TABLE_TENNIS",
+      "name": "Table tennis",
+      "type": "sports"
+    },
+    {
+      "hc": 51,
+      "jar": "EXERCISE_SESSION_TYPE_TENNIS",
+      "name": "Tennis",
+      "type": "sports"
+    },
+    {
+      "hc": 52,
+      "jar": "EXERCISE_SESSION_TYPE_VOLLEYBALL",
+      "name": "Volleyball",
+      "type": "sports"
+    },
+    {
+      "hc": 53,
+      "jar": "EXERCISE_SESSION_TYPE_WALKING",
+      "name": "Walking",
+      "type": "walk"
+    },
+    {
+      "hc": 54,
+      "jar": "EXERCISE_SESSION_TYPE_WATER_POLO",
+      "name": "Water polo",
+      "type": "sports"
+    },
+    {
+      "hc": 55,
+      "jar": "EXERCISE_SESSION_TYPE_WEIGHTLIFTING",
+      "name": "Weightlifting",
+      "type": "workout"
+    },
+    {
+      "hc": 56,
+      "jar": "EXERCISE_SESSION_TYPE_WHEELCHAIR",
+      "name": "Wheelchair",
+      "type": "other"
+    },
+    {
+      "hc": 57,
+      "jar": "EXERCISE_SESSION_TYPE_YOGA",
+      "name": "Yoga",
+      "type": "yoga"
+    },
+    {
+      "hc": 58,
+      "jar": "EXERCISE_SESSION_TYPE_OTHER_WORKOUT",
+      "name": "Other activity",
+      "type": "workout"
+    },
+    {
+      "hc": 59,
+      "jar": "EXERCISE_SESSION_TYPE_STAIR_CLIMBING_MACHINE",
+      "name": "Stair climbing machine",
+      "type": "other"
+    },
+    {
+      "hc": 60,
+      "jar": "EXERCISE_SESSION_TYPE_ELLIPTICAL",
+      "name": "Elliptical",
+      "type": "elliptical"
+    },
+    {
+      "hc": 61,
+      "jar": "EXERCISE_SESSION_TYPE_ROWING_MACHINE",
+      "name": "Rowing machine",
+      "type": "rowing"
+    }
+  ]
+}

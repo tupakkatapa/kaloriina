@@ -3,12 +3,21 @@
 
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
-use jiff::{Timestamp, ToSpan};
+use jiff::{Timestamp, ToSpan, Unit};
 
 /// Now, in epoch milliseconds.
 #[must_use]
 pub fn now_ms() -> i64 {
     Timestamp::now().as_millisecond()
+}
+
+/// Now, an instant to the second: `2026-10-13T08:30:00Z`.
+#[must_use]
+pub fn now_utc_second() -> String {
+    Timestamp::now()
+        .round(Unit::Second)
+        .unwrap_or_else(|_| Timestamp::now())
+        .to_string()
 }
 
 /// Today in `tz`.

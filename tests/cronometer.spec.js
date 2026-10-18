@@ -1,7 +1,9 @@
 // Cronometer history imported from the Profile tab.
 
-import { test, expect } from "@playwright/test";
-import { unique, starts, ownProfile } from "./helpers.js";
+import { expect, test } from "@playwright/test";
+import { importsTakeTurns, ownProfile, starts, unique } from "./helpers.js";
+
+test.beforeEach(({ page }) => importsTakeTurns(page));
 
 // Relative to the repo root, where Playwright runs.
 const fixture = (name) => `tests/fixtures/${name}`;

@@ -20,7 +20,7 @@ text_enum! {
     /// What an entry is: your own (a food, grams and values), a due day of
     /// a daily series (its food read now; no row until ticked), or imported
     /// history (no food or values of its own: they're in its group's
-    /// total).
+    /// total; matched to a food, its food's, out of that total).
     pub enum EntryKind {
         Own = "own",
         Due = "due",
@@ -53,7 +53,7 @@ pub struct Entry {
     /// Stable sync identity; never reused, unlike `id`. A due day's is the
     /// uid its tick takes: its key.
     pub uid: String,
-    /// The database the food came from; `None` for imported history. Read
+    /// The database the food came from; `None` without a food. Read
     /// from the food: a merged food's entries are repointed, so it always
     /// names one.
     pub source: Option<Source>,

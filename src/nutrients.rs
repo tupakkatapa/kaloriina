@@ -52,8 +52,8 @@ pub const KCAL_PER_G_PROTEIN: f64 = 4.0;
 pub const KCAL_PER_G_CARBS: f64 = 4.0;
 pub const KCAL_PER_G_FAT: f64 = 9.0;
 
-/// How far over an "about" target may go before it counts as over.
-pub const ABOUT_TOLERANCE: f64 = 0.10;
+/// How far either way of an "about" target still counts as on it.
+pub const ABOUT_TOLERANCE: f64 = 0.05;
 
 impl Goal {
     /// The min/max bounds a single target number stands for.
@@ -63,10 +63,10 @@ impl Goal {
             Self::AtLeast => (Some(target), None),
             Self::AtMost => (None, Some(target)),
             // Rounded so the wire shows 209, not 209.00000000000003.
-            Self::About => (
-                Some(target),
-                Some((target * (1.0 + ABOUT_TOLERANCE) * 1e6).round() / 1e6),
-            ),
+            Self::About => {
+                let at = |k: f64| Some((target * k * 1e6).round() / 1e6);
+                (at(1.0 - ABOUT_TOLERANCE), at(1.0 + ABOUT_TOLERANCE))
+            }
         }
     }
 }
@@ -663,8 +663,9 @@ mod tests {
         assert_eq!(Goal::AtLeast.bounds(100.0), (Some(100.0), None));
         assert_eq!(Goal::AtMost.bounds(5.0), (None, Some(5.0)));
         let (lo, hi) = Goal::About.bounds(2000.0);
-        assert_eq!(lo, Some(2000.0));
-        assert_close!(hi.unwrap(), 2200.0);
+        assert_close!(lo.unwrap(), 1900.0);
+        assert_close!(hi.unwrap(), 2100.0);
+        assert_eq!(Goal::About.bounds(1850.0), (Some(1757.5), Some(1942.5)));
         assert_eq!(find("sodium").unwrap().goal(), Goal::AtMost);
         assert_eq!(find("energy").unwrap().goal(), Goal::About);
         assert_eq!(find("iron").unwrap().goal(), Goal::AtLeast);

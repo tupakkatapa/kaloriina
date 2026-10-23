@@ -71,12 +71,38 @@ function aboveAll(items, at) {
   return ys.length > 0 ? { x: spot.x, y: Math.min(...ys) } : spot;
 }
 
+// A scroll moves the point away from its tip: every chart's shown tip is
+// hidden and its point let go, so a tap there again shows it again. Once,
+// for every chart there will be.
+let scrolling = false;
+function listenForScroll() {
+  if (scrolling) return;
+  scrolling = true;
+  addEventListener(
+    "scroll",
+    () => {
+      for (const tip of document.querySelectorAll(".chart-tip:popover-open")) {
+        hideTip(tip);
+        const drawn = window.Chart.getChart(
+          tip.parentElement.querySelector("canvas"),
+        );
+        if (!drawn) continue;
+        drawn.tooltip.setActiveElements([], { x: 0, y: 0 });
+        drawn.setActiveElements([]);
+        drawn.update("none");
+      }
+    },
+    { capture: true, passive: true },
+  );
+}
+
 // A chart's tooltip as the app's one tooltip (tips.mjs): the chart's
 // `.tip` (made on its first showing, beside the canvas; hidden from a
 // screen reader, which has the chart's list), its title, each item with
 // its series' swatch, then what afterBody adds (the targets), placed above
 // the point (aboveAll), a finger's clearance on a touch screen.
 function chartTip({ chart: drawn, tooltip }) {
+  listenForScroll();
   const box = drawn.canvas.parentElement;
   let tip = box.querySelector(":scope > .chart-tip");
   if (tooltip.opacity === 0) {
@@ -475,12 +501,13 @@ const pointLinks = (links, names) => ({
 // Each mark kind as a dataset (web/series.mjs marks), `c` its series'
 // colour, `dot` its points' and `m` the mark: points small, faint, unjoined
 // and in `shape`, under the trend, the line that reads first (a series
-// without a trend, `alone`: its points in its colour, unjoined, as they
-// are what reads); a floor's point (`m.partly`) hollow; a target dashed;
-// the path to a goal dotted.
+// without a trend, `alone`: its points in its colour, joined across the
+// days without one, as they are what reads); a floor's point (`m.partly`)
+// hollow; a target dashed; the path to a goal dotted.
 const DATASET = {
   points: (c, dot, m, shape, alone) => ({
-    showLine: false,
+    showLine: alone,
+    spanGaps: alone,
     borderColor: alone ? c : faint(dot),
     backgroundColor: alone ? c : faint(dot),
     pointStyle: shape,
@@ -587,7 +614,7 @@ export function seriesChart({
     const floor = m.partly?.[i];
     return `${name}${sep}${floor ? `≥${NBSP}` : ""}${say(m.data[i])}${m.note ? ` (${m.note})` : ""}${floor ? ` (${m.partlyNote})` : ""}`;
   };
-  // "Target 1,800–2,200 kcal", "Target ≥ 50 g", "Goal 75 kg": each
+  // "Target 1,900–2,100 kcal", "Target ≥ 50 g", "Goal 75 kg": each
   // target chart `c` shows (none toggled off) at its point `i`, once, its
   // value that day (a field by its edges).
   const targetsAt = (c, i) =>

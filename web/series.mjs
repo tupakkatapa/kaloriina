@@ -535,9 +535,10 @@ const field = (key, label, lo, hi, keys, text) => [
 ];
 
 // A target ({value, min, max}) over `keys`, `label`led: a min–max range
-// as a field, one value as a line, nothing without a target; in the shown
-// unit (`show`, then `round`), `say` writing a value. A tooltip names it
-// "Target", a line with its sign (at least, at most) as the bars do.
+// as a field (said as its value, then the range), one value as a line,
+// nothing without a target; in the shown unit (`show`, then `round`),
+// `say` writing a value. A tooltip names it "Target", a line with its
+// sign (at least, at most) as the bars do.
 function targetLines(target, { label, keys, show, round, say }) {
   if (isNil(target?.value)) return [];
   const range =
@@ -552,7 +553,7 @@ function targetLines(target, { label, keys, show, round, say }) {
         round(show(target.min)),
         round(show(target.max)),
         keys,
-        `${label}: ${say(target.min)}–${say(target.max)}`,
+        `${label}: ${say(target.value)} (${say(target.min)}–${say(target.max)})`,
       )
     : [
         line(

@@ -151,7 +151,7 @@ test("targets show each macro's share of the energy target, the rest on energy's
     route.request().method() === "GET"
       ? route.fulfill({
           json: [
-            { metric: "energy", value: 2000, min: 2000, max: 2200 },
+            { metric: "energy", value: 2000, min: 1900, max: 2100 },
             { metric: "protein", value: 100, min: 100, max: null },
             { metric: "net_carbs", value: 225, min: 225, max: 247.5 },
             { metric: "fat", value: 66.7, min: 66.7, max: 73.4 },
@@ -642,6 +642,38 @@ test("a dark theme overrides a light system's and is there from the first paint"
   ).toHaveAttribute("aria-checked", "true");
   expect(await page.evaluate(() => window.parsedClasses)).toContain("dark");
   expect(await colours(page)).toEqual(DARK);
+});
+
+test("AMOLED is dark on black, from the first paint", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { tag } = unique(1142, testInfo);
+  await ownProfile(page, request, `Amoled ${tag}`);
+  await page.addInitScript(() =>
+    document.addEventListener("readystatechange", () => {
+      if (document.readyState === "interactive")
+        window.parsedBg = getComputedStyle(document.documentElement)
+          .getPropertyValue("--bg")
+          .trim();
+    }),
+  );
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.goto("/#/profile");
+  await theme(page, "AMOLED");
+  const AMOLED = { bg: "#000000", scheme: "dark" };
+  await expect.poll(() => colours(page)).toEqual(AMOLED);
+
+  await page.reload();
+  await expect(
+    page.getByRole("radiogroup", { name: "Theme" }).getByRole("radio", {
+      name: "AMOLED",
+    }),
+  ).toHaveAttribute("aria-checked", "true");
+  expect(await page.evaluate(() => window.parsedBg)).toBe("#000000");
+  expect(await colours(page)).toEqual(AMOLED);
+  await theme(page, "Dark");
+  await expect.poll(() => colours(page)).toEqual(DARK);
 });
 
 test("a light theme overrides a dark system's; System follows it", async ({

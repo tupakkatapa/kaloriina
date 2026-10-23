@@ -240,8 +240,8 @@ test("Targets share = panel split", () => {
 const target = (metric, value, goal) => ({
   metric,
   value,
-  min: goal === "at_most" ? null : value,
-  max: goal === "at_least" ? null : goal === "about" ? value * 1.1 : value,
+  min: goal === "at_most" ? null : goal === "about" ? value * 0.95 : value,
+  max: goal === "at_least" ? null : goal === "about" ? value * 1.05 : value,
 });
 
 test("density ranks, cautions and skips", () => {

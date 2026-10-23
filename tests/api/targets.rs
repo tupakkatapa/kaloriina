@@ -42,7 +42,7 @@ async fn targets_round_trip_by_metric() {
     let energy = find(&saved, "energy").unwrap();
     assert_eq!(
         (&energy["value"], &energy["min"], &energy["max"]),
-        (&json!(2000.0), &json!(2000.0), &json!(2200.0))
+        (&json!(2000.0), &json!(1900.0), &json!(2100.0))
     );
     let sodium = find(&saved, "sodium").unwrap();
     assert_eq!(

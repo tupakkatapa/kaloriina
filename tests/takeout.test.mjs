@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import {
   importTakeout,
   isHeart,
+  isRaw,
   takeoutBatches,
   wanted,
 } from "../web/takeout.mjs";
@@ -59,10 +60,56 @@ test("names follow the shared list (tests/fixtures/takeout-names.json)", () => {
   );
   for (const name of names.read) {
     assert.ok(wanted(name), name);
-    assert.ok(!isHeart(name), name);
+    assert.ok(!isHeart(name) && !isRaw(name), name);
   }
   for (const name of names.heart_rate) assert.ok(isHeart(name), name);
+  for (const name of names.raw) {
+    assert.ok(wanted(name), name);
+    assert.ok(isRaw(name) && !isHeart(name), name);
+  }
   for (const name of names.ignored) assert.ok(!wanted(name), name);
+});
+
+const scores = (n, bytes) => ({
+  name: `${GH}/Health Fitness Data_GoogleData/UserSleepScores_${n}.csv`,
+  text: "1".repeat(bytes),
+});
+
+test("the other health files go in batches of their own; one too big is skipped and counted", async () => {
+  const zip = makeZip([
+    { name: `${GH}/x/steps_2026-09-01.csv`, text: "steps\n" },
+    sleeps,
+    heart("2026-09-01", 300),
+    scores("2026-05-31", 400),
+    scores("2026-06-30", 2000),
+    scores("2026-07-31", 400),
+    scores("2026-08-31", 400),
+  ]);
+  const batches = [];
+  const skipped = [];
+  // 900 bytes a batch of them, as the first upload's share.
+  for await (const files of takeoutBatches([new Blob([zip])], 1000, (name) =>
+    skipped.push(name.split("/").pop()),
+  ))
+    batches.push(files.map((f) => f.name.split("/").pop()));
+  assert.deepEqual(batches, [
+    ["steps_2026-09-01.csv", "UserSleeps_2026-05-31.csv"],
+    ["UserSleeps_2026-05-31.csv", "heart_rate_2026-09-01.csv"],
+    ["UserSleepScores_2026-05-31.csv", "UserSleepScores_2026-07-31.csv"],
+    ["UserSleepScores_2026-08-31.csv"],
+  ]);
+  assert.deepEqual(skipped, ["UserSleepScores_2026-06-30.csv"]);
+});
+
+test("an export of only other files sends them, and counts the skipped", async () => {
+  const zip = makeZip([scores("1", 10), scores("2", 100)]);
+  const posted = [];
+  const counts = await importTakeout([new Blob([zip])], 64, (files) => {
+    posted.push(files.map((f) => f.name.split("/").pop()));
+    return Promise.resolve({ records: files.length });
+  });
+  assert.deepEqual(posted, [["UserSleepScores_1.csv"]]);
+  assert.deepEqual(counts, { records: 1, too_big: 1 });
 });
 
 const sleeps = { name: `${GH}/x/UserSleeps_2026-05-31.csv`, text: "sleep\n" };

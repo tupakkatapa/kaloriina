@@ -315,6 +315,40 @@ fn feedback_list_on_old_db_says_serve_once() {
 }
 
 #[test]
+fn import_loop_habits_prints_what_it_did() {
+    let dir = temp("loop-cli");
+    let db = dir.join("kaloriina.db");
+    drop(kaloriina::open(&db).unwrap());
+    let backup = dir.join("Loop.db");
+    kaloriina::Connection::open(&backup)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE Habits (id INTEGER PRIMARY KEY, name TEXT, archived INTEGER);
+             CREATE TABLE Repetitions (habit INTEGER, timestamp INTEGER, value INTEGER);
+             INSERT INTO Habits VALUES (1, 'Floss', 0);
+             INSERT INTO Repetitions VALUES (1, 1788220800000, 2);",
+        )
+        .unwrap();
+    let (db_arg, backup_arg) = (db.to_str().unwrap(), backup.to_str().unwrap());
+    let out = kaloriina(&["import-loop-habits", "--db", db_arg, backup_arg]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "loop habits: 1 trackers added, 0 reused, 1 days added, 0 already there"
+    );
+    let typo = dir.join("kaloriana.db");
+    let out = kaloriina(&[
+        "import-loop-habits",
+        "--db",
+        typo.to_str().unwrap(),
+        backup_arg,
+    ]);
+    assert!(!out.status.success());
+    assert!(!typo.exists(), "no database made by a typo");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn pull_marks_only_printed_ids() {
     // stdout closed before anything is printed (`| head -c0`, a dropped SSH
     // session): nothing is marked pulled.
@@ -387,5 +421,34 @@ fn a_command_leaves_nights_and_weights_to_serve() {
     serve.wait().unwrap();
     assert!(stamped("night_rule_version").is_some());
     assert!(stamped("weight_rule_version").is_some());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn the_database_comes_from_kaloriina_db() {
+    // As the NixOS module's `kaloriina` runs: no --db, in a folder without
+    // one.
+    let dir = temp("env-db");
+    let db = dir.join("elsewhere.db");
+    let conn = kaloriina::open(&db).unwrap();
+    conn.execute(
+        "INSERT INTO feedback (kind, text) VALUES ('bug', 'Wraps')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let out = Command::new(env!("CARGO_BIN_EXE_kaloriina"))
+        .args(["feedback", "--list"])
+        .env("KALORIINA_DB", &db)
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("> Wraps"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(!dir.join("kaloriina.db").exists());
     std::fs::remove_dir_all(&dir).unwrap();
 }

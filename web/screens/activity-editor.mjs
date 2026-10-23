@@ -13,6 +13,7 @@ import {
   stored,
 } from "../api.mjs";
 import {
+  dayAt,
   monthStart,
   monthYear,
   pretty,
@@ -374,7 +375,7 @@ export function activityForm(s, { lib, records = new Set(), other = false }) {
           : null,
       // The day and time as this device reads them, sent in UTC.
       start_at: start.value
-        ? new Date(`${day.value}T${start.value}`).toISOString()
+        ? dayAt(day.value, start.value).toISOString()
         : null,
       // What the device measured goes back as it came.
       ...(device

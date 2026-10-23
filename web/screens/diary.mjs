@@ -42,8 +42,10 @@ import {
   entryAmount,
   entryRow,
   favoriteStar,
+  foodRow,
   logRow,
   result,
+  searchFoods,
 } from "../rows.mjs";
 import { supplementNotes } from "../supplements.mjs";
 import { complete } from "../targets.mjs";
@@ -63,6 +65,7 @@ import {
   nameInput,
   notify,
   periodNav,
+  picker,
   PLUS,
   SELECT,
   timeField,
@@ -674,7 +677,8 @@ function groupSections(data, day, select) {
   );
 }
 
-export async function diary(day, params = new URLSearchParams()) {
+// `ask`: shown, it may ask for the evening's check-in (log.mjs).
+export async function diary(day, params = new URLSearchParams(), ask = false) {
   const select = Number(params.get("select")) || null;
   // The trackers load beside the day; failing, only the Log's habits say so.
   // Started already with meta and profiles, on an open (nav.mjs).
@@ -725,7 +729,7 @@ export async function diary(day, params = new URLSearchParams()) {
       groupSections(data, day, select),
       sleepCard(data, napRows({ day, data })),
       activityCard(day, data),
-      logCard(day, data, habits),
+      logCard(day, data, habits, ask),
     ),
     waitingSection(day),
   );
@@ -806,12 +810,37 @@ function importedRemoval(day, group, items, back) {
   };
 }
 
+// Match every imported row of `entry`'s name, on every day, to a food
+// picked: rows in grams of it count as it, out of their group's total.
+function importedMatch(entry, back) {
+  const match = async (f) => {
+    const r = await api("POST", scoped("/imported/match"), {
+      name: entry.name,
+      food_id: f.id,
+    });
+    const skipped = r.skipped.map(
+      (s) => ` · ${plural(s.count, "row")} not matched: ${s.reason}`,
+    );
+    go(back);
+    notify(
+      `Matched ${plural(r.matched, "row")} of ${entry.name} to ${f.name}${skipped.join("")}`,
+    );
+  };
+  return picker({
+    placeholder: "Search a food",
+    label: "Match to a food",
+    search: searchFoods,
+    row: foodRow,
+    onPick: match,
+  });
+}
+
 // A logged entry, or a due day of a series (no id: its key is
 // `daily-{item}-{day}`): its amount (by the serving it was logged with),
 // group and time, whether it repeats daily; its food's ☆ and Edit, and a
 // recipe's ingredients. Imported history has no food behind it, so it can
-// only move, go with its import group (`importedRemoval`), or be
-// re-created as a food of yours. A day not due (skipped, stopped, not
+// only move, go with its import group (`importedRemoval`), be matched to a
+// food (`importedMatch`) or be re-created as a food of yours. A day not due (skipped, stopped, not
 // started) opens the day; a ticked one, its tick.
 export async function entryEditor(key) {
   let entry;
@@ -838,8 +867,9 @@ export async function entryEditor(key) {
 async function entryForm(entry) {
   const due = entry.kind === "due";
   const imported = entry.kind === "imported";
-  const [food, targets] = await Promise.all([
+  const [food, matched, targets] = await Promise.all([
     entry.food_id && !imported ? get(`/foods/${entry.food_id}`) : null,
+    entry.food_id && imported ? get(`/foods/${entry.food_id}`) : null,
     // Only what 100 kcal gives needs them: none, and it isn't shown.
     get(scoped("/targets")).catch(() => null),
   ]);
@@ -952,7 +982,14 @@ async function entryForm(entry) {
           repeat
             ? h("label", { class: "check" }, repeat, " Repeat daily")
             : null,
-          imported
+          imported && matched
+            ? h(
+                "p",
+                { class: "muted" },
+                `Imported from your previous diary, counted as ${matched.name}.`,
+              )
+            : null,
+          imported && !matched
             ? h(
                 "p",
                 { class: "muted" },
@@ -962,9 +999,10 @@ async function entryForm(entry) {
                   { href: href.newFood({ name: entry.name }) },
                   "Create this food",
                 ),
-                " to log it with its values.",
+                " to log it with its values, or match it to a food.",
               )
             : null,
+          imported ? importedMatch(entry, back) : null,
         ],
     save: due
       ? saveDue

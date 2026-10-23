@@ -16,19 +16,15 @@ import {
 import { tipFor } from "./tips.mjs";
 import { h } from "./ui.mjs";
 
-// Where a bar is full and its to-go counts to: a range's middle (an
-// "about" target's value is its min), else the target.
-export const fillTo = ({ value, min, max }) =>
-  isNil(min) || isNil(max) ? value : (min + max) / 2;
-
 // A bar's status line, from `shown` (amountShown's, as the amount reads):
-// only what the amount proves (ADR 0030). A range counts to its middle
-// (neither losing nor gaining is assumed) and anywhere in it is in range;
-// "at least" counts to its min, "at most" says what's left to its max. A
-// floor proves an excess and a minimum met, never that a range's max holds
-// ("Minimum met"), and what's left only as an upper bound ("≤"); under
-// KNOWN nothing is judged but an excess. An excess counts from the top of
-// what's allowed (the range's max). Eaten unknown, what's planned is said.
+// only what the amount proves (ADR 0030). A range counts to its target:
+// under it but past the range's min is in range, from it to the max is
+// met; "at least" counts to its min, "at most" says what's left to its
+// max. A floor proves an excess and a minimum met, never that a range's
+// max holds ("Minimum met"), and what's left only as an upper bound ("≤");
+// under KNOWN nothing is judged but an excess. An excess counts from the
+// top of what's allowed (the range's max). Eaten unknown, what's planned
+// is said.
 export function barStatus(
   key,
   target,
@@ -53,23 +49,24 @@ export function barStatus(
 }
 
 // A judged amount short of its target or under its max: what's to go
-// (left, under "at most"), counted to a range's middle, else its min, else
-// its max; with `lower` (a floor) an upper bound, and a min it reaches
-// proves only the minimum of a range.
+// (left, under "at most"), counted to the target, else its max; inside a
+// range short of the target, "In range" first; with `lower` (a floor) an
+// upper bound, and reaching a range proves only its minimum.
 function countdown(key, target, eaten, total, lower, average) {
-  const { min, max } = target;
-  const to = fillTo(target);
+  const { value, min, max } = target;
   const range = !isNil(min) && !isNil(max);
-  const met = range && lower ? "minimum met" : range ? "in range" : null;
-  if (!isNil(min) && eaten >= min) return met ? capitalized(met) : "Target met";
+  const met = range && lower ? "minimum met" : null;
+  if (!isNil(min) && eaten >= value)
+    return met ? capitalized(met) : "Target met";
   const amount = (v) => `${lower ? `≤${NBSP}` : ""}${fmtUnit(key, v)}`;
-  if (average)
-    return `${amount(to - eaten)} under ${range ? "the range's middle" : "target"}`;
-  const now = `${amount(to - eaten)} ${isNil(min) ? "left" : "to go"}`;
+  const within =
+    range && eaten >= min ? `${capitalized(met ?? "in range")} · ` : "";
+  if (average) return `${within}${amount(value - eaten)} under target`;
+  const now = `${within}${amount(value - eaten)} ${isNil(min) ? "left" : "to go"}`;
   if (total <= eaten) return now;
-  if (!isNil(min) && total >= min)
+  if (!isNil(min) && total >= value)
     return `${now} · ${met ?? "met"} with planned`;
-  return `${now} · ${amount(to - total)} after planned`;
+  return `${now} · ${amount(value - total)} after planned`;
 }
 
 // A nutrient without a target: the amount eaten over an empty track, so
@@ -107,7 +104,7 @@ function barLabel(n, shown, { eaten, goal, total, average, planned, floor }) {
   return `${n.label}: ${done}of ${num(goal)} ${n.unit} ${average ? "a day on average" : "eaten"}${withPlanned}${shown.hint ? `, ${shown.hint}` : ""}`;
 }
 
-// Eaten fills the bar (to `fillTo`); planned follows as a ghost, where it
+// Eaten fills the bar (to the target); planned follows as a ghost, where it
 // would land (their amounts: segmentWords, the bar's tip); eaten past the
 // target's max reads over.
 function segments(key, target, eaten, total, shown, { planned }) {
@@ -115,7 +112,7 @@ function segments(key, target, eaten, total, shown, { planned }) {
   const shares = barShares(
     unknown ? 0 : (eaten ?? 0),
     total ?? 0,
-    fillTo(target),
+    target.value,
   );
   const eatenOver = judge(total, target) === "over" && eaten > target.max;
   return [

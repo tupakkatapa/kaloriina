@@ -264,9 +264,17 @@ in
         services.kaloriina.openFirewall opens port ${toString cfg.port}, but the app only listens on ${cfg.address}.
       '';
 
-    # Puts `kaloriina import` and `kaloriina fineli` on PATH; run them as
-    # the service user.
-    environment.systemPackages = [ cfg.package ];
+    # `kaloriina` on PATH works on the service's database; root's runs as the
+    # service user, so the files it writes (the WAL too) stay the service's.
+    environment.systemPackages = [
+      (pkgs.writeShellScriptBin "kaloriina" ''
+        export KALORIINA_DB="''${KALORIINA_DB-${db}}"
+        if [ "$EUID" -eq 0 ]; then
+          exec ${pkgs.util-linux}/bin/runuser -u ${escapeShellArg cfg.user} -- ${getExe cfg.package} "$@"
+        fi
+        exec ${getExe cfg.package} "$@"
+      '')
+    ];
 
     systemd.tmpfiles.rules = [
       "d ${cfg.dataDir} 0750 ${cfg.user} ${cfg.group} -"

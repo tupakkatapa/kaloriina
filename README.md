@@ -71,7 +71,7 @@ There is no login. Keep it on `127.0.0.1` behind an HTTPS proxy that does the lo
 
 ## Imports
 
-Every command has `--help`. On NixOS, run them as the service user: `sudo runuser -u kaloriina -- kaloriina <command> --db /var/lib/kaloriina/kaloriina.db …`.
+Every command has `--help`. `--db` defaults to `KALORIINA_DB`, else `kaloriina.db` in the current folder. On NixOS, `sudo kaloriina <command> …` works on the service's database as the service user, so the files you pass must be readable by it.
 
 ### Fineli
 
@@ -84,6 +84,10 @@ Profile → Import from Cronometer, or `kaloriina import --db kaloriina.db --ser
 ### Google Health
 
 Export Google Health from [Google Takeout](https://takeout.google.com), then Profile → Connections → Google Health, or `kaloriina import-google-health --db kaloriina.db --time-zone Europe/Helsinki ./Takeout`.
+
+### Loop Habit Tracker
+
+In Loop, Settings → Export full backup, copy the `.db` file off the phone, then `kaloriina import-loop-habits --db kaloriina.db Loop.db`. Each habit becomes a tracker under Habits; days you already counted here stay.
 
 ## Android
 

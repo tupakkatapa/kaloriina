@@ -1,7 +1,7 @@
 // `unique()` without Playwright, so `web.test.mjs` can check its promise.
 
 // Slots a spec may use: 0 to SLOTS - 1.
-export const SLOTS = 1167;
+export const SLOTS = 1169;
 
 // Both projects share one server and database. Each test passes its own
 // slot number, so every test/project pair gets distinct names, barcodes and a

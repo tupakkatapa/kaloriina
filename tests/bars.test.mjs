@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { barStatus, fillTo } from "../web/bars.mjs";
+import { barStatus } from "../web/bars.mjs";
 import { barShares, setRegistry } from "../web/nutrients.mjs";
 
 setRegistry([
@@ -14,7 +14,7 @@ setRegistry([
 ]);
 
 const plain = (t) => t.replaceAll(" ", " ");
-const about = { value: 1900, min: 1900, max: 2090 };
+const about = { value: 2000, min: 1900, max: 2100 };
 const atLeast = { value: 5, min: 5, max: null };
 const atMost = { value: 5, min: null, max: 5 };
 // amountShown's shape: known, a floor judged, a floor unjudged, none.
@@ -40,65 +40,81 @@ test("TFA-D1: an unjudged amount never reads 'Target met · null'", () => {
   assert.doesNotMatch(status("b5", atLeast, 6, 6, none), /null/u);
 });
 
-test("TFA-F4: a floor under the max proves the minimum, not the range", () => {
+test("TFA-F4: a floor in range proves the minimum, not the range", () => {
   assert.equal(
     status("energy", about, 2043, 2043, floor, { average: true }),
     "Minimum met",
   );
-  assert.equal(status("energy", about, 2000, 2000, known), "In range");
+  assert.equal(
+    status("energy", about, 1950, 1950, floor),
+    "Minimum met · ≤ 50 kcal to go",
+  );
+  assert.equal(status("energy", about, 2000, 2000, known), "Target met");
   assert.equal(status("b5", atLeast, 6, 6, floor), "Target met");
-  assert.equal(status("energy", about, 1503, 1503, floor), "≤ 492 kcal to go");
+  assert.equal(status("energy", about, 1503, 1503, floor), "≤ 497 kcal to go");
 });
 
 test("TFA-F6: an excess counts from the range's top", () => {
   assert.equal(
-    status("energy", about, 2122, 2122, floor, { average: true }),
+    status("energy", about, 2132, 2132, floor, { average: true }),
     "32 kcal over the range",
   );
   assert.equal(
-    status("energy", about, 2200, 2200, known),
+    status("energy", about, 2210, 2210, known),
     "110 kcal over the range",
   );
 });
 
-// The range's middle (1,995 here) is what's to go: neither losing nor
-// gaining is assumed. Anywhere in the range is in range.
-test("a range counts to its middle, and in range is met", () => {
-  assert.equal(status("energy", about, 844, 844, known), "1,151 kcal to go");
+// The target itself is what's to go; under it but within 5 % is in range,
+// and from it up to the range's top is met.
+test("a range counts to its target, and from it up to the top is met", () => {
+  assert.equal(status("energy", about, 844, 844, known), "1,156 kcal to go");
   assert.equal(
     status("energy", about, 844, 1244, known),
-    "1,151 kcal to go · 751 kcal after planned",
+    "1,156 kcal to go · 756 kcal after planned",
   );
   assert.equal(
     status("energy", about, 844, 1950, known),
-    "1,151 kcal to go · in range with planned",
+    "1,156 kcal to go · 50 kcal after planned",
   );
-  assert.equal(status("energy", about, 1900, 1900, known), "In range");
-  assert.equal(status("energy", about, 2090, 2090, known), "In range");
+  assert.equal(
+    status("energy", about, 844, 2050, known),
+    "1,156 kcal to go · met with planned",
+  );
+  assert.equal(
+    status("energy", about, 1920, 1920, known),
+    "In range · 80 kcal to go",
+  );
+  assert.equal(status("energy", about, 1899, 1899, known), "101 kcal to go");
+  assert.equal(status("energy", about, 2100, 2100, known), "Target met");
   assert.equal(
     status("energy", about, 844, 844, known, { average: true }),
-    "1,151 kcal under the range's middle",
+    "1,156 kcal under target",
   );
   assert.equal(
     status("energy", about, 1950, 1950, known, { average: true }),
-    "In range",
+    "In range · 50 kcal under target",
+  );
+  assert.equal(
+    status("energy", about, 2050, 2050, known, { average: true }),
+    "Target met",
   );
 });
 
 test("a floor's to-go is an upper bound: ≤, never 'At most'", () => {
   assert.equal(
     status("energy", about, 844, 1244, floor),
-    "≤ 1,151 kcal to go · ≤ 751 kcal after planned",
+    "≤ 1,156 kcal to go · ≤ 756 kcal after planned",
   );
   assert.equal(
     status("energy", about, 844, 844, floor, { average: true }),
-    "≤ 1,151 kcal under the range's middle",
+    "≤ 1,156 kcal under target",
   );
   assert.equal(status("b5", atLeast, 2, 2, floor), "≤ 3 mg to go");
-  // A floor reaching the min proves it, never the range's max.
+  // A floor reaching the target proves the minimum, never the range's max.
   assert.equal(
-    status("energy", about, 844, 1950, floor),
-    "≤ 1,151 kcal to go · minimum met with planned",
+    status("energy", about, 844, 2050, floor),
+    "≤ 1,156 kcal to go · minimum met with planned",
   );
   assert.equal(
     status("salt", atMost, 2, 3, floor),
@@ -147,17 +163,12 @@ test("eaten unknown: what's planned is still said", () => {
   assert.equal(status("b5", atLeast, null, 0, none), "Not known");
 });
 
-// An "about" target's value is its min (the range runs 10 % over it), so
-// the bar fills to the range's middle, where its to-go counts: full is
-// exactly when nothing is left to go.
-test("the bar fills to where its to-go counts", () => {
-  assert.equal(fillTo(about), 1995);
-  assert.equal(fillTo(atLeast), 5);
-  assert.equal(fillTo(atMost), 5);
-  const at = (eaten) => barShares(eaten, eaten, fillTo(about)).eaten;
-  assert.equal(at(1995), 100);
-  assert.equal(status("energy", about, 1995, 1995, known), "In range");
-  assert.ok(at(1900) < 100);
-  assert.equal(status("energy", about, 1000, 1000, known), "995 kcal to go");
-  assert.equal(at(1000), (1000 / 1995) * 100);
+// The bar is full at the target: exactly when nothing is left to go.
+test("the bar fills to its target", () => {
+  const at = (eaten) => barShares(eaten, eaten, about.value).eaten;
+  assert.equal(at(2000), 100);
+  assert.equal(status("energy", about, 2000, 2000, known), "Target met");
+  assert.ok(at(1950) < 100);
+  assert.equal(status("energy", about, 1000, 1000, known), "1,000 kcal to go");
+  assert.equal(at(1000), 50);
 });

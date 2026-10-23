@@ -32,6 +32,7 @@ import {
   dvShare,
   energySplit,
   hydrationText,
+  kcal,
   KEY_TARGETS,
   mainKeys,
   nutrient,
@@ -203,7 +204,7 @@ export function nutritionPanel() {
   const dvNote = h(
     "p",
     { class: "note muted" },
-    `%: of the FDA Daily Value, on a 2,000${NBSP}kcal diet; none for protein or vitamin A.`,
+    `%: of the FDA Daily Value, on a ${kcal(2000)} diet; none for protein or vitamin A.`,
   );
   const fold = h(
     "details",

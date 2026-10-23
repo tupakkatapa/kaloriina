@@ -91,7 +91,7 @@ test("summary shows the target range and flags averages over max", async ({
     route.request().method() === "GET"
       ? route.fulfill({
           json: [
-            { metric: "energy", value: 2000, min: 2000, max: 2200 },
+            { metric: "energy", value: 2000, min: 1900, max: 2100 },
             { metric: "sodium", value: 2300, min: null, max: 2300 },
           ],
         })
@@ -99,10 +99,10 @@ test("summary shows the target range and flags averages over max", async ({
   );
   await page.goto(`/#/summary/week/${day}`);
   // The energy target is the chart's: a min–max range, one field, said
-  // once for screen readers.
+  // once for screen readers, the target first.
   await expect(
     energyList(page).filter({ hasText: /^Eaten target/u }),
-  ).toHaveText([/^Eaten target: 2,000\skcal–2,200\skcal$/u]);
+  ).toHaveText([/^Eaten target: 2,000\skcal \(1,900\skcal–2,100\skcal\)$/u]);
   // Salt's bar (Highlighted): its mean against the range, over. 4000 mg of
   // sodium against 2300 mg is over.
   await showHighlighted(page);
@@ -319,7 +319,7 @@ test("the energy chart: one legend every period, a shape per series, a floor hol
   );
   await page.route("**/api/profiles/*/targets", (route) =>
     route.fulfill({
-      json: [{ metric: "energy", value: 2000, min: 2000, max: 2200 }],
+      json: [{ metric: "energy", value: 2000, min: 1900, max: 2100 }],
     }),
   );
   for (const period of ["week", "month"]) {
@@ -448,7 +448,7 @@ test("the energy target line spans a period of one logged day", async ({
       .first(),
   ).toHaveText(
     new RegExp(
-      `^Eaten target: ${goal.toLocaleString("en-US")}\\skcal(–|$)`,
+      `^Eaten target: ${goal.toLocaleString("en-US")}\\skcal( \\(|$)`,
       "u",
     ),
   );
@@ -651,7 +651,7 @@ async function openSeptember(page) {
   });
   await mockJson(page, "**/api/profiles/*/targets", (real) => [
     ...real,
-    { metric: "energy", value: 2000, min: 2000, max: 2200 },
+    { metric: "energy", value: 2000, min: 1900, max: 2100 },
   ]);
   await mockJson(page, "**/api/profiles/*/device-days?*", (real) => ({
     ...real,
@@ -671,7 +671,7 @@ test("table and tiles agree", async ({ page }) => {
   await openSeptember(page);
   await page.goto("/#/summary/food/month/2025-09-10");
   // Through yesterday: Sep 1–9, 1,800 + 20·i, mean 1,880 (today's 3,000
-  // left out everywhere).
+  // left out everywhere); 1,900 to 1,960 are within 5 % of 2,000.
   await expect(
     page.getByRole("heading", { name: "Daily averages through yesterday" }),
   ).toBeVisible();
@@ -681,7 +681,7 @@ test("table and tiles agree", async ({ page }) => {
   const tiles = page
     .getByRole("list", { name: "Energy", exact: true })
     .locator(".tile");
-  await expect(tiles.first()).toHaveText(/^0 of 9\s*days on target$/u);
+  await expect(tiles.first()).toHaveText(/^4 of 9\s*days on target$/u);
   // The mean a day is the Daily averages bar's: not again as a tile.
   await expect(tiles.filter({ hasText: /a day$/u })).toHaveCount(0);
 });
@@ -1243,6 +1243,12 @@ test("Body's period tiles average HRV, RHR and heart rate; heart rate charts wit
       ["Lowest (bpm)", [47, 50]],
       ["Lowest–highest (bpm)", [130, 150]],
     ]);
+  // Its days joined: no trend line to read instead.
+  expect(
+    await img.evaluate(
+      (c) => window.Chart.getChart(c).data.datasets[0].showLine,
+    ),
+  ).toBe(true);
   // One chart: no card of its own.
   await expect(page.locator("canvas")).toHaveCount(1);
 });
@@ -1521,7 +1527,7 @@ test("a food point's tooltip names its target once: a range, at least, at most",
   await page.route("**/api/profiles/*/targets", (route) =>
     route.fulfill({
       json: [
-        { metric: "energy", value: 1800, min: 1800, max: 2200 },
+        { metric: "energy", value: 1800, min: 1710, max: 1890 },
         { metric: "protein", value: 50, min: 50, max: null },
         { metric: "fat", value: 60, min: null, max: 60 },
       ],
@@ -1531,7 +1537,7 @@ test("a food point's tooltip names its target once: a range, at least, at most",
   const energy = page.getByRole("img", { name: /^Energy by day/u });
   const lines = await tipAt(energy, 1);
   expect(lines[0]).toBe("Eaten: 2,000 kcal");
-  expect(targetsIn(lines)).toEqual(["Target 1,800–2,200 kcal"]);
+  expect(targetsIn(lines)).toEqual(["Target 1,710–1,890 kcal"]);
   const tabs = page.getByRole("radiogroup", { name: "Chart" });
   await tabs.getByRole("radio", { name: "Protein" }).click();
   const protein = page.getByRole("img", { name: /^Protein by day/u });

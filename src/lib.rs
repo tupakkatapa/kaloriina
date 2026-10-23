@@ -20,6 +20,7 @@ mod error;
 pub mod fineli;
 pub mod google_health;
 pub mod import;
+pub mod loop_habits;
 pub mod model;
 mod nutrients;
 mod off;

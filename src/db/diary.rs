@@ -430,8 +430,9 @@ pub fn imported_group_delete(
     Ok(())
 }
 
-/// A day's entries: eaten ones by the time eaten (untimed last), then as
-/// added; Planned's as added.
+/// A day's entries: eaten ones by the time eaten (the day runs to 03:00,
+/// so 00:00–02:59 read as 24:00–26:59; untimed last), then as added;
+/// Planned's as added.
 pub fn entry_list_for_day(
     conn: &Connection,
     profile: ProfileId,
@@ -439,7 +440,9 @@ pub fn entry_list_for_day(
 ) -> Result<Vec<Entry>, Error> {
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT {ENTRY_COLS} FROM entry WHERE profile_id = ? AND day = ?
-         ORDER BY CASE WHEN grp = '{PLANNED}' THEN '' ELSE coalesce(time, '99:99') END, id"
+         ORDER BY CASE WHEN grp = '{PLANNED}' THEN ''
+                       WHEN time < '03:00' THEN (substr(time, 1, 2) + 24) || substr(time, 3)
+                       ELSE coalesce(time, '99:99') END, id"
     ))?;
     Ok(stmt
         .query_map(params![profile, day], entry_row)?

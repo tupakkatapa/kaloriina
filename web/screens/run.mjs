@@ -10,7 +10,7 @@ import {
   stored,
   uid,
 } from "../api.mjs";
-import { iso, pretty } from "../dates.mjs";
+import { pretty, today } from "../dates.mjs";
 import { capitalized, countdown, plural } from "../format.mjs";
 import { go, href, leaving } from "../nav.mjs";
 import { readJson, writeJson } from "../prefs.mjs";
@@ -222,7 +222,7 @@ export async function workoutRun(id, params) {
     at: 0,
     startedAt: Date.now(),
     // Started from a plan (`?day=`): saved on that day.
-    day: params.get("day") ?? iso(new Date()),
+    day: params.get("day") ?? today(),
     // What was done at each step: reps as adjusted, seconds as held, kg.
     done: steps.map(() => ({})),
     finished: false,
@@ -454,6 +454,24 @@ export async function workoutRun(id, params) {
   wake();
   document.addEventListener("visibilitychange", onVisible);
   signal.addEventListener("abort", stop, { once: true });
+  // Space is Done (or Skip) from a keyboard: not held down, not in a
+  // dialog, not where Space types or presses something of its own.
+  document.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key !== " " || e.repeat || document.querySelector("dialog[open]"))
+        return;
+      if (
+        e.target.closest?.(
+          "input, textarea, select, button, a, [contenteditable]",
+        )
+      )
+        return;
+      e.preventDefault();
+      doneButton.click();
+    },
+    { signal },
+  );
 
   function show(index) {
     state.at = Math.max(0, index);

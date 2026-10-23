@@ -1920,7 +1920,7 @@ test("search rows show only the verdict; positive sublabels filter the search fr
   await page.evaluate(() =>
     localStorage.setItem(
       "food-filters",
-      JSON.stringify({ tags: ["healthy", "high_fat", "high_protein"] }),
+      JSON.stringify({ tags: ["high_fat", "high_protein"] }),
     ),
   );
   await page.reload();
@@ -1942,6 +1942,116 @@ test("search rows show only the verdict; positive sublabels filter the search fr
   await page.getByLabel("Search foods").fill(`Cue ${tag}`);
   await row("bacon").click();
   await expect(own).toHaveText(["Unhealthy"]);
+});
+
+// A recipe's or meal's items as read back: food, grams, serving, quantity.
+const read = (got) =>
+  got.items.map((i) => [i.food_id, i.grams, i.serving, i.quantity]);
+
+test("a meal saves as a recipe, and a recipe as a meal, keeping both", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { tag } = unique(1133, testInfo);
+  const oats = await food(request, { name: `Oats ${tag}` });
+  const milk = await food(request, {
+    name: `Milk ${tag}`,
+    servings: [{ label: "Glass", grams: 200 }],
+  });
+  const items = [
+    { food_id: oats.id, grams: 60 },
+    { food_id: milk.id, serving: "Glass", quantity: 1 },
+  ];
+  const want = [
+    [oats.id, 60, null, null],
+    [milk.id, 200, "Glass", 1],
+  ];
+  const meal = await (
+    await request.post("/api/meals", {
+      data: { name: `Porridge ${tag}`, items },
+    })
+  ).json();
+  await page.goto(`/#/meal/${meal.id}`);
+  await page.getByRole("button", { name: "Recipe from this meal" }).click();
+  await expect(page).toHaveURL(/#\/recipe\/\d+$/u);
+  const recipeId = page.url().match(/(\d+)$/u)[1];
+  const recipe = await (await request.get(`/api/recipes/${recipeId}`)).json();
+  expect(recipe.name).toBe(`Porridge ${tag}`);
+  expect(read(recipe)).toEqual(want);
+  expect((await request.get(`/api/meals/${meal.id}`)).ok()).toBe(true);
+
+  await page.getByRole("button", { name: "Meal from this recipe" }).click();
+  await expect(page).toHaveURL(/#\/meal\/\d+$/u);
+  const mealId = page.url().match(/(\d+)$/u)[1];
+  expect(mealId).not.toBe(String(meal.id));
+  const back = await (await request.get(`/api/meals/${mealId}`)).json();
+  expect(back.name).toBe(`Porridge ${tag}`);
+  expect(read(back)).toEqual(want);
+  expect((await request.get(`/api/recipes/${recipeId}`)).ok()).toBe(true);
+});
+
+test("the Filters panel's rating keeps one verdict's foods", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { tag } = unique(1132, testInfo);
+  await food(request, {
+    name: `Rated bacon ${tag}`,
+    per100: {
+      energy: 500,
+      protein: 30,
+      fat: 30,
+      saturated: 10,
+      sugars: 30,
+      sodium: 800,
+    },
+  });
+  await food(request, {
+    name: `Rated chicken ${tag}`,
+    per100: {
+      energy: 110,
+      protein: 23,
+      fat: 1.5,
+      saturated: 0.4,
+      sugars: 0,
+      sodium: 60,
+    },
+  });
+  await food(request, {
+    name: `Rated plain ${tag}`,
+    per100: { energy: 200, protein: 5, fat: 10 },
+  });
+  await page.goto("/#/foods");
+  await page.getByLabel("Search foods").fill(`Rated ${tag}`);
+  const row = (name) =>
+    page.getByRole("button", { name: starts(`Rated ${name} ${tag}`) });
+  await expect(row("plain")).toBeVisible();
+  await page.getByRole("button", { name: /^Filters/u }).click();
+  const rating = page.getByRole("group", { name: "Rating" });
+  await expect(rating.getByRole("button")).toHaveText([
+    "Healthy",
+    "OK",
+    "Unhealthy",
+  ]);
+  const unhealthy = rating.getByRole("button", { name: "Unhealthy" });
+  await unhealthy.click();
+  await expect(unhealthy).toHaveAttribute("aria-pressed", "true");
+  await expect(row("bacon")).toBeVisible();
+  await expect(row("chicken")).toHaveCount(0);
+  await expect(row("plain")).toHaveCount(0);
+  // One rating at a time: Healthy replaces it.
+  await rating.getByRole("button", { name: "Healthy", exact: true }).click();
+  await expect(unhealthy).toHaveAttribute("aria-pressed", "false");
+  await expect(
+    page.getByRole("button", { name: /^Filters · 1/u }),
+  ).toBeVisible();
+  await expect(row("chicken")).toBeVisible();
+  await expect(row("bacon")).toHaveCount(0);
+  // Kept across visits.
+  await page.reload();
+  await page.getByLabel("Search foods").fill(`Rated ${tag}`);
+  await expect(row("chicken")).toBeVisible();
+  await expect(row("bacon")).toHaveCount(0);
 });
 
 // The owner's fermented pickles (ADR 0033): salty, but vegetables, so

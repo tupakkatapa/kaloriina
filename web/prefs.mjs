@@ -17,3 +17,9 @@ export function readJson(key, fallback) {
 
 export const writeJson = (key, value) =>
   localStorage.setItem(key, JSON.stringify(value));
+
+// Reminders in this browser (the evening check-in, a weigh-in after a
+// week), on unless turned off.
+const REMINDERS_KEY = "reminders";
+export const remindersOn = () => readJson(REMINDERS_KEY, true) !== false;
+export const setReminders = (on) => writeJson(REMINDERS_KEY, on);

@@ -6,7 +6,27 @@ import { EATEN } from "./nutrients.mjs";
 import { unitSystem } from "./units.mjs";
 
 export const iso = (d) => d.toLocaleDateString("sv-SE");
-export const today = () => iso(new Date());
+// The hour a day starts: a night out still logs on the evening's day.
+export const DAY_START = 3;
+// Hours set back on the clock, not milliseconds: DST nights keep 03:00.
+export function today() {
+  const d = new Date();
+  d.setHours(d.getHours() - DAY_START);
+  return iso(d);
+}
+// The next day's start, as a Date.
+export function nextDayStart() {
+  const d = parseDay(shift(today(), 1));
+  d.setHours(DAY_START);
+  return d;
+}
+
+// A clock time on a day as an instant: before DAY_START, the next morning's.
+export function dayAt(day, time) {
+  const d = new Date(`${day}T${time}`);
+  if (d.getHours() < DAY_START) d.setDate(d.getDate() + 1);
+  return d;
+}
 
 export function parseDay(s) {
   const [y, m, d] = s.split("-").map(Number);

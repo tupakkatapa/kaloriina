@@ -9,8 +9,10 @@ import {
   energyUnit,
   LABEL_KEY,
   labelStyle,
+  setUnitSystem,
   unitOf,
   unitQty,
+  unitSystem,
 } from "./units.mjs";
 
 // The EU nutrition declaration, in label order.
@@ -53,13 +55,13 @@ export const GOAL_SIGN = { at_least: "≥", at_most: "≤", about: "~" };
 export const GOAL_HINT = {
   at_least: "at least",
   at_most: "at most",
-  about: "about; up to 10\u00A0% over is fine",
+  about: "about; within 5\u00A0% either way is fine",
 };
 
 // "on", "under" or "over" `target` ({value, min, max}), the one judgement
 // every view draws: over past `max`, under below `min`, else on (an "about"
-// target's max is 10 % over; "at most" has no min, "at least" no max).
-// null without a target.
+// target's range is 5 % either way; "at most" has no min, "at least" no
+// max). null without a target.
 export function judge(amount, target) {
   if (isNil(target?.value)) return null;
   if (!isNil(target.max) && amount > target.max) return "over";
@@ -146,7 +148,8 @@ export function rangeOf(key, target) {
 // unit, and `show`/`store` converting stored ↔ shown. Set once per page;
 // energy follows `unit`, the rest the label `style` (sodium as salt or
 // sodium), so everything reading the registry (kcal(), fmtUnit,
-// inputValue, targets, charts) shows those.
+// inputValue, targets, charts) shows those. US units name kcal food
+// Calories, "Cal", as a US label prints them.
 export let registry = [];
 let served = [];
 let style = "eu";
@@ -159,6 +162,8 @@ export function setRegistry(list, unit = energyUnit(), label = labelStyle()) {
       n.display ?? { label: n.label, unit: n.unit, factor: 1 };
     if (n.key === "energy" && unit === "kJ")
       d = { ...d, unit: "kJ", factor: d.factor * KJ_PER_KCAL };
+    else if (n.key === "energy" && unitSystem() === "us" && d.unit === "kcal")
+      d = { ...d, unit: "Cal" };
     return {
       ...n,
       label: d.label,
@@ -175,6 +180,12 @@ export function setRegistry(list, unit = energyUnit(), label = labelStyle()) {
 export function setEnergyUnit(unit) {
   localStorage.setItem(ENERGY_KEY, unit);
   setRegistry(served, unit, style);
+}
+
+// Metric or US units on this device from now on.
+export function setUnits(system) {
+  setUnitSystem(system);
+  setRegistry(served, energyUnit(), style);
 }
 
 // Read the EU or US label on this device from now on.

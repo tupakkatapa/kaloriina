@@ -103,7 +103,7 @@ test("display units from the server round-trip and relabel", () => {
 });
 
 test("targets read as one number with its direction", () => {
-  const target = { value: 2000, min: 2000, max: 2200 };
+  const target = { value: 2000, min: 1900, max: 2100 };
   assert.equal(rangeOf("energy", target), "2,000", "about shows the number");
   assert.equal(
     rangeOf("protein", { value: 140 }),

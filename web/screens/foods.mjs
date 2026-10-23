@@ -1,6 +1,6 @@
 // The Foods tab, and the editors of foods, recipes and meals.
 
-import { copyForm, saveOnce } from "../actions.mjs";
+import { copyButton, copyForm, saveOnce } from "../actions.mjs";
 import { amountControl, byVolume, PORTION, weightText } from "../amount.mjs";
 import { api, get, meta, scoped } from "../api.mjs";
 import { recipeKnown, recipePer100, wholeOf } from "../coverage.mjs";
@@ -798,6 +798,17 @@ const editIngredient = (path, value, shell) => (item) => {
   location.hash = href.food({ id: item.food_id, kind: item.kind }, back);
 };
 
+// A meal saved as a recipe, or a recipe as a meal (`path`): a new one of
+// the editor's name and items as they are, the one edited kept.
+const saveAs = (path, label, name, items, shell, to) =>
+  copyButton(
+    (key) =>
+      api("POST", path, { name: name.value, items: items.value(), uid: key }),
+    shell,
+    to,
+    label,
+  );
+
 export async function recipeEditor(id, params) {
   const isNew = id === "new";
   const { path, kept } = draftOf(params);
@@ -977,6 +988,14 @@ export async function recipeEditor(id, params) {
       : [
           ...removing.secondary,
           copyForm("/recipes", body, () => shell, href.food),
+          saveAs(
+            "/meals",
+            "Meal from this recipe",
+            name,
+            items,
+            () => shell,
+            (copy) => href.meal(copy.id),
+          ),
           mergeLink(id),
         ],
     save: async () => {
@@ -1082,6 +1101,14 @@ export async function mealEditor(id, params) {
             body,
             () => shell,
             (copy) => href.meal(copy.id),
+          ),
+          saveAs(
+            "/recipes",
+            "Recipe from this meal",
+            name,
+            items,
+            () => shell,
+            href.food,
           ),
         ],
     save: () => send(body(), isNew ? null : loaded.id),

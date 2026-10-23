@@ -248,3 +248,159 @@ async fn a_read_answers_while_an_upload_is_parsed() {
         "a read waited {slowest:?} of the upload's {took:?}"
     );
 }
+
+async fn match_rows(app: &Router, pid: i64, name: &str, food_id: i64) -> (StatusCode, Value) {
+    let uri = format!("/api/profiles/{pid}/imported/match");
+    call(
+        app,
+        "POST",
+        &uri,
+        Some(json!({ "name": name, "food_id": food_id })),
+    )
+    .await
+}
+
+async fn day(app: &Router, day: &str) -> Value {
+    let (status, res) = call(app, "GET", &format!("/api/profiles/1/day/{day}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    res
+}
+
+const MATCH_SERVINGS: &str = "Day,Group,Food Name,Amount
+2026-06-02,Consumed,Oat Porridge,300.00 g
+2026-06-02,Consumed,Creatine,5.00 g
+2026-06-02,Consumed,Coffee,1.00 Serving
+2026-06-03,Consumed,Creatine,1.00 Scoop
+2026-06-04,Consumed,Creatine,1.00 x 5.0 g
+2026-06-05,Consumed,Creatine,1.00 x 5.0 ml
+";
+const MATCH_SUMMARY: &str = "Date,Group,Energy (kcal),Protein (g)
+2026-06-02,Consumed,1500,60
+";
+
+/// Rows matched to a food count as it, out of their group's total: a
+/// creatine is a floor beside what the export still holds, energy stays the
+/// export's, and a re-import keeps the match without counting it twice.
+#[tokio::test]
+async fn a_matched_row_counts_as_its_food_and_a_reimport_keeps_it() {
+    let app = app();
+    let (status, creatine) = call(
+        &app,
+        "POST",
+        "/api/foods",
+        Some(
+            json!({ "name": "Creatine", "per100": { "creatine": 100, "energy": 0 },
+                     "servings": [{ "label": "scoop", "grams": 5 }] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{creatine}");
+    let creatine = creatine["id"].as_i64().unwrap();
+    let oats = create_food(&app, "Oats", json!({ "energy": 400, "protein": 10 })).await;
+    let both = json!({ "servings": MATCH_SERVINGS, "summary": MATCH_SUMMARY });
+    let (status, res) = import(&app, 1, both.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+
+    let (status, res) = match_rows(&app, 1, " creatine ", creatine).await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    let ml = json!([{ "reason": "amount not in grams", "count": 1 }]);
+    assert_eq!(res, json!({ "matched": 3, "skipped": ml }));
+    let (status, res) = match_rows(&app, 1, "Oat Porridge", oats).await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    assert_eq!(res, json!({ "matched": 1, "skipped": [] }));
+
+    let check = |d: Value| {
+        assert_eq!(d["eaten"]["creatine"], 5.0, "{d}");
+        let share = d["known"]["creatine"].as_f64().expect("a floor");
+        assert!(share < 1.0, "{d}");
+        assert!(
+            (d["eaten"]["energy"].as_f64().unwrap() - 1500.0).abs() < 0.5,
+            "{d}"
+        );
+        assert!(
+            (d["eaten"]["protein"].as_f64().unwrap() - 60.0).abs() < 0.5,
+            "{d}"
+        );
+    };
+    check(day(&app, "2026-06-02").await);
+    for d in ["2026-06-03", "2026-06-04"] {
+        assert_eq!(day(&app, d).await["eaten"]["creatine"], 5.0, "{d}");
+    }
+    assert!(day(&app, "2026-06-05").await["eaten"]["creatine"].is_null());
+    let d = day(&app, "2026-06-02").await;
+    let row = d["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| g["entries"].as_array().unwrap())
+        .find(|e| e["name"] == "Creatine")
+        .unwrap()
+        .clone();
+    assert_eq!(row["kind"], "imported");
+    assert_eq!(row["food_id"], creatine);
+    assert_eq!(row["grams"], 5.0);
+    let uri = format!("/api/profiles/1/entries/{}", row["id"]);
+    let (status, res) = call(&app, "DELETE", &uri, None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "still read-only: {res}");
+
+    let (status, res) = match_rows(&app, 1, "Creatine", creatine).await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    assert_eq!(res, json!({ "matched": 0, "skipped": ml }), "again: no-op");
+    check(day(&app, "2026-06-02").await);
+
+    // Both files, either one alone: the match stays, counted once.
+    let servings = json!({ "servings": MATCH_SERVINGS });
+    let summary = json!({ "summary": MATCH_SUMMARY });
+    for files in [both, servings, summary] {
+        let (status, res) = import(&app, 1, files).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        check(day(&app, "2026-06-02").await);
+        assert_eq!(names(&app, 1, "2026-06-02").await.len(), 3);
+    }
+
+    // The group goes with its rows, matched or not.
+    let uri = "/api/profiles/1/imported/2026-06-02/Eaten";
+    let (status, res) = call(&app, "DELETE", uri, None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{res}");
+    let d = day(&app, "2026-06-02").await;
+    assert!(d["eaten"]["creatine"].is_null(), "{d}");
+    assert!(d["eaten"]["energy"].is_null(), "{d}");
+}
+
+#[tokio::test]
+async fn a_match_is_checked() {
+    let app = app();
+    import(&app, 1, json!({ "servings": MATCH_SERVINGS })).await;
+    let oats = create_food(&app, "Oats", json!({ "energy": 400 })).await;
+    let (status, res) = match_rows(&app, 1, "Oat Porridge", 999_999).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{res}");
+    assert_eq!(res["field"], "food_id");
+    let (status, res) = match_rows(&app, 1, " ", oats).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{res}");
+    assert_eq!(res["field"], "name");
+    let (status, res) = match_rows(&app, 999, "Oat Porridge", oats).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{res}");
+    assert_eq!(res["resource"], "profile");
+    assert!(day(&app, "2026-06-02").await["eaten"]["energy"].is_null());
+}
+
+/// A profile's export carries its matched rows: a copy reads the same.
+#[tokio::test]
+async fn matched_rows_travel_in_an_export() {
+    let app = app();
+    let oats = create_food(&app, "Oats", json!({ "energy": 400, "protein": 10 })).await;
+    let both = json!({ "servings": MATCH_SERVINGS, "summary": MATCH_SUMMARY });
+    import(&app, 1, both).await;
+    match_rows(&app, 1, "Oat Porridge", oats).await;
+    let (status, mut file) = call(&app, "GET", "/api/profiles/1/export", None).await;
+    assert_eq!(status, StatusCode::OK, "{file}");
+    file["profile"]["name"] = json!("Copy");
+    let (status, copy) = call(&app, "POST", "/api/profiles/import", Some(file)).await;
+    assert_eq!(status, StatusCode::CREATED, "{copy}");
+    let uri = format!("/api/profiles/{}/day/2026-06-02", copy["id"]);
+    let (_, copied) = call(&app, "GET", &uri, None).await;
+    let mine = day(&app, "2026-06-02").await;
+    assert_eq!(mine["eaten"]["energy"], 1500.0);
+    assert_eq!(copied["eaten"], mine["eaten"]);
+    assert_eq!(copied["known"], mine["known"]);
+}

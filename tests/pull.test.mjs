@@ -49,4 +49,5 @@ test("the band follows by half, then stiffens toward its cap", () => {
 test("released at the threshold, it refreshes; short of it, it doesn't", () => {
   assert.equal(releases(THRESHOLD), true);
   assert.equal(releases(THRESHOLD - 1), false);
+  assert.equal(releases(stretch(150)), false, "a 150 px drag");
 });

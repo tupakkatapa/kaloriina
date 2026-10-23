@@ -1,7 +1,7 @@
-// Phone or desktop layout and light or dark theme, before the first paint (a
-// classic script in <head>, so there's no flash of the wrong one). "auto"
-// and "system" follow the window's width and the system's colours; the
-// others force one. The Profile page stores the choices and fires
+// Phone or desktop layout and light, dark or AMOLED (dark on black) theme,
+// before the first paint (a classic script in <head>, so there's no flash of
+// the wrong one). "auto" and "system" follow the window's width and the
+// system's colours; the others force one. The Profile page stores the choices and fires
 // "layoutchange" or "themechange". The tabs follow the layout: on a phone
 // Diary sits in the middle (the page's order), a desktop sidebar starts
 // with it; moved in the DOM, not with CSS `order`, so focus and screen
@@ -28,8 +28,11 @@
     const theme = localStorage.getItem("theme") ?? "system";
     root.classList.toggle(
       "dark",
-      theme === "dark" || (theme === "system" && dark.matches),
+      theme === "dark" ||
+        theme === "amoled" ||
+        (theme === "system" && dark.matches),
     );
+    root.classList.toggle("amoled", theme === "amoled");
   };
   wide.addEventListener("change", apply);
   dark.addEventListener("change", apply);

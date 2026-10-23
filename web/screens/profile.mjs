@@ -235,6 +235,7 @@ export async function profileHub() {
       },
       onUnits: () => {
         profileRow.querySelector(".muted").textContent = bodyLine();
+        targetsRow.querySelector(".muted").textContent = targetsLine();
       },
     }),
   );

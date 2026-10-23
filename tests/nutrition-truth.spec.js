@@ -106,7 +106,9 @@ test("energy: a floor says how much is left only as an upper bound (≤); a nutr
   await expect(energy.locator(".target-label")).toContainText(
     /≥\s1,858\skcal/u,
   );
-  await expect(energy.locator("small")).toHaveText(/^≤\s137\skcal to go$/u);
+  await expect(energy.locator("small")).toHaveText(
+    /^Minimum met · ≤\s42\skcal to go$/u,
+  );
   // Iron from 1,848 of 1,858 kcal: judged, but a floor all the same.
   await page.locator("summary", { hasText: "Other nutrients" }).click();
   const iron = page.locator(".all-targets .target", { hasText: "Iron" });
@@ -133,7 +135,7 @@ test("food calendar: today shows what's eaten so far, unjudged; the energy chart
   await page.route("**/api/profiles/*/targets", (route) =>
     route.request().method() === "GET"
       ? route.fulfill({
-          json: [{ metric: "energy", value: 2000, min: 2000, max: 2200 }],
+          json: [{ metric: "energy", value: 2000, min: 1900, max: 2100 }],
         })
       : route.continue(),
   );

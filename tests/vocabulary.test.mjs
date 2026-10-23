@@ -95,7 +95,7 @@ test("abbreviations expand from one list: the split is built from ABBR", () => {
 test("a unit stays on its number's line: NBSP between them (STYLE-3)", () => {
   // `qty`/`withUnit` or `${NBSP}`, never a plain space: "18 %" must not
   // break across a phone's lines. Comments may.
-  const plain = /(\}|\d) (%|bpm|ms|min|kcal|kg|g|ml|L|h)(?!\w)/u;
+  const plain = /(\}|\d) (%|bpm|ms|min|kcal|Cal|kJ|kg|g|ml|L|h)(?!\w)/u;
   assert.deepEqual(
     hits(["web"], plain).filter(
       (hit) =>

@@ -1,5 +1,5 @@
 // The palette (web/style.css): the four macro colours, the four Highlight
-// tones and the four sleep stages, light and dark, checked as numbers:
+// tones and the four sleep stages, light, dark and AMOLED, checked as numbers:
 // `node --test tests/`.
 // Contrast is WCAG's against the card surface; distance is CIEDE2000 in
 // CIELAB, under protan, deutan and tritan dichromacy (Machado et al. 2009).
@@ -13,13 +13,14 @@ import { contrast, deltaE2000, lab } from "./colormath.mjs";
 const css = readFileSync(new URL("../web/style.css", import.meta.url), "utf8");
 
 // Every custom property a theme's `:root` blocks set, in order (dark:
-// light's, then `:root.dark`'s), `var(--x)` resolved.
-function theme(dark) {
+// light's, then `:root.dark`'s; AMOLED: dark's, then `:root.dark.amoled`'s),
+// `var(--x)` resolved.
+function theme(mode) {
   const vars = {};
-  const blocks = [...css.matchAll(/^:root(\.dark)?\s*\{([^}]*)\}/gmu)].filter(
-    (m) => !m[1] || dark,
-  );
-  for (const [, , body] of blocks)
+  const blocks = [
+    ...css.matchAll(/^:root(\.dark)?(\.amoled)?\s*\{([^}]*)\}/gmu),
+  ].filter((m) => (!m[1] || mode !== "light") && (!m[2] || mode === "amoled"));
+  for (const [, , , body] of blocks)
     for (const [, name, value] of body.matchAll(/(--[\w-]+):\s*([^;]+);/gu))
       vars[name] = value.trim();
   const resolve = (v) => {
@@ -42,10 +43,13 @@ const STAGES = [
   "--stage-light",
   "--stage-deep",
 ];
-const MODES = [
-  ["light", theme(false)],
-  ["dark", theme(true)],
-];
+const MODES = ["light", "dark", "amoled"].map((m) => [m, theme(m)]);
+
+test("AMOLED's page and cards are black", () => {
+  const v = theme("amoled");
+  assert.equal(v("--bg"), "#000000");
+  assert.equal(v("--surface"), "#000000");
+});
 
 const pairs = (list) =>
   list.flatMap((a, i) => list.slice(i + 1).map((b) => [a, b]));

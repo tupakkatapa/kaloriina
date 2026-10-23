@@ -1711,3 +1711,29 @@ test("an unsent activity and a workout's line take Health Connect's resting ener
     /^active\s270\skcal · 300\stotal$/u,
   );
 });
+
+test("Space is Done on a run, but not while typing a weight", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { tag } = unique(1168, testInfo);
+  const id = await exerciseIds(request);
+  await ownProfile(page, request, `Spacebar ${tag}`);
+  const w = await workout(request, {
+    name: `Space ${tag}`,
+    steps: [
+      { kind: "exercise", exercise_id: id("Pull-up"), reps: 5, kg: 10 },
+      { kind: "exercise", exercise_id: id("Burpee"), reps: 10 },
+    ],
+  });
+  await page.goto(`/#/workout/${w.id}/run`);
+  const what = page.locator(".run-what");
+  await expect(what).toHaveText(starts("Pull-up"));
+  const weight = page.getByLabel("Weight used (kg)");
+  await weight.focus();
+  await page.keyboard.press("Space");
+  await expect(what).toHaveText(starts("Pull-up"));
+  await weight.blur();
+  await page.keyboard.press("Space");
+  await expect(what).toHaveText(starts("Burpee"));
+});

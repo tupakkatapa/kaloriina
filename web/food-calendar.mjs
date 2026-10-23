@@ -24,8 +24,8 @@ export function shade(amount, target, bounds, floor = false) {
   const j = standing(amount, target, floor);
   if (j === "on") return 4;
   if (j !== "under") return 0;
-  // Under: by share of the minimum, ≥ 75 % 3, ≥ 50 % 2, any 1.
-  const share = amount / target.min;
+  // Under: by share of the target, ≥ 75 % 3, ≥ 50 % 2, any 1.
+  const share = amount / target.value;
   return share >= 0.75 ? 3 : share >= 0.5 ? 2 : share > 0 ? 1 : 0;
 }
 
@@ -60,8 +60,8 @@ export function verdictWords(
   const j = standing(amount, target, floor);
   if (j === "on") return ", on target";
   if (j === "over") return ", over";
-  if (j === "under") return `, ${say(target.min - amount)} under`;
+  if (j === "under") return `, ${say(target.value - amount)} under`;
   if (!floor || isNil(target?.value) || isNil(target.min)) return "";
   if (amount >= target.min) return ", minimum met";
-  return known ? `, at most ${say(target.min - amount)} under` : "";
+  return known ? `, at most ${say(target.value - amount)} under` : "";
 }

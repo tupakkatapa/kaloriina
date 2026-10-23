@@ -319,12 +319,12 @@ export async function logMeal(day, group, id) {
 // Search filters, remembered per browser. A rule's `amount` is per 100 g in
 // stored units (a change of energy unit keeps what it means), shown in
 // this device's.
-const SORTS = [
+const sorts = () => [
   ["relevance", "Best match"],
   ["name", "Name"],
   ["energy", "Lowest energy"],
   ["protein", "Most protein"],
-  ["protein_per_kcal", "Most protein per kcal"],
+  ["protein_per_kcal", `Most protein per ${nutrient("energy").unit}`],
   ["fit", "Best fit for today"],
 ];
 const FIT = "fit";
@@ -342,6 +342,8 @@ const FILTERS_KEY = "food-filters";
 // or mineral's ("Source of iron") sit behind a chip of their own.
 const filterLabels = () =>
   meta.labels.filter((l) => l.positive && l.kind !== "verdict");
+// The verdicts, of which the search may keep to one.
+const verdicts = () => meta.labels.filter((l) => l.kind === "verdict");
 const isVitamin = (l) =>
   l.kind !== "low" &&
   ["Vitamins", "Minerals"].includes(nutrient(l.nutrient)?.category);
@@ -367,10 +369,12 @@ function loadFilters() {
         dir,
         amount: typeof amount === "number" ? amount : null,
       }));
-  if (SORTS.some(([k]) => k === saved.sort)) f.sort = saved.sort;
+  if (sorts().some(([k]) => k === saved.sort)) f.sort = saved.sort;
   f.archived = saved.archived === true;
   if (Array.isArray(saved.tags))
-    f.tags = saved.tags.filter((t) => filterLabels().some((l) => l.key === t));
+    f.tags = saved.tags.filter((t) =>
+      [...verdicts(), ...filterLabels()].some((l) => l.key === t),
+    );
   return f;
 }
 
@@ -429,6 +433,7 @@ function filtersPanel(filters, onChange, { fit = false } = {}) {
   // minerals' behind a chip of their own: a food shows only with every
   // one picked. The button counts them with the other filters.
   const tags = h("div", { class: "chips" });
+  const rating = h("div", { class: "chips" });
   const vitamins = h("div", {
     class: "chips",
     role: "group",
@@ -533,13 +538,32 @@ function filtersPanel(filters, onChange, { fit = false } = {}) {
         () => {
           filters.tags = filters.tags.includes(l.key)
             ? filters.tags.filter((k) => k !== l.key)
-            : filterLabels()
+            : meta.labels
                 .map((x) => x.key)
                 .filter((k) => k === l.key || filters.tags.includes(k));
           changed();
         },
         { pressed: filters.tags.includes(l.key) },
       );
+    // One verdict at a time: another replaces it.
+    fill(
+      rating,
+      ...verdicts().map((l) =>
+        chip(
+          l.text,
+          () => {
+            const others = filters.tags.filter(
+              (k) => !verdicts().some((v) => v.key === k),
+            );
+            filters.tags = filters.tags.includes(l.key)
+              ? others
+              : [l.key, ...others];
+            changed();
+          },
+          { pressed: filters.tags.includes(l.key) },
+        ),
+      ),
+    );
     fill(
       tags,
       ...filterLabels()
@@ -562,6 +586,7 @@ function filtersPanel(filters, onChange, { fit = false } = {}) {
     );
     fill(
       panel,
+      h("fieldset", {}, h("legend", {}, "Rating"), rating),
       h("fieldset", {}, h("legend", {}, "Labels"), tags, vitamins),
       h(
         "fieldset",
@@ -596,9 +621,11 @@ function filtersPanel(filters, onChange, { fit = false } = {}) {
               changed();
             },
           },
-          SORTS.filter(([k]) => k !== FIT || fit).map(([k, text]) =>
-            h("option", { value: k, selected: k === filters.sort }, text),
-          ),
+          sorts()
+            .filter(([k]) => k !== FIT || fit)
+            .map(([k, text]) =>
+              h("option", { value: k, selected: k === filters.sort }, text),
+            ),
         ),
         { hint: filters.sort === FIT ? FIT_HINT : null },
       ),

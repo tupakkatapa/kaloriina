@@ -162,6 +162,14 @@
   color-scheme: dark;
 }
 
+/* AMOLED: dark on black, its pixels off (layout.js adds html.amoled). */
+:root.dark.amoled {
+  --bg: #000000;
+  --surface: #000000;
+  --surface-2: #1a1a18;
+  --line: #2a2a27;
+}
+
 /* ------------------------------------------------------------- base */
 
 /* Pseudo-elements too: a drawn box (the tick's square) is as wide as it
@@ -382,7 +390,7 @@ html:not(.desktop) {
   background: var(--surface);
   box-shadow: var(--shadow-lift);
   pointer-events: none;
-  opacity: calc(var(--pull, 0) / 72);
+  opacity: calc(var(--pull, 0) / var(--pull-threshold));
   translate: 0 calc(var(--pull, 0) * 1px);
   rotate: calc(var(--pull, 0) * 5deg);
   transition:
@@ -396,6 +404,11 @@ html:not(.desktop) {
 
 #pull.refreshing {
   animation: pull-spin 0.8s linear infinite;
+}
+
+/* While it spins, the page moves down out from under it. */
+body:has(> #pull.refreshing) {
+  padding-top: calc(var(--s4) + var(--pull-threshold) * 1px);
 }
 
 @keyframes pull-spin {

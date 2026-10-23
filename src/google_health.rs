@@ -22,7 +22,9 @@
 //! - **Raw rows:** every row of the files that aren't per-sample series
 //!   (workouts, sleeps, stages, resting heart rate, HRV), all its columns,
 //!   kept as sent (ADR 0019), keyed by a hash of the file kind and the row;
-//!   handed out [`RAW_BATCH`] at a time while the files are read.
+//!   handed out [`RAW_BATCH`] at a time while the files are read. The
+//!   other health files ([`other`]) are kept so too, under `gh_<name>`,
+//!   and read no further.
 //!
 //! Days out of range (a negative year, after [`day_so_far`]) and values
 //! that overflow are skipped and counted.
@@ -44,8 +46,8 @@ use crate::model::sleep::{
 };
 use crate::model::{
     ACTIVITY_NAME_MAX, ActivityType, DISTANCE_M_MAX, DeviceDay, GOOGLE_HEALTH, HealthRecord,
-    IMPORT_KEY_PREFIX, ImportCounts, ImportedWorkout, KCAL_MAX, NapIn, ProfileId, SleepStage,
-    StageSource, day_so_far, is_key, kept_data, sneaky,
+    IMPORT_KEY_PREFIX, ImportCounts, ImportedWorkout, KCAL_MAX, NapIn, ProfileId, RECORD_KIND_MAX,
+    SleepStage, StageSource, day_so_far, is_key, kept_data, sneaky,
 };
 
 /// Raw rows written per transaction: the database is free between them.
@@ -98,6 +100,8 @@ enum Kind {
     RestingHr,
     Hrv,
     HeartRate,
+    /// Any other health file: kept raw only.
+    Other,
 }
 
 impl Kind {
@@ -115,7 +119,7 @@ impl Kind {
             )),
             Self::RestingHr => Some(("daily_resting_heart_rate", "timestamp", None)),
             Self::Hrv => Some(("daily_heart_rate_variability", "timestamp", None)),
-            Self::Steps | Self::Energy | Self::HeartRate => None,
+            Self::Steps | Self::Energy | Self::HeartRate | Self::Other => None,
         }
     }
 
@@ -153,6 +157,7 @@ impl Kind {
             Self::Energy => &["timestamp", "kilocalories", "data source"],
             Self::RestingHr | Self::HeartRate => &["timestamp", "beats per minute"],
             Self::Hrv => &["timestamp", "average heart rate variability milliseconds"],
+            Self::Other => &[],
         }
     }
 }
@@ -184,13 +189,56 @@ fn kind(name: &str) -> Option<Kind> {
         Kind::RestingHr
     } else if csv == "daily_heart_rate_variability" {
         Kind::Hrv
+    } else if other(name) {
+        Kind::Other
     } else {
         return None;
     })
 }
 
-/// Whether an export file is one Kaloriina reads (the browser sends only
-/// these; `tests/fixtures/takeout-names.json` lists both sides).
+/// Where a file name's date starts (`_2026-05-31`), if it has one.
+fn date_at(name: &str) -> Option<usize> {
+    let digit_or_dash = |(j, b): (usize, &u8)| {
+        if j == 4 || j == 7 {
+            *b == b'-'
+        } else {
+            b.is_ascii_digit()
+        }
+    };
+    name.as_bytes()
+        .windows(11)
+        .position(|w| w[0] == b'_' && w[1..].iter().enumerate().all(digit_or_dash))
+}
+
+/// Whether the CSV `name` is a health file kept raw only: any under
+/// `Health Fitness Data_GoogleData/`, and the undated ones in the other
+/// `_GoogleData` folders (a dated one there is a per-sample series). Paired
+/// devices and the other Takeout products are in no such folder.
+fn other(name: &str) -> bool {
+    let mut folders: Vec<&str> = name.split(['/', '\\']).collect();
+    let file = folders.pop().unwrap_or_default();
+    folders.contains(&"Health Fitness Data_GoogleData")
+        || (folders.iter().any(|f| f.ends_with("_GoogleData")) && date_at(file).is_none())
+}
+
+/// The kind an [`other`] file's rows are kept under: `gh_` and its name
+/// without the date, in letters, digits and `_`.
+fn other_kind(name: &str) -> String {
+    let file = base(name).strip_suffix(".csv").unwrap_or(name);
+    let stem = &file[..date_at(file).unwrap_or(file.len())];
+    "gh_"
+        .chars()
+        .chain(
+            stem.chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }),
+        )
+        .take(RECORD_KIND_MAX)
+        .collect()
+}
+
+/// Whether an export file is one Kaloriina reads or keeps (the browser
+/// sends only these; `tests/fixtures/takeout-names.json` lists both
+/// sides).
 #[must_use]
 pub fn wanted(name: &str) -> bool {
     kind(name).is_some()
@@ -380,10 +428,11 @@ fn header(h: &str) -> &str {
 }
 
 /// A row of a `kind` file kept raw: every column by its header; `at` are
-/// the positions of its start and end columns.
+/// the positions of its start and end columns, and of the one its day is
+/// read from when the start is no time (`2026-07-02`).
 fn raw_row(
     kind: &str,
-    at: (Option<usize>, Option<usize>),
+    at: (Option<usize>, Option<usize>, Option<usize>),
     head: &csv::StringRecord,
     row: &csv::StringRecord,
     tz: &TimeZone,
@@ -403,7 +452,10 @@ fn raw_row(
         id: fnv(&[&[kind][..], &text].concat()),
         start_at: start.map(|t| t.to_string()),
         end_at: end.map(|t| t.to_string()),
-        day: start.map(|t| t.to_zoned(tz.clone()).date().to_string()),
+        day: start
+            .map(|t| t.to_zoned(tz.clone()).date())
+            .or_else(|| date_of(row.get(at.2?)?))
+            .map(|d| d.to_string()),
         data,
         truncated,
     }
@@ -484,6 +536,7 @@ impl Reader<'_, '_> {
                 }
             }
             Kind::HeartRate => self.heart_sample(v[0].parse().ok()?, milli(v[1])?)?,
+            Kind::Other => {}
         }
         Some(())
     }
@@ -548,14 +601,23 @@ impl Reader<'_, '_> {
             .iter()
             .map(|c| find(c).ok_or_else(|| bad(&format!("no {c} column"))))
             .collect::<Result<Vec<_>, _>>()?;
-        let raw = kind
-            .raw()
-            .map(|(name, start, end)| (name, (find(start), end.and_then(find))));
+        let raw = if kind == Kind::Other {
+            let start = find("timestamp").or_else(|| {
+                head.iter()
+                    .position(|h| header(h).to_ascii_lowercase().contains("start"))
+            });
+            let day = start.or_else(|| find("date"));
+            Some((Cow::Owned(other_kind(name)), (start, None, day)))
+        } else {
+            kind.raw().map(|(name, start, end)| {
+                (Cow::Borrowed(name), (find(start), end.and_then(find), None))
+            })
+        };
         let mut record = csv::StringRecord::new();
         while csv.read_record(&mut record).map_err(|e| bad(&e))? {
-            if let Some((name, columns)) = raw {
+            if let Some((name, columns)) = &raw {
                 self.raw
-                    .push(raw_row(name, columns, &head, &record, self.tz));
+                    .push(raw_row(name, *columns, &head, &record, self.tz));
                 if self.raw.len() >= RAW_BATCH {
                     self.flush()?;
                 }
@@ -668,8 +730,8 @@ fn best(samples: &HashMap<(Timestamp, u32), i64>, tz: &TimeZone) -> (BTreeMap<Da
     )
 }
 
-/// Read the export's files Kaloriina knows (others are ignored), one at a
-/// time, heart rate last; the time series fall on days in `tz`. Raw rows go
+/// Read the export's files Kaloriina knows (others are ignored; [`other`]
+/// ones are only kept raw), one at a time, heart rate last; the time series fall on days in `tz`. Raw rows go
 /// to `keep` as they are read, [`RAW_BATCH`] at a time. The export read,
 /// and how many raw rows `keep` found new.
 ///
@@ -1098,6 +1160,13 @@ mod tests {
         // `heart_rate_variability_…` is another file.
         assert!(wanted("a/heart_rate_2026-09-01.csv"));
         assert!(!wanted("a/heart_rate_variability_2026-09-01.csv"));
+        // Kept raw instead, under a kind that may be stored.
+        let long = format!("x_GoogleData/{}.csv", "Sleep Score ".repeat(9));
+        assert!(crate::model::is_kind(&other_kind(&long)));
+        assert_eq!(
+            other_kind("Health Fitness Data_GoogleData/User-Sleep Scores_2026-05-31_2.csv"),
+            "gh_User_Sleep_Scores"
+        );
     }
 
     #[test]

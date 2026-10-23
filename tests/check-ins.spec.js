@@ -490,3 +490,67 @@ test("the check-in dialog fits 320 and 393 px: one row per scale, every target a
     await dialog.getByRole("button", { name: "Cancel" }).click();
   }
 });
+
+// Reminders on in this browser (the tests' default is off) and the page's
+// clock at `hhmm` today, Helsinki time.
+async function evening(page, hhmm) {
+  await page.addInitScript(() => localStorage.setItem("reminders", "true"));
+  await page.clock.setSystemTime(helsinki(hhmm));
+}
+const helsinki = (hhmm) =>
+  ["+02:00", "+03:00"]
+    .map((zone) => new Date(`${todayInApp()}T${hhmm}:00${zone}`))
+    .find(
+      (d) =>
+        d.toLocaleTimeString("sv-SE", {
+          timeZone: "Europe/Helsinki",
+          hour: "2-digit",
+          minute: "2-digit",
+        }) === hhmm,
+    );
+
+test("after 18:00 today's Diary asks for a check-in once a day", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { tag } = unique(1131, testInfo);
+  await ownProfile(page, request, `Evening ${tag}`);
+  await evening(page, "18:05");
+  await page.goto("/#/");
+  const dialog = dialogOf(page);
+  await expect(dialog).toBeVisible();
+  // Closed, it counts as asked: not again that day.
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(prompt(page)).toBeVisible();
+  await page.reload();
+  await expect(prompt(page)).toBeVisible();
+  await expect(dialog).toHaveCount(0);
+});
+
+test("the check-in isn't asked before 18:00, on a day's own address, or with reminders off", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { tag } = unique(1105, testInfo);
+  await ownProfile(page, request, `Not yet ${tag}`);
+  await evening(page, "17:55");
+  await page.goto("/#/");
+  await expect(prompt(page)).toBeVisible();
+  await expect(dialogOf(page)).toHaveCount(0);
+
+  await page.clock.setSystemTime(helsinki("19:00"));
+  await page.goto(`/#/day/${todayInApp()}`);
+  await expect(prompt(page)).toBeVisible();
+  await expect(dialogOf(page)).toHaveCount(0);
+
+  // Settings → This browser → Reminders Off.
+  await page.goto("/#/profile");
+  await page
+    .getByRole("radiogroup", { name: "Reminders" })
+    .getByRole("radio", { name: "Off" })
+    .click();
+  await page.goto("/#/");
+  await expect(prompt(page)).toBeVisible();
+  await expect(dialogOf(page)).toHaveCount(0);
+});

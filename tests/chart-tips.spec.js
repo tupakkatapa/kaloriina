@@ -108,3 +108,20 @@ test("Body's weight and heart tooltips sit clear of the finger", async ({
   const heart = await tapHighest(page, /^RHR by day/u, 3);
   expect(clear(heart), JSON.stringify(heart)).toBe(true);
 });
+
+test("A chart's tip goes on a scroll and comes back on a tap", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { tag } = unique(1121, testInfo);
+  await seeded(page, request, tag);
+  await page.goto(`/#/summary/body/week/${WEEK}`);
+  await tapHighest(page, /^Weight by day/u, 1);
+  const tip = page
+    .getByRole("img", { name: /^Weight by day/u })
+    .locator("xpath=..")
+    .locator(".chart-tip");
+  await page.evaluate(() => scrollBy(0, 40));
+  await expect(tip).toBeHidden();
+  await tapHighest(page, /^Weight by day/u, 1);
+});

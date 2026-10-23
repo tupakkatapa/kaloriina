@@ -19,9 +19,9 @@ const DAYS = [
   total: { energy, protein, fat },
 }));
 
-// Energy "about" 2000 (up to 10 % over), protein "at least" 100; fat none.
+// Energy "about" 2000 (5 % either way), protein "at least" 100; fat none.
 const TARGETS = [
-  { metric: "energy", value: 2000, min: 2000, max: 2200 },
+  { metric: "energy", value: 2000, min: 1900, max: 2100 },
   { metric: "protein", value: 100, min: 100, max: null },
 ];
 

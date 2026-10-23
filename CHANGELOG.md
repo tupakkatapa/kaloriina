@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Match an imported Cronometer row to a food, on every day it was logged, so its nutrients (creatine, say) count
+- `kaloriina import-loop-habits` for a Loop Habit Tracker backup
+- Every other Google Health CSV in a Takeout is kept as sent
+- Rating filter in food search: Healthy, OK or Unhealthy
+- A recipe from a meal, and a meal from a recipe
+- AMOLED theme
+- Space is Done on a workout run
+- An evening check-in prompt and a weigh-in reminder, with Settings → Reminders to turn them off
+- `--db` reads `KALORIINA_DB`; on NixOS, `kaloriina` uses the service's database as the service user
+
+### Changed
+
+- Nutrient bars, averages and food calendars count to the target itself; an "about" target is met within 5 % either way (was up to 10 % over). API: an about-target's `min`/`max` is now 0.95–1.05 × `value`
+- The day starts at 03:00: food, water and habits logged after midnight go on the evening's day, which also opens by default
+- Energy reads Cal in US units
+- Pull to refresh takes a longer pull
+- Series without a trend line (heart rate, water, BMI, maintenance) join their days
+
+### Fixed
+
+- A chart's tooltip stayed on screen after scrolling
+- The refresh spinner covered the screen's title
+
 ## [0.2.0] - 2026-10-17
 
 Breaking: database 58 → 69, export format v3 and a pinned APK signer. To upgrade:

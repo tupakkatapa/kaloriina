@@ -767,8 +767,9 @@ async fn removing_the_import_clears_every_store() {
 #[test]
 fn takeout_names_follow_the_shared_list() {
     // tests/fixtures/takeout-names.json: what the server reads, what the
-    // browser sends in heart-rate batches, what nobody reads; takeout.test.mjs
-    // checks the browser against the same list.
+    // browser sends in heart-rate batches, what is only kept raw (in batches
+    // of its own), what nobody reads; takeout.test.mjs checks the browser
+    // against the same list.
     let names: Value = serde_json::from_str(
         &std::fs::read_to_string(
             FsPath::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/takeout-names.json"),
@@ -777,7 +778,11 @@ fn takeout_names_follow_the_shared_list() {
     )
     .unwrap();
     let list = |k: &str| names[k].as_array().unwrap().clone();
-    for name in list("read").iter().chain(&list("heart_rate")) {
+    for name in list("read")
+        .iter()
+        .chain(&list("heart_rate"))
+        .chain(&list("raw"))
+    {
         let name = name.as_str().unwrap();
         assert!(kaloriina::google_health::wanted(name), "{name}");
     }
@@ -785,4 +790,114 @@ fn takeout_names_follow_the_shared_list() {
         let name = name.as_str().unwrap();
         assert!(!kaloriina::google_health::wanted(name), "{name}");
     }
+}
+
+/// The `gh_` rows kept: kind, start, day, data; by kind and day.
+fn kept_raw(state: &kaloriina::AppState) -> Vec<(String, Option<String>, Option<String>, String)> {
+    let db = state.db.lock().unwrap();
+    let mut q = db
+        .prepare(
+            "SELECT kind, start_at, day, data FROM health_record
+             WHERE kind LIKE 'gh\\_%' ESCAPE '\\' ORDER BY kind, day",
+        )
+        .unwrap();
+    q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn other_files_are_kept_raw_by_their_name() {
+    // Sleep scores and an undated daily file land raw under `gh_` kinds;
+    // per-sample dated series, paired devices and JSON don't; nothing
+    // typed changes.
+    let state = kaloriina::AppState::new(open(FsPath::new(":memory:")).unwrap(), NO_OFF.into());
+    let app = kaloriina::router(state.clone());
+    let mut files = everything()["files"].as_array().unwrap().clone();
+    files.extend([
+        file(
+            "Health Fitness Data_GoogleData/UserSleepScores_2026-05-31.csv",
+            "sleep_id,overall_score,deep_sleep_in_minutes,timestamp",
+            &[
+                "2,81,62,2026-09-06T05:00:00Z",
+                "1,74,40,2026-09-03T06:00:00Z",
+            ],
+        ),
+        file(
+            "Physical Activity_GoogleData/Daily Oxygen Saturation/daily_oxygen_saturation.csv",
+            "date,average percentage",
+            &["2026-09-04,96.5"],
+        ),
+        file(
+            "Physical Activity_GoogleData/Oxygen Saturation/oxygen_saturation_2026-09-01.csv",
+            "timestamp,percentage",
+            &["2026-09-04T01:00:00Z,97"],
+        ),
+        file("Paired Devices/Devices.csv", "device,model", &["a,b"]),
+        json!({ "name": "Takeout/Google Health/Global Export Data/steps-2026-09-01.json",
+                "text": "[]" }),
+    ]);
+    let alone = super::app();
+    let typed = import(&alone, everything()).await;
+    let res = import(&app, export(&files)).await;
+    assert_eq!(res["records"], typed["records"].as_u64().unwrap() + 3);
+    let without_records = |mut v: Value| {
+        v.as_object_mut().unwrap().remove("records");
+        v
+    };
+    assert_eq!(without_records(res), without_records(typed));
+    let days = "/api/profiles/1/device-days?from=2026-09-01&to=2026-09-07";
+    assert_eq!(get(&app, days).await, get(&alone, days).await);
+    let kept = kept_raw(&state);
+    assert_eq!(
+        kept.iter()
+            .map(|(k, s, d, _)| (k.as_str(), s.as_deref(), d.as_deref()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                "gh_UserSleepScores",
+                Some("2026-09-03T06:00:00Z"),
+                Some("2026-09-03")
+            ),
+            (
+                "gh_UserSleepScores",
+                Some("2026-09-06T05:00:00Z"),
+                Some("2026-09-06")
+            ),
+            ("gh_daily_oxygen_saturation", None, Some("2026-09-04")),
+        ]
+    );
+    let score: Value = serde_json::from_str(&kept[1].3).unwrap();
+    assert_eq!(score["overall_score"], "81");
+    // Alone, in a batch of their own (as the browser sends them): kept, and
+    // again nothing new.
+    let scores = [files[files.len() - 5].clone()];
+    let res = import(&app, export(&scores)).await;
+    assert_eq!((&res["records"], &res["days"]), (&json!(0), &json!(0)));
+}
+
+#[tokio::test]
+async fn an_export_of_nothing_known_is_refused() {
+    let (status, res) = call(
+        &app(),
+        "POST",
+        IMPORT,
+        Some(export(&[
+            file("Paired Devices/Devices.csv", "device", &["a"]),
+            file(
+                "Physical Activity_GoogleData/Oxygen Saturation/oxygen_saturation_2026-09-01.csv",
+                "timestamp,percentage",
+                &["2026-09-04T01:00:00Z,97"],
+            ),
+            json!({ "name": "Takeout/Google Health/Global Export Data/steps-2026-09-01.json",
+                    "text": "[]" }),
+        ])),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{res}");
+    assert!(
+        res.to_string().contains("Google Health data found"),
+        "{res}"
+    );
 }

@@ -387,8 +387,8 @@ async function barSegments(row) {
   return { eaten: await at(".eaten"), planned: await at(".planned") };
 }
 
-// An "about" energy target of 2,000 kcal (over past 2,200), as the API answers.
-const energyTarget = { metric: "energy", value: 2000, min: 1800, max: 2200 };
+// An "about" energy target of 2,000 kcal (over past 2,100), as the API answers.
+const energyTarget = { metric: "energy", value: 2000, min: 1900, max: 2100 };
 
 const DANGER = "rgb(180, 35, 24)";
 const bg = (loc) => loc.evaluate((el) => getComputedStyle(el).backgroundColor);
@@ -510,8 +510,8 @@ test("planned crossing the limit: the ghost turns red and stops at the bar's end
   await page.goto(`/#/day/${day}`);
   const energy = page.locator(".targets.main .target.k-energy");
   await expect(energy).toHaveClass(/\bover\b/u);
-  // Over counts from the range's top: 2,500 − 2,200.
-  await expect(energy).toContainText("300 kcal over the range with planned");
+  // Over counts from the range's top: 2,500 − 2,100.
+  await expect(energy).toContainText("400 kcal over the range with planned");
   const { eaten, planned } = await barSegments(energy);
   expect(eaten.end).toBeCloseTo(0.75, 2);
   expect(planned.start).toBeCloseTo(0.75, 2);
@@ -540,7 +540,7 @@ test("eaten past the limit: a full red bar", async ({ page }, testInfo) => {
   );
   await page.goto(`/#/day/${day}`);
   const energy = page.locator(".targets.main .target.k-energy");
-  await expect(energy).toContainText("600 kcal over the range");
+  await expect(energy).toContainText("700 kcal over the range");
   const { eaten } = await barSegments(energy);
   expect(eaten.end).toBeCloseTo(1, 2);
   expect(await bg(energy.locator(".eaten"))).toBe(DANGER);
@@ -1279,7 +1279,7 @@ test("the diary's groups are the ones the server names", async ({
   ).toHaveCount(0);
 });
 
-test("the Diary follows the date after midnight", async ({
+test("the Diary follows the date at 03:00", async ({
   page,
   request,
 }, testInfo) => {
@@ -1295,11 +1295,16 @@ test("the Diary follows the date after midnight", async ({
       .evaluateAll((list) => list.map((a) => a.getAttribute("href")));
   expect((await adds()).every((a) => a.includes("/2031-03-14/"))).toBe(true);
 
-  // Left open overnight, then looked at again in the morning.
-  await page.clock.fastForward("08:00:00");
+  // Past midnight the night still belongs to the evening.
+  await page.clock.fastForward("00:40:00");
   await page.evaluate(() =>
     document.dispatchEvent(new Event("visibilitychange")),
   );
+  await expect(heading).toHaveText("Today");
+  expect((await adds()).every((a) => a.includes("/2031-03-14/"))).toBe(true);
+
+  // Left open overnight: at 03:00 it moves on by itself.
+  await page.clock.runFor("02:31:00");
   await expect
     .poll(async () => (await adds()).every((a) => a.includes("/2031-03-15/")))
     .toBe(true);

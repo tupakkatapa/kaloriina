@@ -28,6 +28,17 @@ export default defineConfig({
     // A service worker would answer from its cache across tests; only the
     // offline spec's own tests turn it on.
     serviceWorkers: "block",
+    // Reminders off: the evening check-in would open over any test run
+    // after 18:00. Their own specs turn them on.
+    storageState: {
+      cookies: [],
+      origins: [
+        {
+          origin: `http://localhost:${port}`,
+          localStorage: [{ name: "reminders", value: "false" }],
+        },
+      ],
+    },
   },
   projects: [
     {

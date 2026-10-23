@@ -7,17 +7,18 @@ import test from "node:test";
 import { shade, standing, tally, verdictWords } from "../web/food-calendar.mjs";
 import { judge } from "../web/nutrients.mjs";
 
-// As /targets serves them: "about" 2000 kcal (max +10 %), "at least" 100 g,
-// "at most" 50 g.
-const about = { value: 2000, min: 2000, max: 2200 };
+// As /targets serves them: "about" 2000 kcal (5 % either way), "at least"
+// 100 g, "at most" 50 g.
+const about = { value: 2000, min: 1900, max: 2100 };
 const atLeast = { value: 100, min: 100, max: null };
 const atMost = { value: 50, min: null, max: 50 };
 
-test("judge: about is on from its value to 10 % over", () => {
-  assert.equal(judge(1999, about), "under");
-  assert.equal(judge(2000, about), "on");
-  assert.equal(judge(2200, about), "on");
-  assert.equal(judge(2201, about), "over");
+test("judge: about is on within 5 % of its value either way", () => {
+  assert.equal(judge(1899, about), "under");
+  assert.equal(judge(1900, about), "on");
+  assert.equal(judge(1920, about), "on");
+  assert.equal(judge(2100, about), "on");
+  assert.equal(judge(2101, about), "over");
 });
 
 test("judge: at least is never over, at most never under", () => {
@@ -33,10 +34,11 @@ test("judge: no target, no verdict", () => {
   assert.equal(judge(100, { value: null, min: null, max: null }), null);
 });
 
-test("shade: on 4, over 0, under lighter the further below", () => {
+test("shade: on 4, over 0, under lighter the further below its target", () => {
+  assert.equal(shade(1920, about), 4);
   assert.equal(shade(2100, about), 4);
   assert.equal(shade(2300, about), 0);
-  assert.equal(shade(1999, about), 3);
+  assert.equal(shade(1899, about), 3);
   assert.equal(shade(1500, about), 3);
   assert.equal(shade(1499, about), 2);
   assert.equal(shade(1000, about), 2);
@@ -116,6 +118,7 @@ test("verdictWords: a floor says at most under, never plain under", () => {
     verdictWords(2100, about, { floor: true, say }),
     ", minimum met",
   );
+  assert.equal(verdictWords(1920, about, { say }), ", on target");
   assert.equal(verdictWords(2300, about, { floor: true, say }), ", over");
   assert.equal(verdictWords(40, atMost, { floor: true, say }), "");
 });

@@ -8,6 +8,7 @@ import { test } from "node:test";
 import {
   clockAt,
   clockOf,
+  dayAt,
   eatenTime,
   parseClock,
   period,
@@ -25,6 +26,50 @@ test("eaten_time_rule_once: the rule's cases", () => {
   assert.equal(eatenTime(today(), PLANNED), null, "Planned: none");
   assert.equal(eatenTime(today(), null, ""), null, "no group, none typed");
   assert.equal(eatenTime(shift(today(), -1), EATEN), null, "past: none");
+});
+
+// The day starts at 03:00: a night out still logs on the evening's day.
+test("today: the day starts at 03:00, on DST nights too", (t) => {
+  for (const [at, day] of [
+    [new Date(2026, 9, 23, 1, 0), "2026-10-22"],
+    [new Date(2026, 9, 23, 2, 59), "2026-10-22"],
+    [new Date(2026, 9, 23, 3, 0), "2026-10-23"],
+    [new Date(2026, 9, 23, 23, 59), "2026-10-23"],
+    // Spring forward: 03:00 is skipped, 02:59 EET then 04:00 EEST.
+    [new Date("2026-03-29T00:59:00Z"), "2026-03-28"],
+    [new Date("2026-03-29T01:00:00Z"), "2026-03-29"],
+    // Fall back: 03:00–03:59 runs twice, both on the new day.
+    [new Date("2026-10-24T23:59:00Z"), "2026-10-24"],
+    [new Date("2026-10-25T00:00:00Z"), "2026-10-25"],
+    [new Date("2026-10-25T01:30:00Z"), "2026-10-25"],
+  ]) {
+    t.mock.timers.enable({ apis: ["Date"], now: at });
+    assert.equal(today(), day, at.toISOString());
+    t.mock.timers.reset();
+  }
+});
+
+test("eaten_time_rule_once: at 01:00, yesterday's Eaten gets 01:00", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 9, 23, 1, 0) });
+  assert.equal(eatenTime("2026-10-22", EATEN), "01:00");
+  assert.equal(eatenTime("2026-10-23", EATEN), null);
+});
+
+test("dayAt: a clock time before 03:00 is the next morning's", () => {
+  assert.deepEqual(dayAt("2026-10-22", "14:30"), new Date(2026, 9, 22, 14, 30));
+  assert.deepEqual(dayAt("2026-10-22", "03:00"), new Date(2026, 9, 22, 3, 0));
+  assert.deepEqual(dayAt("2026-10-22", "02:59"), new Date(2026, 9, 23, 2, 59));
+  assert.deepEqual(dayAt("2026-10-22", "00:30"), new Date(2026, 9, 23, 0, 30));
+});
+
+test("dayAt: no screen builds a day's instant itself", () => {
+  const dir = new URL("../web/screens/", import.meta.url);
+  for (const f of readdirSync(dir).filter((n) => n.endsWith(".mjs")))
+    assert.doesNotMatch(
+      readFileSync(new URL(f, dir), "utf8"),
+      /new Date\(`\$\{[^}]+\}T/u,
+      `${f} builds a day's instant: use dayAt`,
+    );
 });
 
 test("eaten_time_rule_once: no screen restates it", () => {

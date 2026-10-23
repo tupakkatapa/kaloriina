@@ -576,7 +576,7 @@ pub fn food_update(conn: &mut Connection, id: i64, input: &FoodInput) -> Result<
 }
 
 /// A rename of yours reaches the entries logged under the old name (every
-/// profile's; imported history has no food). Only the name: their amounts
+/// profile's; imported history keeps its export's). Only the name: their amounts
 /// stay as logged (their values follow the food, [`entries_follow`]). An
 /// importer's rename (Fineli) doesn't come here (ADR 0006).
 fn renamed_entries(tx: &Transaction, id: i64, old: &str, new: &str) -> Result<(), Error> {

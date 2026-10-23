@@ -280,6 +280,13 @@
                   machine.succeed(f"runuser -u kaloriina -- kaloriina fineli --db {db} /tmp/fineli")
                   machine.succeed(f"curl -sf '{api}/profiles/1/foods?q=maito' | grep -q 'Maito, rasvaton'")
 
+                  # Root's `kaloriina` finds the service's database without --db,
+                  # and leaves no file of root's beside it.
+                  machine.succeed(f"curl -sf {ctype} -d '{{\"kind\":\"bug\",\"text\":\"Row wraps\"}}' {api}/feedback")
+                  machine.succeed("cd /root && kaloriina feedback --list | grep -q 'Row wraps'")
+                  machine.succeed("cd /root && kaloriina feedback --pull | grep -q 'Row wraps'")
+                  machine.fail("find /var/lib/kaloriina -user root | grep .")
+
                   machine.succeed("systemctl restart kaloriina.service")
                   machine.wait_for_open_port(port)
                   machine.succeed("journalctl -u kaloriina.service | grep -q 'shutting down'")

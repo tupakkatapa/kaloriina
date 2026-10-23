@@ -25,13 +25,21 @@ import {
   offered,
   tagsOf,
 } from "../check-ins.mjs";
-import { clockAt, duration, pretty, shift, today } from "../dates.mjs";
+import {
+  clockAt,
+  DAY_START,
+  dayAt,
+  duration,
+  pretty,
+  shift,
+  today,
+} from "../dates.mjs";
 import { isNil, lower, qty } from "../format.mjs";
 import { counted } from "../habits.mjs";
 import { go, goDay, href, showsDay } from "../nav.mjs";
 import { EATEN, withUnit } from "../nutrients.mjs";
 import { latest } from "../outbox.mjs";
-import { readJson, writeJson } from "../prefs.mjs";
+import { readJson, remindersOn, writeJson } from "../prefs.mjs";
 import {
   dropSentNotes,
   logRow,
@@ -126,8 +134,8 @@ async function logNap(day) {
     body: [field("Fell asleep", start), field("Woke up", end)],
     submit: "Save",
     run: async () => {
-      const to = new Date(`${day}T${end.value}`);
-      const from = new Date(`${day}T${start.value}`);
+      const to = dayAt(day, end.value);
+      const from = dayAt(day, start.value);
       if (from >= to) from.setDate(from.getDate() - 1);
       minutes = Math.round((to - from) / 60_000);
       const body = {
@@ -225,6 +233,17 @@ const saveDayLog = (day, rec, key, done, message) =>
 const valueOf = (rec, { day, data }, key) =>
   currentDayLog(rec.path(day, key), rec.fromDay(data, key));
 
+// A record's row asking for it: `text` opening its dialog.
+function promptRow(rec, ctx, text) {
+  const row = logRow(
+    rec.name(null),
+    editButton(text, () => rec.edit(ctx, null)),
+  );
+  row.classList.add("prompt");
+  row.dataset.kind = rec.kind;
+  return row;
+}
+
 // A record's row: its kind, its value opening the dialog, then ✕ when it
 // is `removable` here.
 function dayLogRow(rec, ctx, key, value, text, label, removable = true) {
@@ -264,9 +283,10 @@ const WEIGHT = {
   reload: true,
   // `set_at`: when it was typed, so a later scale reading wins.
   undoBody: (v) => ({ kg: v.kg, set_at: Date.now() }),
-  // A synced weight goes only with its reading at its source.
+  // A synced weight goes only with its reading at its source. None in a
+  // week (`ctx.weighIn`, today's card), it asks for one.
   row: (ctx, v) => {
-    if (!v) return null;
+    if (!v) return ctx.weighIn ? promptRow(WEIGHT, ctx, "Weigh in") : null;
     const kg = unitQty(v.kg, "kg", 1);
     return dayLogRow(
       WEIGHT,
@@ -537,6 +557,25 @@ async function editCheckIn(ctx) {
   else await saveDayLog(day, CHECK_IN, null, done, "Saved check-in");
 }
 
+// Once a diary day, from 18:00 to the day's end: today's Diary at `#/`
+// with no check-in and no dialog open opens the check-in. Closed unsaved,
+// it was asked.
+const ASKED_KEY = "checkin-asked";
+function askCheckIn(ctx) {
+  const hour = new Date().getHours();
+  if (
+    !remindersOn() ||
+    ctx.day !== today() ||
+    (hour < 18 && hour >= DAY_START) ||
+    readJson(ASKED_KEY, null) === ctx.day ||
+    valueOf(CHECK_IN, ctx, null) ||
+    document.querySelector("dialog[open]")
+  )
+    return;
+  writeJson(ASKED_KEY, ctx.day);
+  editCheckIn(ctx);
+}
+
 // The check-in reads as itself; today without one asks for it, other days
 // show nothing.
 const CHECK_IN = {
@@ -565,13 +604,7 @@ const CHECK_IN = {
       );
     }
     if (ctx.day !== today()) return null;
-    const row = logRow(
-      "Check-in",
-      editButton("How are you today?", () => editCheckIn(ctx)),
-    );
-    row.classList.add("prompt");
-    row.dataset.kind = CHECK_IN.kind;
-    return row;
+    return promptRow(CHECK_IN, ctx, "How are you today?");
   },
   edit: (ctx) => editCheckIn(ctx),
 };
@@ -680,8 +713,9 @@ const SECTIONS = cardSections(DAY_LOGS);
 const cardRows = (ctx) =>
   SECTIONS.flatMap(([, rows]) => rows.flatMap((row) => row(ctx)));
 
-// `habits`: the profile's trackers, or the Error loading them.
-export function logCard(day, data, habits) {
+// `habits`: the profile's trackers, or the Error loading them. `ask`:
+// shown, it may ask for the evening's check-in.
+export function logCard(day, data, habits, ask = false) {
   // The day's counts, shared with the sheet.
   const counts = new Map(
     (data.habits ?? []).map((x) => [x.habit_id, x.amount]),
@@ -729,6 +763,17 @@ export function logCard(day, data, habits) {
     rows,
   );
   paint();
+  if (day === today() && remindersOn())
+    get(scoped(`/weights?from=${shift(day, -7)}`))
+      .then((list) => {
+        ctx.weighIn = list.length === 0;
+        if (ctx.weighIn && node.isConnected) paint();
+      })
+      .catch(() => {});
+  if (ask)
+    setTimeout(() => {
+      if (node.isConnected) askCheckIn(ctx);
+    });
   return node;
 }
 

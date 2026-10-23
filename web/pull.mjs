@@ -9,12 +9,12 @@ import { ignored } from "./swipe.mjs";
 
 // How far the spinner travels (px) for a release to refresh, and the most
 // it ever travels.
-export const THRESHOLD = 72;
-export const MAX = 112;
+export const THRESHOLD = 100;
+export const MAX = 150;
 // Moved this far, a drag's direction is known: a pull when down and this
 // much more down than sideways.
 const SLOP = 10;
-const RATIO = 1.5;
+const RATIO = 2;
 
 // A drag may pull from the page's top (iOS bounces above it), with one
 // finger, on a phone, off the controls that own their touches.
@@ -41,9 +41,13 @@ export const releases = (pull) => pull >= THRESHOLD;
 
 // Listen on the page for the app's lifetime; `allowed()` says whether the
 // screen shown may refresh now, `run()` refreshes it. The spinner
-// (`#pull`, CSS) travels `--pull` px: `pulling` follows the finger,
-// `refreshing` spins until `run` ends.
+// (`#pull`, CSS) travels `--pull` px of `--pull-threshold`: `pulling`
+// follows the finger, `refreshing` spins until `run` ends.
 export function installPull(run, allowed) {
+  document.documentElement.style.setProperty(
+    "--pull-threshold",
+    String(THRESHOLD),
+  );
   const spinner = document.createElement("div");
   spinner.id = "pull";
   spinner.setAttribute("aria-hidden", "true");

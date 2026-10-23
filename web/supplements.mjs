@@ -5,7 +5,7 @@
 // day's log proves no meal with fat came within the hour. No DOM here, so
 // `node --test` covers it.
 
-import { nowTime, today } from "./dates.mjs";
+import { DAY_START, nowTime, today } from "./dates.mjs";
 import { minutesOf } from "./device.mjs";
 import { isNil } from "./format.mjs";
 
@@ -52,6 +52,11 @@ const doseOf = (e) => (isDose(e) ? supplementOf(e.name) : null);
 // The most fat entry `e` could hold: its fat, else (not known) its weight.
 const fatCeiling = (e) => e.nutrients?.fat ?? e.grams ?? Infinity;
 
+// Minutes into the day (it starts at DAY_START) at clock time `hhmm`.
+const DAY_MIN = 24 * 60;
+const intoDay = (hhmm) =>
+  (minutesOf(hhmm) - DAY_START * 60 + DAY_MIN) % DAY_MIN;
+
 // Now on this device: {day, time}.
 const deviceNow = () => ({ day: today(), time: nowTime(today()) });
 
@@ -59,8 +64,8 @@ const deviceNow = () => ({ day: today(), time: nowTime(today()) });
 // dose (`doseOf`) eaten at a logged time with no meal of FAT_G fat within WINDOW_MIN.
 // Said only when the log proves it: the fat of every other entry timed
 // within the window and of every untimed one (it could be anywhere) is
-// counted at its ceiling (fatCeiling). No time, within the window of
-// midnight (the meal may be on the next day's page), or today before the
+// counted at its ceiling (fatCeiling). No time, within the window of the
+// day's start (the meal may be on the other day's page), or today before the
 // window is over (`now`: {day, time}, this device's by default; null: no
 // day is today; the meal may still come): nothing.
 export function supplementNotes(entries, now = deviceNow()) {
@@ -69,17 +74,17 @@ export function supplementNotes(entries, now = deviceNow()) {
   const meals = entries.filter((e) => !doseOf(e));
   for (const s of taken) {
     if (isNil(s.time)) continue;
-    const t = minutesOf(s.time);
-    if (t < WINDOW_MIN || t + WINDOW_MIN > 24 * 60) continue;
+    const t = intoDay(s.time);
+    if (t < WINDOW_MIN || t + WINDOW_MIN > DAY_MIN) continue;
     if (
       now &&
       (s.day > now.day ||
-        (s.day === now.day && t + WINDOW_MIN > minutesOf(now.time)))
+        (s.day === now.day && t + WINDOW_MIN > intoDay(now.time)))
     )
       continue;
     const fat = meals
       .filter(
-        (e) => isNil(e.time) || Math.abs(minutesOf(e.time) - t) <= WINDOW_MIN,
+        (e) => isNil(e.time) || Math.abs(intoDay(e.time) - t) <= WINDOW_MIN,
       )
       .reduce((sum, e) => sum + fatCeiling(e), 0);
     if (fat < FAT_G)

@@ -638,7 +638,7 @@ export async function targets() {
       h(
         "p",
         { class: "muted" },
-        `≥ at least · ≤ at most · ~ about (up to 10${NBSP}% over is fine)`,
+        `≥ at least · ≤ at most · ~ about (within 5${NBSP}% either way is fine)`,
       ),
     ],
     // Trackers first: their own revs move on, so saving again after a

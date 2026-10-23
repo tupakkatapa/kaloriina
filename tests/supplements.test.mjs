@@ -140,12 +140,23 @@ test("what the log can't prove isn't said", () => {
   assert.deepEqual(notes([d, e("08:10", "Punk IPA 5,4%", 440, null)]), []);
   // …but 3 g of creatine can't hold 5.
   assert.equal(notes([d, e("08:10", "Creatine", 3, null)]).length, 1);
-  // Within the hour of midnight, the meal may be on the next day's page.
-  assert.deepEqual(notes([e("23:30", "D-vitamiini", 0.2, null)]), []);
-  assert.deepEqual(notes([e("00:40", "D-vitamiini", 0.2, null)]), []);
+  // Within the hour of 03:00, the day's edge, the meal may be on the next
+  // day's page.
+  assert.deepEqual(notes([e("02:30", "D-vitamiini", 0.2, null)]), []);
+  assert.deepEqual(notes([e("03:40", "D-vitamiini", 0.2, null)]), []);
   // Today, before the hour is out, the meal may still come.
   const now = { day: "2026-10-17", time: "08:59" };
   assert.deepEqual(notes([d], now), []);
   assert.equal(notes([d], { ...now, time: "09:00" }).length, 1);
   assert.equal(notes([d], { day: "2026-10-18", time: "07:00" }).length, 1);
+  // At 01:00 the day still runs: a dose at 00:30 may still get its meal.
+  const late = e("00:30", "D-vitamiini", 0.2, null);
+  assert.deepEqual(notes([late], { ...now, time: "01:00" }), []);
+  assert.equal(notes([late], { ...now, time: "01:30" }).length, 1);
+});
+
+test("the day runs past midnight: a meal either side of it counts", () => {
+  const d = e("23:30", "D-vitamiini", 0.2, null);
+  assert.equal(notes([d]).length, 1);
+  assert.deepEqual(notes([d, e("00:20", "Juusto", 30, 8)]), []);
 });

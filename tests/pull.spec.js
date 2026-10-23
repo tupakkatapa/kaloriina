@@ -6,7 +6,7 @@ import { food, ownProfile, unique } from "./helpers.js";
 
 // One finger from (x, y) moved by (dx, dy) in ten steps; `fingers` 2 puts
 // a second one 100 px to its right.
-async function drag(page, { x = 200, y = 150, dx = 0, dy = 220, fingers = 1 }) {
+async function drag(page, { x = 200, y = 150, dx = 0, dy = 300, fingers = 1 }) {
   const cdp = await page.context().newCDPSession(page);
   const t0 = 1_800_000_000;
   const at = (i) =>
@@ -115,6 +115,8 @@ test("short, sideways, two-finger, scrolled-down or in-dialog drags don't refres
 
   await drag(page, { dy: 80 });
   await quiet("short of the threshold");
+  await drag(page, { dy: 160 });
+  await quiet("still short of it");
   await drag(page, { dx: 160, dy: 60 });
   await quiet("sideways");
   await drag(page, { fingers: 2 });
@@ -134,6 +136,37 @@ test("short, sideways, two-finger, scrolled-down or in-dialog drags don't refres
   });
   await drag(page, {});
   await quiet("a dialog open");
+});
+
+test("the spinner, refreshing, sits clear of the screen's title", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { day, tag } = unique(1143, testInfo);
+  await ownProfile(page, request, `Held pull ${tag}`);
+  await page.goto(`/#/day/${day}`);
+  await expect(page.getByRole("heading", { name: "Eaten" })).toBeVisible();
+  let release;
+  const held = new Promise((r) => {
+    release = r;
+  });
+  await page.route("**/api/**", async (r) => {
+    await held;
+    await r.continue();
+  });
+  await drag(page, {});
+  const spinner = page.locator("#pull");
+  await expect(spinner).toHaveClass(/refreshing/u);
+  // The spinner's travel and the page's room for it settled.
+  await page.waitForTimeout(400);
+  const a = await spinner.boundingBox();
+  const b = await page.locator(".day-nav h1").boundingBox();
+  release();
+  expect(
+    a.y + a.height <= b.y || b.y + b.height <= a.y,
+    JSON.stringify({ spinner: a, title: b }),
+  ).toBe(true);
+  await expect(toast(page)).toHaveText("Updated");
 });
 
 test.describe("in the Android app", () => {
@@ -210,7 +243,9 @@ test("every tab's screen refreshes", async ({ page, request }, testInfo) => {
     await expect(page.locator("#app h1")).toBeVisible();
     await expect(page.locator("#app")).not.toHaveAttribute("inert");
     await clearToast(page);
-    await drag(page, {});
+    // From the title: a screen's controls (Foods' search) own their touches.
+    const title = await page.locator("#app h1").boundingBox();
+    await drag(page, { y: title.y + title.height / 2 });
     await expect(toast(page), hash).toHaveText("Updated");
   }
 });

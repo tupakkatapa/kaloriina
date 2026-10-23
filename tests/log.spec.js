@@ -753,3 +753,42 @@ test("US measurements: the bounds round inward and their ends save", async ({
     })
     .toBeCloseTo(299.97, 1);
 });
+
+test("a week without a weight, today's card asks to weigh in; with reminders off it doesn't", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { tag } = unique(1167, testInfo);
+  const pid = await ownProfile(page, request, `Scale ${tag}`);
+  const day = todayInApp();
+  // The profile's own weigh-in today goes: none in the week.
+  const base = `/api/profiles/${pid}/weights`;
+  expect((await request.delete(`${base}/${day}`)).ok()).toBeTruthy();
+  const weighIn = logCard(page).getByRole("button", { name: "Weigh in" });
+  // The tests' default is off.
+  await page.goto(`/#/day/${day}`);
+  await expect(logCard(page)).toBeVisible();
+  await expect(weighIn).toHaveCount(0);
+
+  await page.evaluate(() => localStorage.setItem("reminders", "true"));
+  await page.reload();
+  await weighIn.click();
+  await expect(
+    page.getByRole("dialog", { name: /^Weight on /u }),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  // Only today asks.
+  await page.goto(`/#/day/${shift(day, -1)}`);
+  await expect(logCard(page)).toBeVisible();
+  await expect(weighIn).toHaveCount(0);
+
+  // A weight 7 days back is recent enough.
+  await put(request, `${base}/${shift(day, -7)}`, {
+    kg: 60,
+  });
+  const asked = page.waitForResponse((r) => r.url().includes("/weights?from="));
+  await page.goto(`/#/day/${day}`);
+  await asked;
+  await expect(logCard(page)).toBeVisible();
+  await expect(weighIn).toHaveCount(0);
+});

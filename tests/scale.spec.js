@@ -281,6 +281,12 @@ test("weight charts by each period's default, and switches to body composition",
       ),
     )
     .not.toContain("trend");
+  // Joined: with no trend, the line between them is what reads.
+  await expect
+    .poll(() =>
+      bmi.evaluate((c) => window.Chart.getChart(c)?.data.datasets[0].showLine),
+    )
+    .toBe(true);
   await chart.getByRole("radio", { name: "Body fat" }).click();
   // A scale's share is its estimate, said in its legend, nothing under the
   // chart.

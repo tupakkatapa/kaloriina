@@ -215,7 +215,9 @@ export async function loseFirstAnswer(page, method, glob) {
 const pinned = new Map();
 
 // Today as the page sees it (the projects pin Helsinki time): the test's
-// pinned day once `fixedToday` ran, else the wall clock's.
+// pinned day once `fixedToday` ran, else the wall clock's, whose day starts
+// at 03:00 (in Helsinki, 3 h back on the clock is 3 h back in time, DST
+// nights too).
 export function todayInApp() {
   let id = null;
   try {
@@ -225,7 +227,9 @@ export function todayInApp() {
   }
   return (
     pinned.get(id) ??
-    new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Helsinki" })
+    new Date(Date.now() - 3 * 3600e3).toLocaleDateString("sv-SE", {
+      timeZone: "Europe/Helsinki",
+    })
   );
 }
 

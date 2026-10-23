@@ -8,8 +8,8 @@ use clap::{Parser, Subcommand};
 use jiff::tz::TimeZone;
 use kaloriina::model::{FeedbackStatus, feedback_markdown};
 use kaloriina::{
-    AppState, feedback_list, feedback_pull, fineli, google_health, import, newest_backup, open,
-    router, stale_backup,
+    AppState, feedback_list, feedback_pull, fineli, google_health, import, loop_habits,
+    newest_backup, open, router, stale_backup,
 };
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -25,7 +25,7 @@ enum Command {
     /// Serve the web app and JSON API.
     Serve {
         /// Database file, created if missing.
-        #[arg(long, default_value = "kaloriina.db")]
+        #[arg(long, env = "KALORIINA_DB", default_value = "kaloriina.db")]
         db: PathBuf,
         /// Address to listen on. There is no login: keep it on loopback and
         /// expose it only over HTTPS (see the README's Security section).
@@ -59,7 +59,7 @@ enum Command {
     /// are kept. Both files are written together or not at all.
     Import {
         /// Existing database file (see --create).
-        #[arg(long, default_value = "kaloriina.db")]
+        #[arg(long, env = "KALORIINA_DB", default_value = "kaloriina.db")]
         db: PathBuf,
         /// Start a new database if --db doesn't exist.
         #[arg(long)]
@@ -79,11 +79,25 @@ enum Command {
     /// steps, heart rate and HRV, nights and naps. What is already there
     /// (synced or logged) stays; running it again adds nothing.
     ImportGoogleHealth(GoogleHealthArgs),
+    /// Add a Loop Habit Tracker backup (Settings → Export full backup,
+    /// copied off the phone) to a profile's habits: each habit a tracker,
+    /// its check-ins the days. Days already counted here stay; running it
+    /// again adds nothing.
+    ImportLoopHabits {
+        /// Existing database file.
+        #[arg(long, env = "KALORIINA_DB", default_value = "kaloriina.db")]
+        db: PathBuf,
+        /// Profile to import into; may be left out when there is only one.
+        #[arg(long)]
+        profile: Option<String>,
+        /// The backup (`Loop Habits Backup <date>.db`).
+        backup: PathBuf,
+    },
     /// Add the Fineli food database (THL, CC BY 4.0) to the shared foods.
     /// Re-running with a newer release updates those foods in place.
     Fineli {
         /// Existing database file (see --create).
-        #[arg(long, default_value = "kaloriina.db")]
+        #[arg(long, env = "KALORIINA_DB", default_value = "kaloriina.db")]
         db: PathBuf,
         /// Start a new database if --db doesn't exist.
         #[arg(long)]
@@ -100,7 +114,7 @@ enum Command {
     #[command(group(clap::ArgGroup::new("mode").required(true).args(["pull", "list"])))]
     Feedback {
         /// Existing database file.
-        #[arg(long, default_value = "kaloriina.db")]
+        #[arg(long, env = "KALORIINA_DB", default_value = "kaloriina.db")]
         db: PathBuf,
         /// Print it and mark it pulled: the next pull prints only what came
         /// since. Writes to the database.
@@ -123,7 +137,7 @@ fn existing(db: &std::path::Path, create: Option<bool>) -> anyhow::Result<()> {
             db.display()
         ),
         None => anyhow::bail!(
-            "{} does not exist; check --db (default: kaloriina.db in the current folder)",
+            "{} does not exist; check --db or KALORIINA_DB (default: kaloriina.db in the current folder)",
             db.display()
         ),
     }
@@ -172,7 +186,7 @@ fn open_current(
 #[derive(clap::Args)]
 struct GoogleHealthArgs {
     /// Existing database file.
-    #[arg(long, default_value = "kaloriina.db")]
+    #[arg(long, env = "KALORIINA_DB", default_value = "kaloriina.db")]
     db: PathBuf,
     /// Profile to import into; may be left out when there is only one.
     #[arg(long)]
@@ -201,6 +215,33 @@ fn import_google_health(a: &GoogleHealthArgs) -> anyhow::Result<()> {
         "google health: {} days filled ({} nights), {} naps, {} workouts added, {} already there, {} rows kept raw, {} rows skipped",
         c.days, c.nights, c.naps, c.activities, c.kept, c.records, c.skipped
     );
+    Ok(())
+}
+
+/// `kaloriina import-loop-habits`: the backup must be there before the
+/// database opens.
+fn import_loop_habits(
+    db: &std::path::Path,
+    profile: Option<&str>,
+    backup: &std::path::Path,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(backup.is_file(), "{} is not a file", backup.display());
+    existing(db, None)?;
+    let mut conn = open_current(db, None, false)?;
+    let profile = import::profile_for(&conn, profile)?;
+    let r = loop_habits::import(&mut conn, profile, backup)
+        .context("importing; nothing was written")?;
+    println!(
+        "loop habits: {} trackers added, {} reused, {} days added, {} already there",
+        r.added, r.reused, r.days, r.kept
+    );
+    // Quoted and escaped: a name is shown in the admin's terminal.
+    for (name, why) in &r.skipped {
+        println!("skipped {name:?}: {why}");
+    }
+    if r.bad > 0 {
+        println!("{} check-ins skipped: no day that can be stored", r.bad);
+    }
     Ok(())
 }
 
@@ -407,6 +448,11 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Command::ImportGoogleHealth(args) => import_google_health(&args)?,
+        Command::ImportLoopHabits {
+            db,
+            profile,
+            backup,
+        } => import_loop_habits(&db, profile.as_deref(), &backup)?,
         Command::Fineli {
             classes: true, dir, ..
         } => {

@@ -284,7 +284,7 @@ fn migration_3_moves_everything_into_me() {
             .len(),
         1
     );
-    assert_eq!(target_list(&conn, ME).unwrap()[0].min, Some(2000.0));
+    assert_eq!(target_list(&conn, ME).unwrap()[0].min, Some(1900.0));
     // The rebuilt table still assigns uids to new rows.
     let food_id = food(&mut conn, "Milk", &[]);
     let milk = food_get(&conn, food_id).unwrap().unwrap();
@@ -613,7 +613,8 @@ fn migration_11_keeps_one_number_per_target() {
     let get = |k: &str| list.iter().find(|t| t.metric == k).cloned();
     let energy = get("energy").unwrap();
     assert_close!(energy.value, 1900.0);
-    assert_close!(energy.max.unwrap(), 2090.0, "about: 10 % over");
+    assert_close!(energy.min.unwrap(), 1805.0, "about: 5 % under");
+    assert_close!(energy.max.unwrap(), 1995.0, "about: 5 % over");
     let sodium = get("sodium").unwrap();
     assert_eq!((sodium.min, sodium.max), (None, Some(2000.0)), "at most");
     assert_close!(get("iron").unwrap().value, 11.0);
@@ -4626,8 +4627,9 @@ fn a_second_apps_copy_of_a_workout_is_one_session() {
 
 #[test]
 fn eaten_lists_by_time_eaten_and_planned_as_added() {
-    // 18:18 logged after 18:34 and 21:25 still lists first; one
-    // without a time last. Planned keeps the order it was added in.
+    // 18:18 logged after 18:34 and 21:25 still lists first; the day runs
+    // to 03:00, so 01:30 lists after 21:25; one without a time last.
+    // Planned keeps the order it was added in.
     let conn = memory();
     conn.execute_batch(
         "INSERT INTO entry (profile_id, day, grp, name, amount, time) VALUES
@@ -4636,7 +4638,9 @@ fn eaten_lists_by_time_eaten_and_planned_as_added() {
            (1, '2026-10-14', 'Eaten', 'b', '1 g', NULL),
            (1, '2026-10-14', 'Eaten', 'c', '1 g', '21:25'),
            (1, '2026-10-14', 'Planned', 'p1', '1 g', '08:00'),
-           (1, '2026-10-14', 'Eaten', 'd', '1 g', '18:18');",
+           (1, '2026-10-14', 'Eaten', 'd', '1 g', '18:18'),
+           (1, '2026-10-14', 'Eaten', 'e', '1 g', '01:30'),
+           (1, '2026-10-14', 'Eaten', 'f', '1 g', '03:00');",
     )
     .unwrap();
     let names = |group: &str| -> Vec<String> {
@@ -4647,7 +4651,7 @@ fn eaten_lists_by_time_eaten_and_planned_as_added() {
             .map(|e| e.name)
             .collect()
     };
-    assert_eq!(names("Eaten"), ["d", "a", "c", "b"]);
+    assert_eq!(names("Eaten"), ["f", "d", "a", "c", "e", "b"]);
     assert_eq!(names("Planned"), ["p2", "p1"]);
 }
 

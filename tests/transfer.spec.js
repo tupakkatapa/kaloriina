@@ -136,7 +136,9 @@ test("energy in kJ changes the diary's headline and bars", async ({
   const list = page.locator(".chart-section").first().locator("ul.sr-only li");
   await expect(list.first()).toContainText("eaten 837 kJ");
   await expect(
-    list.filter({ hasText: /^Eaten target: [\d,]+\skJ(–[\d,]+\skJ)?$/u }),
+    list.filter({
+      hasText: /^Eaten target: [\d,]+\skJ( \([\d,]+\skJ–[\d,]+\skJ\))?$/u,
+    }),
   ).not.toHaveCount(0);
 
   await page.goto("/#/profile");

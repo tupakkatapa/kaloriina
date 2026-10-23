@@ -479,7 +479,8 @@ const fileError = (message) =>
   Object.assign(new Error(message), { field: "files" });
 
 // "Added 2 activities, 1 nap; filled 5 days (3 nights); kept 900 raw rows;
-// 1 already here; 4 rows skipped": every count the import gives.
+// 1 already here; 4 rows skipped; 1 file too big to send": every count the
+// import gives.
 function importedText(c) {
   const added = [
     c.activities ? plural(c.activities, "activity", "activities") : null,
@@ -493,6 +494,7 @@ function importedText(c) {
     c.records ? `kept ${plural(c.records, "raw row")}` : null,
     c.kept ? `${c.kept} already here` : null,
     c.skipped ? `${plural(c.skipped, "row")} skipped (unreadable)` : null,
+    c.too_big ? `${plural(c.too_big, "file")} too big to send` : null,
   ].filter(Boolean);
   if (parts.length === 0) return "Nothing new in the export";
   const text = parts.join("; ");
@@ -518,7 +520,7 @@ async function importGoogleHealth() {
         "In Google Takeout, export Google Health, then choose the zip (every part, if it came in several).",
       ),
       field("Takeout zip", zips, {
-        hint: "Only activities, sleep, steps, active energy, heart rate and HRV are read from it and sent.",
+        hint: "Activities, sleep, steps, active energy, heart rate and HRV are read from it; its other health files are kept as they are.",
       }),
       h(
         "p",

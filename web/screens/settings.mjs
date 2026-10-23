@@ -1,5 +1,6 @@
 // Profile's settings for this browser (layout, theme, energy unit, units,
-// nutrition label) and its importers (a profile export, Cronometer).
+// nutrition label, reminders) and its importers (a profile export,
+// Cronometer).
 
 import {
   api,
@@ -12,15 +13,14 @@ import {
 } from "../api.mjs";
 import { NBSP, plural } from "../format.mjs";
 import { go, href, route } from "../nav.mjs";
-import { setEnergyUnit, setLabelStyle } from "../nutrients.mjs";
-import { LAYOUT_KEY, THEME_KEY } from "../prefs.mjs";
+import { setEnergyUnit, setLabelStyle, setUnits } from "../nutrients.mjs";
+import { LAYOUT_KEY, remindersOn, setReminders, THEME_KEY } from "../prefs.mjs";
 import { choice, field, formDialog, h, nameInput, notify } from "../ui.mjs";
 import {
   ENERGY_UNITS,
   energyUnit,
   LABEL_STYLES,
   labelStyle,
-  setUnitSystem,
   UNIT_SYSTEMS,
   unitSystem,
 } from "../units.mjs";
@@ -43,7 +43,7 @@ function layoutSwitch() {
   });
 }
 
-// Light or dark for this device; layout.js applies it.
+// Light, dark or AMOLED for this device; layout.js applies it.
 function themeSwitch() {
   return choice({
     name: "theme",
@@ -52,6 +52,7 @@ function themeSwitch() {
       ["system", "System"],
       ["light", "Light"],
       ["dark", "Dark"],
+      ["amoled", "AMOLED"],
     ],
     value: localStorage.getItem(THEME_KEY) ?? "system",
     onChange: (value) => {
@@ -83,7 +84,7 @@ function unitsSwitch(onChange) {
     options: UNIT_SYSTEMS,
     value: unitSystem(),
     onChange: (value) => {
-      setUnitSystem(value);
+      setUnits(value);
       onChange();
     },
   });
@@ -98,6 +99,20 @@ function labelSwitch() {
     options: LABEL_STYLES,
     value: labelStyle(),
     onChange: setLabelStyle,
+  });
+}
+
+// The evening check-in and the weigh-in prompt, on or off on this device.
+function remindersSwitch() {
+  return choice({
+    name: "reminders",
+    label: "Reminders",
+    options: [
+      ["on", "On"],
+      ["off", "Off"],
+    ],
+    value: remindersOn() ? "on" : "off",
+    onChange: (value) => setReminders(value === "on"),
   });
 }
 
@@ -225,5 +240,8 @@ export const thisDevice = ({ onEnergy, onUnits }) => [
   }),
   field("Nutrition label", labelSwitch(), {
     hint: `EU: per 100${NBSP}g, carbs net of fibre, salt. US: per serving, total carbs with fibre, sodium, % Daily Value.`,
+  }),
+  field("Reminders", remindersSwitch(), {
+    hint: "A check-in after 18:00, and a weigh-in after a week without one.",
   }),
 ];

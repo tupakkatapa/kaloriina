@@ -5,7 +5,7 @@
 // same grouping); the router lives in nav.mjs.
 
 import { currentProfile } from "./api.mjs";
-import { today } from "./dates.mjs";
+import { nextDayStart, today } from "./dates.mjs";
 import { register, reloadIfStale, route } from "./nav.mjs";
 import { diary, entryEditor } from "./screens/diary.mjs";
 import { installPull } from "./pull.mjs";
@@ -54,6 +54,9 @@ const lazy =
 
 // The day the Diary at `#/` shows: today when it rendered.
 let diaryDay = null;
+// Set while the Diary moves on to a new day by itself (rollover): it asks
+// nothing then.
+let rolling = false;
 
 register(
   // Diary
@@ -62,7 +65,7 @@ register(
     tab: "diary",
     view: () => {
       diaryDay = today();
-      return diary(diaryDay);
+      return diary(diaryDay, new URLSearchParams(), !rolling);
     },
   },
   {
@@ -290,12 +293,16 @@ window.addEventListener("unhandledrejection", (e) => {
   showError(e.reason);
 });
 
-// The Diary at `#/` follows the date: left open past midnight, or resumed
+// The Diary at `#/` follows the date: left open past 03:00, or resumed
 // the next morning, it shows (and logs to) the new today. A day opened by
 // its address stays put.
 function rollover() {
   const shown = ROOT.test(location.hash.split("?")[0]) && diaryDay;
-  if (shown && shown !== today()) route();
+  if (!shown || shown === today()) return;
+  rolling = true;
+  route().finally(() => {
+    rolling = false;
+  });
 }
 // Connections shows what other apps send (openScale sync's Test, a phone
 // sync): coming back from them repaints it, unless a dialog is open.
@@ -309,15 +316,13 @@ document.addEventListener("visibilitychange", () => {
 });
 addEventListener("pageshow", rollover);
 addEventListener("focus", rollover);
-(function atMidnight() {
-  const now = new Date();
-  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+(function atDayStart() {
   setTimeout(
     () => {
       rollover();
-      atMidnight();
+      atDayStart();
     },
-    next - now + 1000,
+    nextDayStart() - Date.now() + 1000,
   );
 })();
 

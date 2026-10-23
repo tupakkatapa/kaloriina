@@ -89,6 +89,19 @@ test("the energy chart is exactly eaten and burned, points and trend, and the ta
     say,
   });
   assert.equal(bare.marks.filter((m) => m.kind === "line").length, 0);
+  // A range names its target first, then the band around it.
+  const about = energySeries({
+    days: [day("2026-03-02", 1500)],
+    burned: [],
+    target: { value: 2000, min: 1900, max: 2100 },
+    by: "day",
+    show: same,
+    say,
+  });
+  assert.deepEqual(
+    about.marks.filter((m) => m.text).map((m) => m.text),
+    ["Eaten target: 2000 kcal (1900 kcal–2100 kcal)"],
+  );
 });
 
 test("a day whose eaten energy leaves some out is a ≥ point of eaten's, as the Diary's (EN-11, E3-6, U3-6)", () => {
@@ -377,7 +390,7 @@ test("a min–max target is a field, the macro's target (item 21; owner 2026-10-
     })),
     key: "protein",
     label: "Protein",
-    target: { value: 90, min: 90, max: 120 },
+    target: { value: 105, min: 90, max: 120 },
     by: "day",
     say,
   });
@@ -394,10 +407,10 @@ test("a min–max target is a field, the macro's target (item 21; owner 2026-10-
       ["Protein target", 120, true],
     ],
   );
-  // Said once, as a range.
+  // Said once: the target, then its range.
   assert.deepEqual(
     marks.filter((m) => m.text).map((m) => m.text),
-    [`Protein target: ${say(90)}–${say(120)}`],
+    [`Protein target: ${say(105)} (${say(90)}–${say(120)})`],
   );
 });
 

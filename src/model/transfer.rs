@@ -1342,8 +1342,8 @@ fn check_item_serving(i: &mut ExportedItem) -> Result<(), Error> {
 }
 
 /// One entry as stored rows look: imported history (it names its
-/// `src_group`) has no food and no nutrients (its totals are `day_totals`);
-/// a logged food names one.
+/// `src_group`) has no food and no nutrients (its totals are `day_totals`),
+/// or, matched to a food, both; a logged food names one.
 fn check_entry(e: &mut ExportedEntry, foods: &BTreeSet<String>) -> Result<(), Error> {
     if !is_date(&e.day) {
         return Err(bad("day must be a real date (YYYY-MM-DD)"));
@@ -1379,13 +1379,13 @@ fn check_entry(e: &mut ExportedEntry, foods: &BTreeSet<String>) -> Result<(), Er
         return Err(bad(format!("unknown food ref “{f}”")));
     }
     let shape_ok = if imported {
-        e.food.is_none() && e.nutrients.is_none()
+        e.food.is_some() == e.nutrients.is_some()
     } else {
         e.food.is_some()
     };
     if !shape_ok {
         return Err(bad(
-            "imported history has no food and no nutrients, a logged food names its food",
+            "imported history has a food and nutrients or neither, a logged food names its food",
         ));
     }
     Ok(())

@@ -477,7 +477,7 @@ test("gap: the period's end counts only once it is over", () => {
 
 // ------------------------------------------------------- weekend overs
 
-const TARGET = { energy: { value: 2000, min: 2000, max: 2200 } };
+const TARGET = { energy: { value: 2000, min: 1900, max: 2100 } };
 const overs = (list, samples = days("2025-09-01", 30)) =>
   series(
     samples.map((d) => [d, list.includes(d.slice(8)) ? 2600 : 2100]),

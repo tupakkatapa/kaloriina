@@ -197,3 +197,50 @@ test.describe("in a fi-FI browser", () => {
     expect(saved.latest_weight_kg).toBe(72.5);
   });
 });
+
+// US energy reads in food Calories ("Cal"), as a US label prints it; kJ
+// stays kJ, and Metric is kcal again once switched, without a reload.
+test("US units read energy in Cal, Metric in kcal; kJ stays kJ", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { day, tag } = unique(996, testInfo);
+  await us(page);
+  const pid = await ownProfile(page, request, `Calories ${tag}`);
+  const f = await (
+    await request.post("/api/foods", {
+      data: { name: `Bagel ${tag}`, per100: { energy: 250 } },
+    })
+  ).json();
+  await request.post(`/api/profiles/${pid}/entries`, {
+    data: { day, group: "Eaten", food_id: f.id, grams: 200 },
+  });
+  const energy = page.locator(".targets-page .target.k-energy");
+  await page.goto(`/#/day/${day}`);
+  await expect(energy.locator(".target-label")).toContainText(/500\sCal\b/u);
+  await expect(energy).not.toContainText("kcal");
+  await page.goto(`/#/food/${f.id}`);
+  await expect(page.getByLabel("Energy (Cal)")).toHaveValue("250");
+  await page.goto(`/#/summary/food/week/${day}`);
+  await expect(
+    page.getByRole("img", { name: /^Energy: 500 of [\d,]+\sCal a day/u }),
+  ).toBeVisible();
+
+  await page.goto("/#/profile");
+  await page
+    .getByRole("radiogroup", { name: "Units" })
+    .getByRole("radio", { name: "Metric" })
+    .click();
+  // In the same page: a load would run `us` again.
+  await page.evaluate((d) => {
+    location.hash = `#/day/${d}`;
+  }, day);
+  await expect(energy.locator(".target-label")).toContainText(/500\skcal/u);
+
+  await page.evaluate(() => {
+    localStorage.setItem("units", "us");
+    localStorage.setItem("energy-unit", "kJ");
+  });
+  await page.reload();
+  await expect(energy.locator(".target-label")).toContainText(/2,092\skJ/u);
+});

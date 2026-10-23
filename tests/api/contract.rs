@@ -163,9 +163,9 @@ async fn targets_and_summary() {
 
     let (_, day) = call(&app, "GET", "/api/profiles/1/day/2026-10-06", None).await;
     assert_eq!(day["targets"][0]["value"], 2000.0);
-    assert_eq!(day["targets"][0]["min"], 2000.0);
-    // Energy is an "about" target: 10 % over still counts as on target.
-    assert_eq!(day["targets"][0]["max"], 2200.0);
+    // Energy is an "about" target: within 5 % either way is on target.
+    assert_eq!(day["targets"][0]["min"], 1900.0);
+    assert_eq!(day["targets"][0]["max"], 2100.0);
 }
 
 #[tokio::test]

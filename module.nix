@@ -222,7 +222,10 @@ in
         type = types.str;
         default = "${cfg.dataDir}/backups";
         defaultText = literalExpression ''"''${config.services.kaloriina.dataDir}/backups"'';
-        description = "Directory for the copies, `kaloriina-<UTC time>.db`.";
+        description = ''
+          Directory for the copies, `kaloriina-<UTC time>.db.zst` (zstd; earlier
+          ones are `.db`).
+        '';
       };
 
       calendar = mkOption {
@@ -281,12 +284,13 @@ in
     ] ++ optional cfg.backup.enable "d ${cfg.backup.dir} 0700 ${cfg.user} ${cfg.group} -";
 
     # `VACUUM INTO`: a consistent snapshot while the server writes, WAL
-    # included, compact (free pages left out). The copy is checked before it
-    # gets its final name, so pruning and restores only ever see good copies.
-    # During a run `dir` holds keep + 1 copies.
+    # included, compact (free pages left out). The copy is checked, then
+    # compressed and its archive tested, before it gets its final name, so
+    # pruning and restores only ever see good copies. During a run `dir`
+    # holds keep + 1 copies.
     systemd.services.kaloriina-backup = mkIf cfg.backup.enable {
       description = "Back up the kaloriina database";
-      path = [ pkgs.sqlite ];
+      path = [ pkgs.sqlite pkgs.zstd ];
       # A copy taken by hand is never refused for coming too soon after another.
       startLimitIntervalSec = 0;
       inherit (cfg.backup) onFailure;
@@ -301,11 +305,11 @@ in
       };
       script = ''
         set -o pipefail
-        shopt -s nullglob
+        shopt -s nullglob extglob
         dir=${escapeShellArg cfg.backup.dir}
-        rm -f "$dir"/kaloriina-*.db.tmp*
+        rm -f "$dir"/kaloriina-*.tmp*
         name="$dir/kaloriina-$(date -u +%Y%m%dT%H%M%SZ).db"
-        trap 'rm -f "$name.tmp"*' EXIT
+        trap 'rm -f "$name.tmp"* "$name.zst.tmp"' EXIT
         sqlite3 -readonly ${escapeShellArg db} "VACUUM INTO '$name.tmp'"
         check=$(sqlite3 "$name.tmp" 'PRAGMA integrity_check')
         if [ "$check" != ok ]; then
@@ -316,9 +320,14 @@ in
         # readers of a WAL copy leave -wal/-shm files beside it. The server
         # turns WAL back on when it opens a restored copy.
         sqlite3 "$name.tmp" 'PRAGMA journal_mode = DELETE' >/dev/null
-        mv "$name.tmp" "$name"
-        echo "backed up to $name"
-        copies=("$dir"/kaloriina-*.db)
+        # Through stdout: writing a file, zstd copies its owner (`fchown`,
+        # which the syscall filter's ~@privileged kills).
+        zstd -q -T0 -10 -c "$name.tmp" > "$name.zst.tmp"
+        zstd -tq "$name.zst.tmp"
+        mv "$name.zst.tmp" "$name.zst"
+        echo "backed up to $name.zst"
+        # Oldest first by name, compressed or not.
+        copies=("$dir"/kaloriina-*Z.db?(.zst))
         excess=$(( ''${#copies[@]} - ${toString cfg.backup.keep} ))
         if [ "$excess" -gt 0 ]; then
           rm -f -- "''${copies[@]:0:excess}"
@@ -394,6 +403,9 @@ in
       serviceConfig = hardening // {
         Type = "oneshot";
         RemainAfterExit = true;
+        # It opens the database first, which migrates it: on a large file
+        # and a slow disk that outlasts the default 90 s.
+        TimeoutStartSec = "infinity";
         ReadWritePaths = [ cfg.dataDir ];
         PrivateNetwork = true;
         RestrictAddressFamilies = "none";

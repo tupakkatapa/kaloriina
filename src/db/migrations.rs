@@ -1704,4 +1704,27 @@ ALTER TABLE device_session RENAME COLUMN kcal_total TO total_kcal;
 ALTER TABLE device_day ADD COLUMN distance_m INTEGER;
 ALTER TABLE import_day ADD COLUMN distance_m INTEGER;
 ",
+    // 70: `health_record` as a rowid table: its rows (a kilobyte and more)
+    // fill whole pages of their own instead of overflowing the key's, written
+    // in kind and day order, and a kind's days are found by index.
+    r"
+CREATE TABLE health_record_new (
+    profile_id INTEGER NOT NULL REFERENCES profile (id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    record_id TEXT NOT NULL,
+    start_at TEXT,
+    end_at TEXT,
+    day TEXT,
+    data TEXT NOT NULL CHECK (json_valid(data)),
+    received_at INTEGER NOT NULL,
+    UNIQUE (profile_id, source, kind, record_id)
+);
+INSERT INTO health_record_new
+    SELECT profile_id, source, kind, record_id, start_at, end_at, day, data, received_at
+    FROM health_record ORDER BY profile_id, source, kind, day, start_at, record_id;
+DROP TABLE health_record;
+ALTER TABLE health_record_new RENAME TO health_record;
+CREATE INDEX health_record_day ON health_record (profile_id, source, kind, day);
+",
 ];

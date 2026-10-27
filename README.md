@@ -123,17 +123,17 @@ It gets a `POST` to `{address}/api/webhook/{id}` with `{event, profile, workout,
 
 ## Backups
 
-The module copies the database to `/var/lib/kaloriina/backups` every night and keeps the newest 14. To restore one:
+The module copies the database to `/var/lib/kaloriina/backups` every night, compressed with zstd, and keeps the newest 14. To restore one:
 
 ```bash
 sudo systemctl stop kaloriina
-sudo install -o kaloriina -g kaloriina -m 0600 \
-  /var/lib/kaloriina/backups/kaloriina-<time>.db /var/lib/kaloriina/kaloriina.db
+sudo zstd -d /var/lib/kaloriina/backups/kaloriina-<time>.db.zst -o /tmp/kaloriina.db
+sudo install -o kaloriina -g kaloriina -m 0600 /tmp/kaloriina.db /var/lib/kaloriina/kaloriina.db
 sudo rm -f /var/lib/kaloriina/kaloriina.db-wal /var/lib/kaloriina/kaloriina.db-shm
 sudo systemctl start kaloriina
 ```
 
-An upgrade saves `kaloriina.db.pre-v<N>` before migrating. To undo one, put that copy in place the same way, but run `sudo nixos-rebuild switch --rollback` instead of the last line.
+An upgrade saves `kaloriina.db.pre-v<N>` before migrating. To undo one, put that copy in place the same way (it isn't compressed: skip `zstd`), but run `sudo nixos-rebuild switch --rollback` instead of the last line.
 
 ## Contributing
 

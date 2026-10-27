@@ -7,8 +7,8 @@
 
 use super::device::{DAY_VALUE_COLS, NIGHT_COLS, naps_insert, stages_put};
 use super::health_record::{
-    BMR, DISTANCE, RawBmr, SLEEP_SESSION, bmr_list, distance_list, hrv_list, raw_days, raw_list,
-    raw_profiles,
+    BMR, DISTANCE, RawBmr, SLEEP_SESSION, bmr_list, distance_list, hrv_list, raw_days, raw_latest,
+    raw_list, raw_profiles,
 };
 use super::prelude::*;
 use jiff::Timestamp;
@@ -206,6 +206,31 @@ fn plausible(b: &RawBmr) -> bool {
     !day.trimmed().1
 }
 
+/// The days deriving `days` of `kind` reads, from: their first, or the
+/// [`ORIGIN_DAYS`] up to `pid`'s latest record that [`origin_of`] weighs
+/// when earlier. `list` reads every day instead when the latest record
+/// isn't one it keeps (the origin's days then start earlier still).
+fn reached<T>(
+    tx: &Connection,
+    pid: ProfileId,
+    kind: &str,
+    days: &BTreeSet<String>,
+    list: impl Fn(Option<&str>) -> Result<Vec<T>, Error>,
+    day: impl Fn(&T) -> &str,
+) -> Result<Vec<T>, Error> {
+    let latest = raw_latest(tx, pid, kind)?;
+    let since = latest.as_deref().and_then(|l| shift(l, 1 - ORIGIN_DAYS));
+    let (Some(first), Some(latest), Some(since)) = (days.first(), latest, since) else {
+        return list(None);
+    };
+    let some = list(Some(first.min(&since)))?;
+    if some.iter().map(&day).max() == Some(latest.as_str()) {
+        Ok(some)
+    } else {
+        list(None)
+    }
+}
+
 /// The one app a profile's values of a kind come from, of its `(day,
 /// origin)` records: the one with the most days of one in the
 /// [`ORIGIN_DAYS`] up to the latest, the latest to write one on a tie.
@@ -237,7 +262,13 @@ pub(super) fn resting_derive(
     if days.is_empty() {
         return Ok(0);
     }
-    let all: Vec<RawBmr> = bmr_list(tx, pid)?.into_iter().filter(plausible).collect();
+    let usable = |from: Option<&str>| -> Result<Vec<RawBmr>, Error> {
+        Ok(bmr_list(tx, pid, from)?
+            .into_iter()
+            .filter(plausible)
+            .collect())
+    };
+    let all = reached(tx, pid, BMR, days, usable, |b| &b.day)?;
     let pairs: Vec<(&str, &str)> = all
         .iter()
         .map(|b| (b.day.as_str(), b.origin.as_str()))
@@ -280,7 +311,14 @@ pub(super) fn distance_derive(
     if days.is_empty() {
         return Ok(0);
     }
-    let all = distance_list(tx, pid)?;
+    let all = reached(
+        tx,
+        pid,
+        DISTANCE,
+        days,
+        |from| distance_list(tx, pid, from),
+        |(day, _, _)| day,
+    )?;
     let pairs: Vec<(&str, &str)> = all
         .iter()
         .map(|(day, origin, _)| (day.as_str(), origin.as_str()))

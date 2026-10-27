@@ -223,10 +223,13 @@
                     backup.keep = 2;
                   };
                   security.pki.certificateFiles = [ "${certs}/ca.crt" ];
-                  environment.systemPackages = [ pkgs.sqlite ];
+                  environment.systemPackages = [ pkgs.sqlite pkgs.zstd ];
                   # Room beyond MemoryMax (1 GiB), so the unit's own ceiling is
                   # what the import drills measure, not the VM's.
                   virtualisation.memorySize = 2048;
+                  # The 64 MiB import drills leave a database of ~500 MB, which
+                  # the corruption drill copies aside.
+                  virtualisation.diskSize = 2048;
                 };
                 testScript = ''
                   import json, re
@@ -316,26 +319,32 @@
                   machine.succeed(f"curl -sf {api}/profiles/1/day/2026-06-02 | grep -q Rye")
 
                   # Automatic backups: the timer is armed;
-                  # each run leaves one checked copy and keeps the newest `keep` = 2.
+                  # each run leaves one checked, compressed copy and keeps the newest
+                  # `keep` = 2, an uncompressed copy from before among them.
                   backups = "/var/lib/kaloriina/backups"
                   machine.succeed("systemctl is-active kaloriina-backup.timer")
+                  machine.succeed(
+                      f"install -o kaloriina -g kaloriina -m 0600 {db} {backups}/kaloriina-20000101T000000Z.db"
+                  )
                   def take_backup():
                       # Copy names have one-second resolution.
                       machine.succeed("sleep 1.1 && systemctl start kaloriina-backup.service")
                       return machine.succeed(f"ls -1 {backups}").split()
                   first = take_backup()
-                  assert len(first) == 1 and re.fullmatch(r"kaloriina-\d{8}T\d{6}Z\.db", first[0]), first
+                  assert len(first) == 2 and re.fullmatch(r"kaloriina-\d{8}T\d{6}Z\.db\.zst", first[1]), first
                   take_backup()
                   copies = take_backup()
-                  assert len(copies) == 2 and first[0] not in copies, copies
+                  assert len(copies) == 2 and first[0] not in copies and first[1] not in copies, copies
                   for c in copies:
                       machine.succeed(
-                          f"sqlite3 -readonly {backups}/{c} 'PRAGMA integrity_check' | grep -qx ok"
+                          f"zstd -dqc {backups}/{c} > /root/check.db"
+                          f" && sqlite3 -readonly /root/check.db 'PRAGMA integrity_check' | grep -qx ok"
                           f" && stat -c '%U %a' {backups}/{c} | grep -qx 'kaloriina 600'"
                       )
+                  machine.succeed("rm -f /root/check.db")
                   # Restore the newest copy of the database (README → Backups →
                   # Restore the database).
-                  machine.succeed(f"cp {backups}/{copies[-1]} /root/backup.db")
+                  machine.succeed(f"zstd -dq {backups}/{copies[-1]} -o /root/backup.db")
                   machine.succeed(f"curl -sf {ctype} -d '{{\"name\":\"Ghost\"}}' {api}/foods")
                   machine.succeed("systemctl stop kaloriina")
                   # The fourth run (keep + 2), with the server stopped: no -shm to share.
@@ -495,7 +504,9 @@
                       + f"' {api}/profiles/1/entries | grep -qx 400"
                   )
                   copy = "/var/lib/kaloriina/restore.db"
-                  machine.succeed(f"install -o kaloriina -g kaloriina -m 0600 {backups}/{newest} {copy}")
+                  machine.succeed(f"zstd -dq {backups}/{newest} -o /root/restore.db")
+                  machine.succeed(f"install -o kaloriina -g kaloriina -m 0600 /root/restore.db {copy}")
+                  machine.succeed("rm -f /root/restore.db")
                   machine.succeed(
                       f"systemd-run --unit kaloriina-restore -p User=kaloriina -p Group=kaloriina "
                       f"$(command -v kaloriina) serve --db {copy} --port 8099"

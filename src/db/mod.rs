@@ -189,6 +189,26 @@ pub fn open(path: &Path) -> Result<Connection, Error> {
     Ok(conn)
 }
 
+/// Rewrite the file when a quarter or more of it is free pages (a rebuilt
+/// table, a source's data removed): it shrinks, and on a copy-on-write disk
+/// its pages lie together again. For the server's start: it needs the file
+/// to itself, and can take minutes on a large one.
+///
+/// # Errors
+/// Another connection kept writing past the busy timeout, or a database
+/// error; nothing changed then.
+pub fn vacuum_when_free(conn: &Connection) -> Result<(), Error> {
+    let count: i64 = conn.pragma_query_value(None, "page_count", |r| r.get(0))?;
+    let free: i64 = conn.pragma_query_value(None, "freelist_count", |r| r.get(0))?;
+    if free > 0 && free * 4 >= count {
+        tracing::info!(pages = count, free, "vacuuming the database");
+        // The rewrite passes through the WAL: empty it after, or it stays
+        // the file's size on disk until the server stops.
+        conn.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")?;
+    }
+    Ok(())
+}
+
 /// `path` with `suffix` added to its file name.
 fn beside(path: &Path, suffix: &str) -> std::path::PathBuf {
     let mut name = path.as_os_str().to_owned();

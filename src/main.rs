@@ -9,7 +9,7 @@ use jiff::tz::TimeZone;
 use kaloriina::model::{FeedbackStatus, feedback_markdown};
 use kaloriina::{
     AppState, feedback_list, feedback_pull, fineli, google_health, import, loop_habits,
-    newest_backup, open, router, stale_backup,
+    newest_backup, open, router, stale_backup, vacuum_when_free,
 };
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -310,6 +310,14 @@ fn warn_on_old_backups(dir: &std::path::Path) {
     }
 }
 
+/// Compact a file left mostly free (a migration's rebuild, data removed);
+/// one in use (an import running beside) waits for the next start.
+fn compact(conn: &kaloriina::Connection) {
+    if let Err(e) = vacuum_when_free(conn) {
+        tracing::warn!(error = %e, "the database was not compacted");
+    }
+}
+
 /// How long a stop waits for open requests before it drops them (`SQLite`
 /// rolls back what they hadn't committed).
 const DRAIN_MAX: std::time::Duration = std::time::Duration::from_secs(10);
@@ -338,6 +346,7 @@ async fn serve(
     // Before the database: a typo must not migrate or create one.
     let tz = resolve_time_zone(time_zone.as_deref())?;
     let conn = open_current(&db, Some(&tz), time_zone.is_some())?;
+    compact(&conn);
     let addr = SocketAddr::new(address, port);
     let listener = tokio::net::TcpListener::bind(addr)
         .await

@@ -29,7 +29,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 pub use api::{newest_backup, router, stale_backup};
-pub use db::{derived_current, feedback_list, feedback_pull};
+pub use db::{derived_current, feedback_list, feedback_pull, vacuum_when_free};
 pub use error::Error;
 pub use model::ProfileId;
 pub use rusqlite::Connection;

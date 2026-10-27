@@ -62,8 +62,9 @@ async fn backups(State(s): State<AppState>) -> Res<Backups> {
     .map_err(|e| Error::Internal(format!("backup check failed: {e}")))
 }
 
-/// When the newest `kaloriina-*.db` copy in `dir` was written, epoch ms
-/// (the backup job's names; its `.tmp` files are not copies).
+/// When the newest `kaloriina-*.db.zst` (or earlier `.db`) copy in `dir`
+/// was written, epoch ms (the backup job's names; its `.tmp` files are not
+/// copies).
 ///
 /// # Errors
 /// `dir` can't be listed (a missing one has no copies).
@@ -77,7 +78,8 @@ pub fn newest_backup(dir: &FsPath) -> std::io::Result<Option<i64>> {
         let entry = entry?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !(name.starts_with("kaloriina-") && name.ends_with(".db")) {
+        if !(name.starts_with("kaloriina-") && (name.ends_with(".db") || name.ends_with(".db.zst")))
+        {
             continue;
         }
         let at = entry.metadata()?.modified()?;

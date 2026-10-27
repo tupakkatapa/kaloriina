@@ -2648,6 +2648,134 @@ fn raw_records_are_upserted_by_key() {
     assert!(records_put(&mut conn, ME, &page(record("{"), 0), 5, &TimeZone::UTC).is_err());
 }
 
+/// Months of resting energy and distance from two apps: "a" every day of
+/// 80 from New Year, "b" 26 days to Apr 5, so "a" holds the 90 days up to
+/// the latest.
+fn two_origins(conn: &Connection) {
+    let mut put = conn
+        .prepare(
+            "INSERT INTO health_record (profile_id, source, kind, record_id, start_at, day,
+                 data, received_at)
+             VALUES (1, 'health_connect', ?1, ?2, ?3 || 'T08:00:00Z', ?3, ?4, 0)",
+        )
+        .unwrap();
+    for (origin, from, days) in [("a", "2026-01-01", 80), ("b", "2026-03-11", 26)] {
+        for n in 0..days {
+            let day = super::derived::shift(from, n).unwrap();
+            let id = format!("{origin}-{day}");
+            put.execute(params![
+                "BasalMetabolicRate",
+                id,
+                day,
+                format!(
+                    r#"{{"kcal_per_day":{},"metadata":{{"data_origin":"{origin}"}}}}"#,
+                    1600 + n
+                )
+            ])
+            .unwrap();
+            put.execute(params![
+                "Distance",
+                id,
+                day,
+                format!(
+                    r#"{{"meters":{},"metadata":{{"data_origin":"{origin}"}}}}"#,
+                    1000 + n
+                )
+            ])
+            .unwrap();
+        }
+    }
+}
+
+fn derived_days(conn: &Connection, days: &BTreeSet<String>) -> Vec<String> {
+    conn.prepare("SELECT day, bmr_kcal, bmr_origin, distance_m FROM device_day ORDER BY day")
+        .unwrap()
+        .query_map([], |r| {
+            Ok(format!(
+                "{} {:?} {:?} {:?}",
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<f64>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<i64>>(3)?
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<String>>>()
+        .unwrap()
+        .into_iter()
+        .filter(|row| days.contains(&row[..10]))
+        .collect()
+}
+
+#[test]
+fn a_window_derives_what_the_whole_history_does() {
+    let mut conn = memory();
+    two_origins(&conn);
+    let tx = conn.transaction().unwrap();
+    super::derived::resting_refresh(&tx).unwrap();
+    super::derived::distance_refresh(&tx).unwrap();
+    // The last week is "b"'s only, an overlap week both wrote.
+    let window: BTreeSet<String> = super::derived::days_between("2026-03-15", "2026-04-05");
+    let whole = derived_days(&tx, &window);
+    tx.execute("DELETE FROM device_day", []).unwrap();
+    super::derived::resting_derive(&tx, ME, &window).unwrap();
+    super::derived::distance_derive(&tx, ME, &window).unwrap();
+    assert_eq!(derived_days(&tx, &window), whole);
+    assert!(whole.iter().all(|row| row.contains("\"a\"")), "{whole:?}");
+    assert_eq!(whole.len(), 7, "{whole:?}");
+    // The latest rate unusable (implausible): the origin's 90 days end
+    // before it, so the window reads further back.
+    tx.execute(
+        "INSERT INTO health_record (profile_id, source, kind, record_id, start_at, day, data,
+             received_at)
+         VALUES (1, 'health_connect', 'BasalMetabolicRate', 'c-1', '2026-06-30T08:00:00Z',
+             '2026-06-30', '{\"kcal_per_day\":99999,\"metadata\":{\"data_origin\":\"c\"}}', 0)",
+        [],
+    )
+    .unwrap();
+    tx.execute("DELETE FROM device_day", []).unwrap();
+    super::derived::resting_derive(&tx, ME, &window).unwrap();
+    super::derived::distance_derive(&tx, ME, &window).unwrap();
+    assert_eq!(derived_days(&tx, &window), whole);
+}
+
+#[test]
+fn an_unchanged_record_is_not_rewritten_nor_derived_again() {
+    let mut conn = memory();
+    let bmr = |kcal: u32| RecordsPost {
+        records: vec![HealthRecord {
+            kind: "BasalMetabolicRate".into(),
+            id: "b-1".into(),
+            start_at: Some("2026-10-05T08:00:00Z".into()),
+            end_at: None,
+            day: Some("2026-10-05".into()),
+            data: format!(
+                r#"{{"kcal_per_day":{kcal},"metadata":{{"data_origin":"com.fitbit.FitbitMobile"}}}}"#
+            ),
+            truncated: false,
+        }],
+        skipped: 0,
+        failed: 0,
+    };
+    let kept = |conn: &Connection| -> (i64, Option<f64>) {
+        conn.query_row(
+            "SELECT received_at, (SELECT bmr_kcal FROM device_day) FROM health_record",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    records_put(&mut conn, ME, &bmr(1650), 1, &TimeZone::UTC).unwrap();
+    assert_eq!(kept(&conn), (1, Some(1650.0)));
+    // Stands in for what an unchanged page must not touch again.
+    conn.execute("UPDATE device_day SET bmr_kcal = 1", [])
+        .unwrap();
+    records_put(&mut conn, ME, &bmr(1650), 2, &TimeZone::UTC).unwrap();
+    assert_eq!(kept(&conn), (1, Some(1.0)));
+    records_put(&mut conn, ME, &bmr(1700), 3, &TimeZone::UTC).unwrap();
+    assert_eq!(kept(&conn), (3, Some(1700.0)));
+}
+
 #[test]
 fn records_outcome_starts_over_after_a_window_whatever_the_clock() {
     // A page and its window in one millisecond (a fast server), or the
@@ -2753,7 +2881,12 @@ fn no_reader_selects_health_record() {
     assert!(all.len() > 10, "{all:?}");
     let readers: Vec<String> = all
         .iter()
-        .filter(|p| !p.ends_with("db/tests.rs") && !p.ends_with("db/health_record.rs"))
+        // A migration's rebuild copies it; that's no reader.
+        .filter(|p| {
+            !p.ends_with("db/tests.rs")
+                && !p.ends_with("db/health_record.rs")
+                && !p.ends_with("db/migrations.rs")
+        })
         .filter(|p| {
             // Erasure deletes; it reads nothing.
             let text = std::fs::read_to_string(p)
@@ -2787,6 +2920,49 @@ fn file_at(name: &str, version: u32, sql: &str) -> (std::path::PathBuf, std::pat
     }
     conn.execute_batch(sql).unwrap();
     (dir, path)
+}
+
+#[test]
+fn a_file_mostly_free_is_vacuumed_by_its_server_only() {
+    let (dir, path) = file_at("vacuum", u32::try_from(MIGRATIONS.len()).unwrap(), "");
+    let free = |conn: &Connection| -> (i64, i64) {
+        (
+            conn.pragma_query_value(None, "page_count", |r| r.get(0))
+                .unwrap(),
+            conn.pragma_query_value(None, "freelist_count", |r| r.get(0))
+                .unwrap(),
+        )
+    };
+    {
+        let conn = open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE filler (b BLOB);
+             WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 500)
+             INSERT INTO filler SELECT zeroblob(8000) FROM n;
+             DROP TABLE filler;",
+        )
+        .unwrap();
+        let (count, free) = free(&conn);
+        assert!(free * 4 >= count, "{count} pages, {free} free");
+    }
+    // Any opener (a CLI command beside the server) leaves it as it is.
+    let conn = open(&path).unwrap();
+    assert!(free(&conn).1 > 0);
+    // Another connection writing: the rewrite waits, then gives up.
+    let writer = open(&path).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    conn.busy_timeout(std::time::Duration::from_millis(50))
+        .unwrap();
+    assert!(vacuum_when_free(&conn).is_err());
+    writer.execute_batch("ROLLBACK").unwrap();
+    drop(writer);
+    vacuum_when_free(&conn).unwrap();
+    assert_eq!(free(&conn).1, 0);
+    // The rewrite went through the WAL, which keeps no copy of it after.
+    let wal = std::fs::metadata(dir.join("k.db-wal")).unwrap().len();
+    assert_eq!(wal, 0);
+    drop(conn);
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 /// The names in `dir` holding `part`, sorted.
@@ -4752,6 +4928,56 @@ fn row_counts(conn: &Connection) -> BTreeMap<String, i64> {
             (t, n)
         })
         .collect()
+}
+
+#[test]
+fn the_raw_archive_is_rebuilt_keeping_every_record() {
+    let mut conn = at_version(69);
+    conn.execute_batch(
+        "INSERT INTO health_record (profile_id, source, kind, record_id, start_at, end_at, day,
+             data, received_at)
+         VALUES (1, 'health_connect', 'HeartRate', 'h-2', '2026-10-05T12:00:00Z', NULL,
+                 '2026-10-05', '{\"samples\":[{\"bpm\":61}]}', 7),
+                (1, 'health_connect', 'HeartRate', 'h-1', NULL, NULL, NULL, '{}', 8),
+                (1, 'google_health', 'gh_UserSleepScores', 'g-1', '2026-10-04', NULL,
+                 '2026-10-04', '{\"score\":80}', 9);",
+    )
+    .unwrap();
+    let records = |conn: &Connection| -> Vec<String> {
+        conn.prepare(
+            "SELECT json_array(profile_id, source, kind, record_id, start_at, end_at, day, data,
+                 received_at) FROM health_record ORDER BY source, kind, record_id",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+    };
+    let before = records(&conn);
+    migrate(&mut conn).unwrap();
+    assert_eq!(records(&conn), before);
+    // A rowid table, its big rows off the key's pages; days by index.
+    let sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name = 'health_record'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(!sql.contains("WITHOUT ROWID"), "{sql}");
+    let plan: String = conn
+        .prepare(
+            "EXPLAIN QUERY PLAN SELECT max(day) FROM health_record
+             WHERE profile_id = 1 AND source = 'health_connect' AND kind = 'Distance'",
+        )
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(3))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+        .join("; ");
+    assert!(plan.contains("health_record_day"), "{plan}");
 }
 
 #[test]

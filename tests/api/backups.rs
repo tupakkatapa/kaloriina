@@ -94,3 +94,24 @@ async fn a_copy_over_48_hours_old_is_stale() {
     assert_eq!(res["stale"], true, "{res}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[tokio::test]
+async fn a_compressed_copy_counts() {
+    let dir = std::env::temp_dir().join(format!("kaloriina-backups-zst-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("kaloriina-20261009T030000Z.db.zst.tmp"), "half").unwrap();
+    std::fs::write(dir.join("kaloriina-20261009T030000Z.db.zst"), "zstd").unwrap();
+    let (_, res) = call(
+        &app_backing_up_to(Some(dir.clone())),
+        "GET",
+        "/api/backups",
+        None,
+    )
+    .await;
+    assert_eq!(
+        (&res["newest"].is_i64(), &res["stale"]),
+        (&true, &json!(false)),
+        "{res}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}

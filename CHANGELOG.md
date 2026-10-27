@@ -26,11 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Energy reads Cal in US units
 - Pull to refresh takes a longer pull
 - Series without a trend line (heart rate, water, BMI, maintenance) join their days
+- Backups are zstd-compressed (`kaloriina-<time>.db.zst`, about a tenth of the size); earlier `.db` copies age out as before
+- Database 69 → 70: the raw Health Connect archive is rebuilt to about half its size, and the file is compacted once on the first start (minutes on a large file)
 
 ### Fixed
 
 - A chart's tooltip stayed on screen after scrolling
 - The refresh spinner covered the screen's title
+- A phone sync rewrote every record it resent, so the database grew scattered on disk and the first screen after a while opened slowly
 
 ## [0.2.0] - 2026-10-17
 

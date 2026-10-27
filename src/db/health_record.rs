@@ -11,32 +11,37 @@ use crate::model::{
     HEALTH_CONNECT, HealthRecord, RawCounts, RecordsPost, RecordsResult, health_connect_sleeps,
 };
 
-/// Upsert one record of `source`: its data replaces what the key held.
+/// Upsert one record of `source`: its data replaces what the key held,
+/// and `received_at` says when it last changed. The same record sent again
+/// writes nothing (a phone resends its whole window every sync); whether it
+/// was new or changed.
 pub(super) fn record_put(
     tx: &Connection,
     pid: ProfileId,
     source: &str,
     r: &HealthRecord,
     now: i64,
-) -> Result<(), Error> {
-    tx.prepare_cached(
-        "INSERT INTO health_record (profile_id, source, kind, record_id, start_at, end_at,
-             day, data, received_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-         ON CONFLICT (profile_id, source, kind, record_id) DO UPDATE SET
-             start_at = ?5, end_at = ?6, day = ?7, data = ?8, received_at = ?9",
-    )?
-    .execute(params![
-        pid, source, r.kind, r.id, r.start_at, r.end_at, r.day, r.data, now
-    ])?;
-    Ok(())
+) -> Result<bool, Error> {
+    let changed = tx
+        .prepare_cached(
+            "INSERT INTO health_record (profile_id, source, kind, record_id, start_at, end_at,
+                 day, data, received_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT (profile_id, source, kind, record_id) DO UPDATE SET
+                 start_at = ?5, end_at = ?6, day = ?7, data = ?8, received_at = ?9
+             WHERE data IS NOT ?8 OR start_at IS NOT ?5 OR end_at IS NOT ?6 OR day IS NOT ?7",
+        )?
+        .execute(params![
+            pid, source, r.kind, r.id, r.start_at, r.end_at, r.day, r.data, now
+        ])?;
+    Ok(changed > 0)
 }
 
 /// Keep a page of the phone's records, in one transaction. What the server
-/// makes of them follows in it: the nights of the days its sleep sessions
-/// woke on and the day before each, and of the nights its HRV readings may
-/// fall in; the resting energy of the days its basal metabolic rates name
-/// (an older phone posts its window before its pages). Its outcome adds to
+/// makes of its new or changed ones follows in it: the nights of the days
+/// its sleep sessions woke on and the day before each, and of the nights
+/// its HRV readings may fall in; the resting energy of the days its basal
+/// metabolic rates name (an older phone posts its window before its pages). Its outcome adds to
 /// the sync's records outcome (`sync_state.records_result`: its pages, the
 /// first after a window starting it over), and is logged.
 pub fn records_put(
@@ -47,10 +52,13 @@ pub fn records_put(
     tz: &TimeZone,
 ) -> Result<RawCounts, Error> {
     let tx = write(conn)?;
+    let mut changed = Vec::new();
     for r in &post.records {
-        record_put(&tx, pid, HEALTH_CONNECT, r, now)?;
+        if record_put(&tx, pid, HEALTH_CONNECT, r, now)? {
+            changed.push(r);
+        }
     }
-    let of = |kind: &'static str| post.records.iter().filter(move |r| r.kind == kind);
+    let of = |kind: &'static str| changed.iter().copied().filter(move |r| r.kind == kind);
     let sessions: Vec<(String, String)> = of(SLEEP_SESSION)
         .map(|r| (r.id.clone(), r.data.clone()))
         .collect();
@@ -236,20 +244,38 @@ pub(super) struct RawBmr {
     pub(super) origin: String,
 }
 
-/// Every basal metabolic rate `pid`'s phone kept, by day and time (a
-/// day's latest last).
-pub(super) fn bmr_list(conn: &Connection, pid: ProfileId) -> Result<Vec<RawBmr>, Error> {
+/// The latest day of `pid`'s Health Connect records of `kind`.
+pub(super) fn raw_latest(
+    conn: &Connection,
+    pid: ProfileId,
+    kind: &str,
+) -> Result<Option<String>, Error> {
     Ok(conn
         .prepare_cached(
+            "SELECT max(day) FROM health_record
+             WHERE profile_id = ? AND source = ? AND kind = ? AND day IS NOT NULL",
+        )?
+        .query_row(params![pid, HEALTH_CONNECT, kind], |r| r.get(0))?)
+}
+
+/// The basal metabolic rates `pid`'s phone kept on days from `from` (every
+/// day when `None`), by day and time (a day's latest last).
+pub(super) fn bmr_list(
+    conn: &Connection,
+    pid: ProfileId,
+    from: Option<&str>,
+) -> Result<Vec<RawBmr>, Error> {
+    Ok(conn
+        .prepare_cached(&format!(
             "SELECT day, json_extract(data, '$.kcal_per_day'),
                     json_extract(data, '$.metadata.data_origin')
              FROM health_record
-             WHERE profile_id = ? AND source = ? AND kind = ? AND day IS NOT NULL
+             WHERE {IN_RANGE} AND source = ?4 AND kind = ?5
                AND json_type(data, '$.kcal_per_day') IN ('integer', 'real')
                AND json_type(data, '$.metadata.data_origin') = 'text'
-             ORDER BY day, start_at",
-        )?
-        .query_map(params![pid, HEALTH_CONNECT, BMR], |r| {
+             ORDER BY day, start_at"
+        ))?
+        .query_map(params![pid, from, None::<&str>, HEALTH_CONNECT, BMR], |r| {
             Ok(RawBmr {
                 day: r.get(0)?,
                 kcal: r.get(1)?,
@@ -259,25 +285,28 @@ pub(super) fn bmr_list(conn: &Connection, pid: ProfileId) -> Result<Vec<RawBmr>,
         .collect::<rusqlite::Result<_>>()?)
 }
 
-/// `pid`'s distance records, by day and the app that wrote them: `(day,
-/// origin, the records' sum in whole metres)`, by day.
+/// `pid`'s distance records on days from `from` (every day when `None`),
+/// by day and the app that wrote them: `(day, origin, the records' sum in
+/// whole metres)`, by day.
 pub(super) fn distance_list(
     conn: &Connection,
     pid: ProfileId,
+    from: Option<&str>,
 ) -> Result<Vec<(String, String, i64)>, Error> {
     Ok(conn
-        .prepare_cached(
+        .prepare_cached(&format!(
             "SELECT day, json_extract(data, '$.metadata.data_origin') AS origin,
                     CAST(round(sum(json_extract(data, '$.meters'))) AS INTEGER)
              FROM health_record
-             WHERE profile_id = ? AND source = ? AND kind = ? AND day IS NOT NULL
+             WHERE {IN_RANGE} AND source = ?4 AND kind = ?5
                AND json_type(data, '$.meters') IN ('integer', 'real')
                AND json_type(data, '$.metadata.data_origin') = 'text'
-             GROUP BY day, origin ORDER BY day, origin",
+             GROUP BY day, origin ORDER BY day, origin"
+        ))?
+        .query_map(
+            params![pid, from, None::<&str>, HEALTH_CONNECT, DISTANCE],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?
-        .query_map(params![pid, HEALTH_CONNECT, DISTANCE], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-        })?
         .collect::<rusqlite::Result<_>>()?)
 }
 
@@ -291,9 +320,13 @@ pub(super) fn raw_prune(
     (from, to): (&str, &str),
     kept: &BTreeSet<String>,
 ) -> Result<usize, Error> {
-    let ids: Vec<String> = raw_list(tx, pid, kind, Some(from), Some(to))?
+    let ids: Vec<String> = tx
+        .prepare_cached(&format!(
+            "SELECT record_id FROM health_record WHERE {IN_RANGE} AND source = ?4 AND kind = ?5"
+        ))?
+        .query_map(params![pid, from, to, HEALTH_CONNECT, kind], |r| r.get(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?
         .into_iter()
-        .map(|(id, _)| id)
         .filter(|id| !kept.contains(id))
         .collect();
     let mut delete = tx.prepare_cached(

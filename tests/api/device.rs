@@ -541,6 +541,31 @@ async fn a_night_shows_after_its_page_when_the_window_came_first() {
     );
 }
 
+/// The next sync in an older phone's order: its window, then the same page
+/// again, which changes nothing, so the night the window made stays.
+#[tokio::test]
+async fn an_older_phone_resending_its_page_keeps_the_night() {
+    let app = app();
+    let values = json!({ "day": "2026-09-05", "steps": 9120, "resting_hr": 54 });
+    for _ in 0..2 {
+        sync(
+            &app,
+            body(
+                "2026-09-01",
+                "2026-09-07",
+                std::slice::from_ref(&values),
+                &[],
+            ),
+        )
+        .await;
+        hc_records(&app, 1, night_records(&[("2026-09-05T03:00:00Z", 48.0)])).await;
+        assert_eq!(
+            day_view(&app, "2026-09-05").await["device_day"],
+            the_night()
+        );
+    }
+}
+
 /// The page first, then the window (this phone's order): the window's
 /// replace keeps the night it makes again from the raw records.
 #[tokio::test]

@@ -49,21 +49,27 @@ async fn read(
     headers: HeaderMap,
 ) -> Result<Response, Error> {
     let tag = format!("\"{uid}\"");
-    let (mime, bytes) = on_profile(&s, pid, move |conn| {
-        db::photo_bytes(conn, pid, &uid)?.ok_or_else(|| Error::not_found("photo", uid))
-    })
-    .await?;
-    let cache = [
-        (header::CACHE_CONTROL, "private, no-cache".to_owned()),
-        (header::ETAG, tag.clone()),
-    ];
     let unchanged = headers
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.split(',').any(|t| t.trim() == tag));
-    if unchanged {
+    // Unchanged, only whether it is still there: none of its bytes.
+    let photo = on_profile(&s, pid, move |conn| {
+        let found = if unchanged {
+            db::photo_exists(conn, pid, &uid)?.then_some(None)
+        } else {
+            db::photo_bytes(conn, pid, &uid)?.map(Some)
+        };
+        found.ok_or_else(|| Error::not_found("photo", uid))
+    })
+    .await?;
+    let cache = [
+        (header::CACHE_CONTROL, "private, no-cache".to_owned()),
+        (header::ETAG, tag),
+    ];
+    let Some((mime, bytes)) = photo else {
         return Ok((StatusCode::NOT_MODIFIED, cache).into_response());
-    }
+    };
     Ok((cache, [(header::CONTENT_TYPE, mime.as_str())], bytes).into_response())
 }
 

@@ -26,6 +26,7 @@ import {
   fill,
   formDialog,
   h,
+  markInvalid,
   notify,
   titleBar,
 } from "../ui.mjs";
@@ -250,7 +251,7 @@ async function setWorkouts(mode, waiting) {
     );
     if (waiting > 0) route();
   } catch (err) {
-    notify(err.message);
+    notify(err.message, { error: true });
     route();
   }
 }
@@ -407,6 +408,7 @@ function homeAssistantCard(hook) {
   );
   const save = busy(async (e) => {
     e.preventDefault();
+    const form = e.currentTarget;
     try {
       await api("PUT", scoped(HA), {
         url: url.value,
@@ -418,6 +420,7 @@ function homeAssistantCard(hook) {
       });
     } catch (err) {
       fill(status, errorBox(err));
+      markInvalid(form, err.field && form.elements.namedItem(err.field));
       return;
     }
     notify("Saved the Home Assistant hook");
@@ -642,41 +645,7 @@ export async function connections() {
         h("button", { type: "button", onclick: copy }, "Copy"),
       ),
       lastReceived(s),
-      h(
-        "details",
-        { class: "fold" },
-        h("summary", {}, "How to set up"),
-        h(
-          "ol",
-          {},
-          h(
-            "li",
-            {},
-            "Install openScale sync next to openScale (F-Droid or Google Play).",
-          ),
-          h(
-            "li",
-            {},
-            "In openScale sync, open Webhook, turn it on and paste the URL above.",
-          ),
-          h(
-            "li",
-            {},
-            "Authorization header: what your HTTPS proxy's login needs (e.g. Basic …), or empty. The phone must trust the proxy's certificate.",
-          ),
-          h(
-            "li",
-            {},
-            "Press Test, then weigh yourself, and choose which openScale user is you below.",
-          ),
-          h(
-            "li",
-            {},
-            "Run a full sync in openScale sync to bring in your history.",
-          ),
-        ),
-        help("openscale", "openScale setup in the README"),
-      ),
+      help("openscale", "openScale setup in the README"),
       binding(s),
       s.last_seen || s.bound_user
         ? h(

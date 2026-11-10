@@ -10,8 +10,8 @@ import { href } from "../nav.mjs";
 import { kcal } from "../nutrients.mjs";
 import { resultRow } from "../rows.mjs";
 import { burned, periodNumbers } from "../series.mjs";
-import { h, titleBar } from "../ui.mjs";
 import { tiles } from "../tiles.mjs";
+import { h, titleBar } from "../ui.mjs";
 import { unitQty } from "../units.mjs";
 
 // Energy eaten and burned (by the energy model) over the same days as
@@ -248,11 +248,6 @@ export async function allTime() {
         value: fmt(s.recipes),
         short: noun(s.recipes, "recipe"),
         long: "Recipes saved in your library.",
-      },
-      {
-        value: fmt(s.meals),
-        short: noun(s.meals, "meal"),
-        long: "Meals (a set of foods logged together) saved in your library.",
       },
     ]),
     h("p", { class: "muted" }, "The library is shared by every profile."),

@@ -88,7 +88,7 @@ test("coverage: a key the total lacks is none, one `known` omits is full", () =>
 
 test("dailyMean: every logged day counts, one without the key as 0", () => {
   const days = [{ total: { iron: 6 } }, { total: { iron: 3 } }, { total: {} }];
-  // 9 / 3, not 9 / 2 (the old mean over the days that had it).
+  // 9 / 3, not 9 / 2 (a mean over only the days that had it).
   assert.equal(dailyMean(days, "iron"), 3);
   assert.equal(dailyMean([], "iron"), 0);
   // No float drift: 0.1 + 0.2 over 3.
@@ -109,13 +109,16 @@ test("amountShown: known as is, partial a floor, none a dash", () => {
     judged: true,
     hint: null,
   });
-  // At 80 % it is judged, the share said; still a floor, so "≥".
+  // At 80 % it is judged, the share said; still a floor, but read as it
+  // is: "≥" marks only what is not known enough to judge.
   assert.deepEqual(shown("iron", 9, 0.8), {
-    text: "≥ 9 mg",
+    text: "9 mg",
     lower: true,
     judged: true,
     hint: "from 80 % of the day's food",
   });
+  assert.equal(shown("iron", 9, 0.9).text, "9 mg");
+  assert.equal(shown("iron", 9, 0.5).text, "≥ 9 mg");
   // Under 80 %: "≥", no verdict.
   assert.deepEqual(shown("iron", 9, 0.45, { of: "the week's food" }), {
     text: "≥ 9 mg",
@@ -138,8 +141,10 @@ test("amountShown: known as is, partial a floor, none a dash", () => {
     judged: false,
     hint: null,
   });
-  // Energy is a floor whenever any is unknown.
-  assert.equal(shown("energy", 1900, 0.95).text, "≥ 1,900 kcal");
+  // Energy is a floor whenever any is unknown; "≥" under 80 %, or forced.
+  assert.equal(shown("energy", 1900, 0.95).text, "1,900 kcal");
+  assert.equal(shown("energy", 1900, 0.95).lower, true);
+  assert.equal(shown("energy", 1900, 0.5).text, "≥ 1,900 kcal");
   assert.equal(shown("energy", 1900, 0.95).judged, true);
   assert.equal(shown("energy", 1900, 1).text, "1,900 kcal");
   // `lower` forces the mark (a floor known from elsewhere).

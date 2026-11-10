@@ -82,9 +82,9 @@ fn import_needs_a_profile_name_when_there_are_several() {
         .query_row("SELECT id FROM profile WHERE name = 'B'", [], |r| r.get(0))
         .unwrap();
     let servings = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/servings.csv");
-    let import = |profile: Option<&str>| {
+    let import = |command: &str, profile: Option<&str>| {
         let mut args = vec![
-            "import",
+            command,
             "--db",
             db.to_str().unwrap(),
             "--servings",
@@ -102,7 +102,7 @@ fn import_needs_a_profile_name_when_there_are_several() {
         .unwrap()
     };
 
-    let out = import(None);
+    let out = import("import-cronometer", None);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success());
     assert!(
@@ -113,7 +113,7 @@ fn import_needs_a_profile_name_when_there_are_several() {
     );
     assert_eq!(entries(1) + entries(b), 0, "nothing imported");
 
-    let out = import(Some("B"));
+    let out = import("import", Some("B"));
     assert!(
         out.status.success(),
         "{}",
@@ -261,6 +261,47 @@ fn cli_folder_only_and_tz_required() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("2 days filled"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn import_google_health_follows_the_servers_zone() {
+    let dir = temp("gh-zone");
+    let db = dir.join("kaloriina.db");
+    let mut conn = kaloriina::open(&db).unwrap();
+    let helsinki = jiff::tz::TimeZone::get("Europe/Helsinki").unwrap();
+    kaloriina::derived_current(&mut conn, Some(&helsinki), 0);
+    drop(conn);
+    let part = dir.join("takeout");
+    let at = part.join("Takeout/Google Health/Steps");
+    std::fs::create_dir_all(&at).unwrap();
+    std::fs::write(
+        at.join("steps_2026-09-01.csv"),
+        "timestamp,steps,data source\n2026-09-02T10:00:00Z,300,x\n",
+    )
+    .unwrap();
+    let (db_arg, part_arg) = (db.to_str().unwrap(), part.to_str().unwrap());
+    let out = kaloriina(&[
+        "import-google-health",
+        "--db",
+        db_arg,
+        "--time-zone",
+        "UTC",
+        part_arg,
+    ]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("follow Europe/Helsinki, not UTC"),
+        "{}",
+        stderr(&out)
+    );
+    let out = kaloriina(&["import-google-health", "--db", db_arg, part_arg]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("1 days filled"),
         "{}",
         String::from_utf8_lossy(&out.stdout)
     );
@@ -450,5 +491,23 @@ fn the_database_comes_from_kaloriina_db() {
         String::from_utf8_lossy(&out.stdout)
     );
     assert!(!dir.join("kaloriina.db").exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn an_unreadable_database_says_so() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = temp("unreadable");
+    let locked = dir.join("locked");
+    std::fs::create_dir_all(&locked).unwrap();
+    let db = locked.join("kaloriina.db");
+    drop(kaloriina::open(&db).unwrap());
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let out = kaloriina(&["feedback", "--list", "--db", db.to_str().unwrap()]);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(!out.status.success());
+    let err = stderr(&out);
+    assert!(err.contains("Permission denied"), "{err}");
+    assert!(!err.contains("does not exist"), "{err}");
     std::fs::remove_dir_all(&dir).unwrap();
 }

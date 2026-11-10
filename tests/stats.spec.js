@@ -5,7 +5,7 @@
 import { expect, test } from "@playwright/test";
 import { entry, food, ownProfile, syncHealth, unique } from "./helpers.js";
 
-test("All time sets eaten against burned on Summary's days, each source read once (SC11-6)", async ({
+test("All time sets eaten against burned on Summary's days, each source read once", async ({
   page,
   request,
 }, testInfo) => {

@@ -14,7 +14,7 @@ import {
 
 const nbsp = (s) => s.replaceAll(" ", " ");
 
-test("a serving that already names its weight doesn't repeat it (TFA-D7)", () => {
+test("a serving that already names its weight doesn't repeat it", () => {
   assert.equal(
     servingText(1, "1 serving (130 g)", weightText(130)),
     "1 × 1 serving (130 g)",
@@ -31,7 +31,7 @@ test("a serving that already names its weight doesn't repeat it (TFA-D7)", () =>
   assert.equal(unitLabel({ label: "Slice", grams: 40 }), "Slice (40\u00A0g)");
 });
 
-test("a drink per 100 ml reads in ml, from 1 L in L (U3-9)", () => {
+test("a drink per 100 ml reads in ml, from 1 L in L", () => {
   const pepsi = { drink: true, kind: "food", source: "custom" };
   assert.equal(byVolume(pepsi), true);
   // Fineli's values are per 100 g, a recipe's too: weighed.

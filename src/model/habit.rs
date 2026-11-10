@@ -262,6 +262,8 @@ pub struct Habit {
     pub goal_dir: GoalDir,
     pub archived: bool,
     pub rev: i64,
+    /// The days logged.
+    pub days: i64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

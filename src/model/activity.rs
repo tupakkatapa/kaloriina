@@ -303,16 +303,16 @@ impl Span<'_> {
 }
 
 /// Whether the device's `w` is the workout `m` (logged, or already held
-/// from the device): the same day, [`ActivityType::compatible`] types (or
-/// either span `any_type`), and both timed, overlapping by at least half of
-/// the shorter. Without times nothing matches.
+/// from the device): [`ActivityType::compatible`] types (or either span
+/// `any_type`), and both timed, overlapping by at least half of the shorter.
+/// The moment decides, not the day each was filed under (the web's diary day
+/// starts at 03:00, the phone's at midnight). Without times nothing matches.
 #[must_use]
 pub fn matches(m: &Span, w: &Span) -> bool {
     let (Some(overlap), Some(a), Some(b)) = (m.overlap(w), m.seconds(), w.seconds()) else {
         return false;
     };
-    m.day == w.day
-        && (m.any_type || w.any_type || ActivityType::compatible(m.kind, w.kind))
+    (m.any_type || w.any_type || ActivityType::compatible(m.kind, w.kind))
         && a.min(b) > 0
         && 2 * overlap >= a.min(b)
 }
@@ -347,7 +347,7 @@ impl ActivityInput {
         if self.distance_m.is_some_and(|d| d > DISTANCE_M_MAX) {
             return Err(Error::invalid_field(
                 "distance_m",
-                format!("distance_m must be 0–{DISTANCE_M_MAX}"),
+                format!("distance must be 0–{DISTANCE_M_MAX} m"),
             ));
         }
         if let Some(at) = &self.start_at {
@@ -386,8 +386,7 @@ impl ActivityInput {
 
 /// `at` as UTC RFC 3339, its UTC date within a day of `day` (any time zone).
 fn checked_start(at: &str, day: &str) -> Result<String, Error> {
-    let wrong =
-        || Error::invalid_field("start_at", "start_at must be a time on the activity's day");
+    let wrong = || Error::invalid_field("start_at", "the start time must be on the activity's day");
     let ts: Timestamp = at.parse().map_err(|_| wrong())?;
     let day: jiff::civil::Date = day.parse().map_err(|_| wrong())?;
     let on = ts.to_zoned(TimeZone::UTC).date();
@@ -452,12 +451,14 @@ pub struct TypeBests {
     pub pace: Option<Activity>,
 }
 
-/// A profile's records: each exercise's bests by name, and each activity
-/// type's (by its key) that has any.
+/// A profile's records: each exercise's bests by name, each activity
+/// type's (by its key) that has any, and the device days'.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Records {
     pub exercises: Vec<ExerciseRecord>,
     pub types: std::collections::BTreeMap<&'static str, TypeBests>,
+    /// The device days' bests.
+    pub days: super::DayRecords,
 }
 
 /// A workout and the day a profile last did it (`None`: never).
@@ -578,12 +579,12 @@ mod tests {
         };
         assert!(!matches(&timeless, &w));
         assert!(!matches(&untyped, &timeless));
-        // Another day never.
+        // Filed under another day, the same moment still is.
         let other = Span {
             day: "2026-10-10",
             ..untyped
         };
-        assert!(!matches(&other, &w));
+        assert!(matches(&other, &w));
     }
 
     #[test]

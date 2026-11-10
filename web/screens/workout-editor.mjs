@@ -1,9 +1,9 @@
 // Building a workout: steps one line each (opened to edit), repeats, drag by
 // pointer or keyboard, select and wrap, Undo; time and energy estimated.
 
-import { copyForm } from "../actions.mjs";
+import { copyForm, saveOnce } from "../actions.mjs";
 import { kcalFor, metOf } from "../activities.mjs";
-import { api, createId, get, meta, profileId, uid, weightKg } from "../api.mjs";
+import { api, get, meta, profileId, uid, weightKg } from "../api.mjs";
 import { stepDrag } from "../drag.mjs";
 import { activeEnergyText } from "../energy-text.mjs";
 import { activeEnergy } from "../expenditure.mjs";
@@ -931,22 +931,10 @@ export async function workoutEditor(id, params = new URLSearchParams()) {
       return { uid: uid() };
     },
   );
-  // A create carries its key: sent again after a lost answer it
-  // answers the workout saved the first time, which then takes what the
-  // form holds now.
-  const key = createId();
-  let sent = false;
-  const send = async () => {
+  const sendOnce = saveOnce("/workouts");
+  const send = () => {
     check();
-    if (!isNew) return api("PUT", `/workouts/${id}`, body());
-    const again = sent;
-    sent = true;
-    let made = await api("POST", "/workouts", body({ uid: key.get() }));
-    if (again)
-      made = await api("PUT", `/workouts/${made.id}`, body({ rev: made.rev }));
-    key.done();
-    sent = false;
-    return made;
+    return sendOnce(body(), isNew ? null : id);
   };
   // Start runs what's on screen: edits are saved first.
   const start = h(

@@ -140,7 +140,7 @@ export function recipeKnown(parts, cookedGrams) {
   return out;
 }
 
-// A recipe's or meal's whole column ({values, known}): its parts' amounts
+// A recipe's whole column ({values, known}): its parts' amounts
 // added up as `grams` of it (cooked), and `known` (recipeKnown's: shares,
 // whatever the amount).
 export const wholeOf = (parts, known, grams) => ({

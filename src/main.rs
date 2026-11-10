@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 use jiff::tz::TimeZone;
 use kaloriina::model::{FeedbackStatus, feedback_markdown};
 use kaloriina::{
-    AppState, feedback_list, feedback_pull, fineli, google_health, import, loop_habits,
+    AppState, cronometer, feedback_list, feedback_pull, fineli, google_health, loop_habits,
     newest_backup, open, router, stale_backup, vacuum_when_free,
 };
 use tokio::signal::unix::{SignalKind, signal};
@@ -23,41 +23,13 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Serve the web app and JSON API.
-    Serve {
-        /// Database file, created if missing.
-        #[arg(long, env = "KALORIINA_DB", default_value = "kaloriina.db")]
-        db: PathBuf,
-        /// Address to listen on. There is no login: keep it on loopback and
-        /// expose it only over HTTPS (see the README's Security section).
-        #[arg(long, default_value = "127.0.0.1")]
-        address: IpAddr,
-        /// Port to listen on.
-        #[arg(long, default_value_t = 8080)]
-        port: u16,
-        /// Open Food Facts base URL.
-        #[arg(long, default_value = "https://world.openfoodfacts.org")]
-        off_url: String,
-        /// Host name the app is reached by besides localhost, e.g. the HTTPS
-        /// proxy's name. Repeat for several. Other names get 421 (DNS
-        /// rebinding defence).
-        #[arg(long = "allowed-host")]
-        allowed_hosts: Vec<String>,
-        /// IANA time zone (e.g. Europe/London) for the server's "today":
-        /// which day a scale reading falls on, and the latest day a sync may
-        /// name; read from the system's tz database.
-        /// Default: the system's (TZ, /etc/localtime), else UTC.
-        #[arg(long)]
-        time_zone: Option<String>,
-        /// Directory the backup job writes its copies to: `/api/backups`
-        /// tells when the newest was taken, and a start warns when it is over
-        /// 48 hours old.
-        #[arg(long)]
-        backup_dir: Option<PathBuf>,
-    },
+    Serve(ServeArgs),
     /// Import a Cronometer export (`servings.csv` and `dailysummary.csv`).
+    ///
     /// Replaces imported data for every day in the files; your own entries
     /// are kept. Both files are written together or not at all.
-    Import {
+    #[command(alias = "import")]
+    ImportCronometer {
         /// Existing database file (see --create).
         #[arg(long, env = "KALORIINA_DB", default_value = "kaloriina.db")]
         db: PathBuf,
@@ -74,15 +46,17 @@ enum Command {
         #[arg(long)]
         profile: Option<String>,
     },
-    /// Fill a profile's activity gaps from a Google Takeout export with
-    /// Google Health in it, extracted: workouts, each day's active energy,
-    /// steps, heart rate and HRV, nights and naps. What is already there
-    /// (synced or logged) stays; running it again adds nothing.
+    /// Fill a profile's activity gaps from an extracted Google Takeout export.
+    ///
+    /// From its Google Health: workouts, each day's active energy, steps,
+    /// heart rate and HRV, nights and naps. What is already there (synced
+    /// or logged) stays; running it again adds nothing.
     ImportGoogleHealth(GoogleHealthArgs),
-    /// Add a Loop Habit Tracker backup (Settings → Export full backup,
-    /// copied off the phone) to a profile's habits: each habit a tracker,
-    /// its check-ins the days. Days already counted here stay; running it
-    /// again adds nothing.
+    /// Add a Loop Habit Tracker backup to a profile's habits.
+    ///
+    /// The backup is Settings → Export full backup, copied off the phone:
+    /// each habit becomes a tracker, its check-ins the days. Days already
+    /// counted here stay; running it again adds nothing.
     ImportLoopHabits {
         /// Existing database file.
         #[arg(long, env = "KALORIINA_DB", default_value = "kaloriina.db")]
@@ -94,6 +68,7 @@ enum Command {
         backup: PathBuf,
     },
     /// Add the Fineli food database (THL, CC BY 4.0) to the shared foods.
+    ///
     /// Re-running with a newer release updates those foods in place.
     Fineli {
         /// Existing database file (see --create).
@@ -129,8 +104,14 @@ enum Command {
 /// A typo in --db must not import into a fresh, empty database. `create`
 /// is the command's `--create`, `None` when it has none.
 fn existing(db: &std::path::Path, create: Option<bool>) -> anyhow::Result<()> {
+    let there = db.try_exists().with_context(|| {
+        format!(
+            "can't read {}; on NixOS run it with sudo (the service's user owns it)",
+            db.display()
+        )
+    })?;
     match create {
-        _ if db.exists() => Ok(()),
+        _ if there => Ok(()),
         Some(true) => Ok(()),
         Some(false) => anyhow::bail!(
             "{} does not exist; pass --create to start a new database",
@@ -168,11 +149,16 @@ fn open_current(
     configured: bool,
 ) -> anyhow::Result<kaloriina::Connection> {
     let mut conn = open(db).with_context(|| format!("opening {}", db.display()))?;
-    let ran = kaloriina::derived_current(&mut conn, tz, kaloriina::model::now_ms());
-    let zoned = ["night_rule_version", "weight_rule_version"];
+    derive(&mut conn, tz, configured);
+    Ok(conn)
+}
+
+/// [`open_current`]'s second half, for a connection already open.
+fn derive(conn: &mut kaloriina::Connection, tz: Option<&TimeZone>, configured: bool) {
+    let ran = kaloriina::derived_current(conn, tz, kaloriina::model::now_ms());
     if let Some(tz) = tz
         && !configured
-        && zoned.iter().any(|k| ran.contains_key(k))
+        && ran.keys().any(|k| kaloriina::is_zoned(k))
     {
         tracing::warn!(
             time_zone = tz.iana_name().unwrap_or("fixed offset"),
@@ -180,7 +166,39 @@ fn open_current(
              no --time-zone given"
         );
     }
-    Ok(conn)
+}
+
+#[derive(clap::Args)]
+struct ServeArgs {
+    /// Database file, created if missing.
+    #[arg(long, env = "KALORIINA_DB", default_value = "kaloriina.db")]
+    db: PathBuf,
+    /// Address to listen on. There is no login: keep it on loopback and
+    /// expose it only over HTTPS (see the README's Security section).
+    #[arg(long, default_value = "127.0.0.1")]
+    address: IpAddr,
+    /// Port to listen on.
+    #[arg(long, default_value_t = 8080)]
+    port: u16,
+    /// Open Food Facts base URL.
+    #[arg(long, default_value = "https://world.openfoodfacts.org")]
+    off_url: String,
+    /// Host name the app is reached by besides localhost, e.g. the HTTPS
+    /// proxy's name. Repeat for several. Other names get 421 (DNS
+    /// rebinding defence).
+    #[arg(long = "allowed-host")]
+    allowed_hosts: Vec<String>,
+    /// IANA time zone (e.g. Europe/London) for the server's "today":
+    /// which day a scale reading falls on, and the latest day a sync may
+    /// name; read from the system's tz database.
+    /// Default: the system's (TZ, /etc/localtime), else UTC.
+    #[arg(long)]
+    time_zone: Option<String>,
+    /// Directory the backup job writes its copies to: `/api/backups`
+    /// tells when the newest was taken, and a start warns when it is over
+    /// 48 hours old.
+    #[arg(long)]
+    backup_dir: Option<PathBuf>,
 }
 
 #[derive(clap::Args)]
@@ -191,11 +209,11 @@ struct GoogleHealthArgs {
     /// Profile to import into; may be left out when there is only one.
     #[arg(long)]
     profile: Option<String>,
-    /// IANA time zone the days are counted in: the server's (`serve
-    /// --time-zone`), so a sample falls on the day a browser import files
-    /// it under.
+    /// IANA time zone the days are counted in. Defaults to the one the
+    /// server stored (`serve --time-zone`), and must match it, so a sample
+    /// falls on the day a browser import files it under.
     #[arg(long)]
-    time_zone: String,
+    time_zone: Option<String>,
     /// The folders the Takeout export was extracted to (every part's, when
     /// it came in several).
     #[arg(required = true)]
@@ -205,11 +223,26 @@ struct GoogleHealthArgs {
 /// `kaloriina import-google-health`: find the export's files first, so a
 /// wrong path never opens the database.
 fn import_google_health(a: &GoogleHealthArgs) -> anyhow::Result<()> {
-    let tz = resolve_time_zone(Some(&a.time_zone))?;
+    if let Some(name) = &a.time_zone {
+        resolve_time_zone(Some(name))?;
+    }
     let files = google_health::files_at(&a.exports)?;
     existing(&a.db, None)?;
-    let mut conn = open_current(&a.db, Some(&tz), true)?;
-    let profile = import::profile_for(&conn, a.profile.as_deref())?;
+    let mut conn = open(&a.db).with_context(|| format!("opening {}", a.db.display()))?;
+    let stored = kaloriina::stored_time_zone(&conn)?;
+    let name = match (a.time_zone.as_deref(), stored.as_deref()) {
+        (Some(given), Some(stored)) if given != stored => anyhow::bail!(
+            "the server's days follow {stored}, not {given}: leave out --time-zone, or change the server's zone first"
+        ),
+        (Some(name), _) | (None, Some(name)) => name,
+        (None, None) => anyhow::bail!(
+            "give --time-zone, the server's (`serve --time-zone`): no server has stored one in {} yet",
+            a.db.display()
+        ),
+    };
+    let tz = resolve_time_zone(Some(name))?;
+    derive(&mut conn, Some(&tz), true);
+    let profile = cronometer::profile_for(&conn, a.profile.as_deref())?;
     let c = google_health::import(&mut conn, profile, &files, &tz).context("importing")?;
     println!(
         "google health: {} days filled ({} nights), {} naps, {} workouts added, {} already there, {} rows kept raw, {} rows skipped",
@@ -228,7 +261,7 @@ fn import_loop_habits(
     anyhow::ensure!(backup.is_file(), "{} is not a file", backup.display());
     existing(db, None)?;
     let mut conn = open_current(db, None, false)?;
-    let profile = import::profile_for(&conn, profile)?;
+    let profile = cronometer::profile_for(&conn, profile)?;
     let r = loop_habits::import(&mut conn, profile, backup)
         .context("importing; nothing was written")?;
     println!(
@@ -263,25 +296,10 @@ fn fineli_import(db: &std::path::Path, create: bool, dir: &std::path::Path) -> a
 fn feedback(db: &std::path::Path, pull: bool) -> anyhow::Result<()> {
     use std::io::Write;
     existing(db, None)?;
-    let what = || format!("opening {}", db.display());
     let mut conn = if pull {
         open_current(db, None, false)?
     } else {
-        let conn =
-            kaloriina::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-                .with_context(what)?;
-        // Read-only, so not upgraded here.
-        let known: bool = conn.query_row(
-            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE name = 'feedback')",
-            [],
-            |r| r.get(0),
-        )?;
-        anyhow::ensure!(
-            known,
-            "{} predates feedback: start `kaloriina serve` on it once to upgrade it",
-            db.display()
-        );
-        conn
+        kaloriina::open_read_only(db).with_context(|| format!("opening {}", db.display()))?
     };
     let items = feedback_list(&conn, Some(FeedbackStatus::Open))?;
     let mut out = std::io::stdout().lock();
@@ -335,13 +353,15 @@ async fn shutdown() {
 /// `kaloriina serve`: open (and migrate) the database, then answer until
 /// stopped.
 async fn serve(
-    db: PathBuf,
-    address: IpAddr,
-    port: u16,
-    off_url: String,
-    allowed_hosts: Vec<String>,
-    time_zone: Option<String>,
-    backup_dir: Option<PathBuf>,
+    ServeArgs {
+        db,
+        address,
+        port,
+        off_url,
+        allowed_hosts,
+        time_zone,
+        backup_dir,
+    }: ServeArgs,
 ) -> anyhow::Result<()> {
     // Before the database: a typo must not migrate or create one.
     let tz = resolve_time_zone(time_zone.as_deref())?;
@@ -378,7 +398,9 @@ async fn serve(
     Ok(())
 }
 
-#[tokio::main]
+// Not one worker per CPU: the unit caps its tasks (TasksMax), and the one
+// database connection serialises the work anyway.
+#[tokio::main(worker_threads = 2)]
 async fn main() -> anyhow::Result<()> {
     // Logs go to stderr (stdout carries command output), coloured only on a
     // terminal so the journal stays plain text.
@@ -391,27 +413,8 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     match Cli::parse().command {
-        Command::Serve {
-            db,
-            address,
-            port,
-            off_url,
-            allowed_hosts,
-            time_zone,
-            backup_dir,
-        } => {
-            serve(
-                db,
-                address,
-                port,
-                off_url,
-                allowed_hosts,
-                time_zone,
-                backup_dir,
-            )
-            .await?;
-        }
-        Command::Import {
+        Command::Serve(args) => serve(args).await?,
+        Command::ImportCronometer {
             db,
             create,
             servings,
@@ -434,9 +437,9 @@ async fn main() -> anyhow::Result<()> {
             let (servings, summary) = (input(servings)?, input(summary)?);
             existing(&db, Some(create))?;
             let mut conn = open_current(&db, None, false)?;
-            let profile = import::profile_for(&conn, profile.as_deref())?;
+            let profile = cronometer::profile_for(&conn, profile.as_deref())?;
             let has_servings = servings.is_some();
-            let report = import::import(
+            let report = cronometer::import(
                 &mut conn,
                 profile,
                 servings.map(|(_, f)| f),

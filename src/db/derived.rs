@@ -1,29 +1,35 @@
-//! What the server makes of the phone's raw records (ADR 0032, 0032), its
+//! What the server makes of the phone's raw records (ADR 0032), its
 //! only author: Health Connect's nights, naps, stage spans and overnight
 //! HRV from the sleep sessions and readings kept; each day's resting energy
 //! from its basal metabolic rates, and its distance from its distance
 //! records. Made where raw data lands (a window, a
 //! records page) and once per rule version at start ([`super::DERIVED`]).
 
-use super::device::{DAY_VALUE_COLS, NIGHT_COLS, naps_insert, stages_put};
+use super::device::{
+    DAY_VALUE_COLS, NIGHT_COLS, device_insert, health_status, naps_insert, stages_put,
+};
+use super::device_sessions::{promote, refresh_synced};
 use super::health_record::{
-    BMR, DISTANCE, RawBmr, SLEEP_SESSION, bmr_list, distance_list, hrv_list, raw_days, raw_latest,
-    raw_list, raw_profiles,
+    BMR, DISTANCE, HRV, RawBmr, SLEEP_SESSION, bmr_list, distance_list, hrv_list, raw_days,
+    raw_latest, raw_list, raw_profiles, raw_prune, record_put,
 };
 use super::prelude::*;
+use super::scale::health_readings_replace;
 use jiff::Timestamp;
 use jiff::civil::Date;
 
 use crate::model::{
-    DeviceDay, NapIn, NapSource, SleepStage, StageSource, checked_stage, health_connect_sleeps,
+    DeviceDay, HEALTH_CONNECT, HealthCounts, HealthPost, HealthResult, NapIn, NapSource, RawCounts,
+    RecordsPost, RecordsResult, SleepStage, StageSource, checked_stage, health_connect_sleeps,
     mean_rounded,
 };
 
 /// Bumped when the night rule (`model::sleep`) changes, so stored Health
 /// Connect nights are made again from the raw sleep sessions (2: an
 /// early-night block joins its night; 3: the server makes them, their HRV
-/// and heart rate with them, the phone no longer).
-pub(super) const NIGHT_RULE_VERSION: i64 = 3;
+/// and heart rate with them, the phone no longer; 4: every early-night
+/// block before a night joins it, not only the last).
+pub(super) const NIGHT_RULE_VERSION: i64 = 4;
 
 /// Bumped when how resting energy is derived changes (1: Health Connect's
 /// basal metabolic rate, one origin a profile).
@@ -387,4 +393,178 @@ pub(super) fn distance_refresh(tx: &Transaction) -> Result<usize, Error> {
         days += distance_derive(tx, pid, &raw_days(tx, pid, DISTANCE)?)?;
     }
     Ok(days)
+}
+
+/// Apply one sync in one transaction: the window's days and raw workouts
+/// are replaced by the POST's (a workout whose day moved goes too, by its
+/// key); its nights, naps, stage spans and resting energy are made from the
+/// raw records kept (the phone posts its pages first); the
+/// window's device sessions follow; every candidate is claimed or promoted;
+/// and the status row records it (beside its pages' outcome).
+pub fn device_replace(
+    conn: &mut Connection,
+    pid: ProfileId,
+    post: &HealthPost,
+    now: i64,
+    tz: &TimeZone,
+) -> Result<HealthCounts, Error> {
+    let tx = write(conn)?;
+    let window = params![pid, post.from, post.to];
+    tx.execute(
+        "DELETE FROM device_day WHERE profile_id = ? AND day BETWEEN ? AND ?",
+        window,
+    )?;
+    tx.execute(
+        "DELETE FROM device_session WHERE profile_id = ? AND day BETWEEN ? AND ?",
+        window,
+    )?;
+    device_insert(&tx, pid, &post.days, &post.sessions)?;
+    // A night's sessions may start the day before; resting is the day's own.
+    let before = shift(&post.from, -1).unwrap_or_else(|| post.from.clone());
+    for (kind, kept) in &post.read {
+        let from = if kind == BMR { &post.from } else { &before };
+        raw_prune(&tx, pid, kind, (from, &post.to), kept)?;
+    }
+    let days = days_between(&post.from, &post.to);
+    nights_derive(&tx, pid, &days, tz)?;
+    resting_derive(&tx, pid, &days)?;
+    distance_derive(&tx, pid, &days)?;
+    let nights: i64 = tx.query_row(
+        "SELECT count(*) FROM device_day
+         WHERE profile_id = ? AND day BETWEEN ? AND ? AND in_bed_min IS NOT NULL",
+        window,
+        |r| r.get(0),
+    )?;
+    health_readings_replace(&tx, pid, &post.from, &post.to, &post.body, now, tz)?;
+    let status = health_status(&tx, pid)?;
+    let previous_device = status.last_result.and_then(|r| r.device);
+    refresh_synced(
+        &tx,
+        pid,
+        &post.from,
+        &post.to,
+        post.device == previous_device,
+    )?;
+    promote(&tx, pid, status.workouts)?;
+    let counts = HealthCounts {
+        days: post.days.len() as u64,
+        sessions: post.sessions.len() as u64,
+        nights: u64::try_from(nights).unwrap_or(0),
+        skipped: post.skipped,
+    };
+    let result = HealthResult {
+        counts,
+        from: post.from.clone(),
+        to: post.to.clone(),
+        device: post.device.clone(),
+        previous_device,
+    };
+    tx.execute(
+        // The records outcome stays this sync's; the next page starts over.
+        "INSERT INTO sync_state (profile_id, source, last_seen, last_result) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (profile_id, source) DO UPDATE SET last_seen = ?3, last_result = ?4,
+             records_result = json_set(records_result, '$.closed', json('true'))",
+        params![pid, HEALTH_CONNECT, now, json(&result)],
+    )?;
+    tx.commit()?;
+    Ok(counts)
+}
+
+/// Keep a page of the phone's records, in one transaction. What the server
+/// makes of its new or changed ones follows in it: the nights of the days
+/// its sleep sessions woke on and the day before each, and of the nights
+/// its HRV readings may fall in; the resting energy of the days its basal
+/// metabolic rates name (an older phone posts its window before its
+/// pages). Its outcome adds to the sync's records outcome
+/// (`sync_state.records_result`: its pages, the first after a window
+/// starting it over), and is logged.
+pub fn records_put(
+    conn: &mut Connection,
+    pid: ProfileId,
+    post: &RecordsPost,
+    now: i64,
+    tz: &TimeZone,
+) -> Result<RawCounts, Error> {
+    let tx = write(conn)?;
+    let mut changed = Vec::new();
+    for r in &post.records {
+        if record_put(&tx, pid, HEALTH_CONNECT, r, now)? {
+            changed.push(r);
+        }
+    }
+    let of = |kind: &'static str| changed.iter().copied().filter(move |r| r.kind == kind);
+    let sessions: Vec<(String, String)> = of(SLEEP_SESSION)
+        .map(|r| (r.id.clone(), r.data.clone()))
+        .collect();
+    let mut nights = BTreeSet::new();
+    for day in health_connect_sleeps(&sessions, tz).days {
+        nights.extend(day_and_before(&day));
+    }
+    for r in of(HRV) {
+        // A reading late in the evening is the next night's.
+        nights.extend(r.day.as_deref().and_then(next_day));
+        nights.extend(r.day.clone());
+    }
+    nights_derive(&tx, pid, &nights, tz)?;
+    let resting: BTreeSet<String> = of(BMR).filter_map(|r| r.day.clone()).collect();
+    resting_derive(&tx, pid, &resting)?;
+    let walked: BTreeSet<String> = of(DISTANCE).filter_map(|r| r.day.clone()).collect();
+    distance_derive(&tx, pid, &walked)?;
+    let counts = RawCounts {
+        records: post.records.len() as u64,
+        truncated: post.records.iter().filter(|r| r.truncated).count() as u64,
+        skipped: post.skipped,
+        failed: post.failed,
+    };
+    // A page after a window starts the next sync's outcome: the window
+    // marks the outcome `closed` (`device_replace`), so no clock decides.
+    let before: Option<String> = tx
+        .query_row(
+            "SELECT records_result FROM sync_state WHERE profile_id = ? AND source = ?
+             AND NOT coalesce(json_extract(records_result, '$.closed'), 0)",
+            params![pid, HEALTH_CONNECT],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten();
+    let ongoing: Option<RecordsResult> = before.as_deref().map(from_json).transpose()?;
+    let total = ongoing.unwrap_or_default().add(counts, now);
+    tx.execute(
+        "INSERT INTO sync_state (profile_id, source, records_result) VALUES (?1, ?2, ?3)
+         ON CONFLICT (profile_id, source) DO UPDATE SET records_result = ?3",
+        params![pid, HEALTH_CONNECT, json(&total)],
+    )?;
+    tx.commit()?;
+    tracing::info!(
+        profile = pid.0,
+        records = counts.records,
+        truncated = counts.truncated,
+        skipped = counts.skipped,
+        failed = counts.failed,
+        "health records kept"
+    );
+    Ok(counts)
+}
+
+/// `day` and the day before it (both when `day` reads).
+fn day_and_before(day: &str) -> Vec<String> {
+    let Ok(d) = day.parse::<jiff::civil::Date>() else {
+        return Vec::new();
+    };
+    [d.yesterday().ok(), Some(d)]
+        .into_iter()
+        .flatten()
+        .map(|d| d.to_string())
+        .collect()
+}
+
+/// The day after `day`.
+fn next_day(day: &str) -> Option<String> {
+    Some(
+        day.parse::<jiff::civil::Date>()
+            .ok()?
+            .tomorrow()
+            .ok()?
+            .to_string(),
+    )
 }

@@ -262,12 +262,12 @@ public final class SettingsActivity extends Activity {
         save.setEnabled(false);
         worker.execute(
                 () -> {
-                    boolean ok = Net.isKaloriina(origin);
+                    String unreachable = Net.probe(origin);
                     runOnUiThread(
                             () -> {
                                 save.setEnabled(true);
-                                if (!ok) {
-                                    toast("No Kaloriina answers at " + origin);
+                                if (unreachable != null) {
+                                    toast(unreachable);
                                     return;
                                 }
                                 if (!origin.equals(store.origin())) {
@@ -295,19 +295,22 @@ public final class SettingsActivity extends Activity {
             worker.execute(
                     () -> {
                         String name = null;
+                        String missing;
                         try {
                             JSONObject p =
                                     Net.get(store.origin() + "/api/profiles/" + id, Net.QUICK_MS)
                                             .object();
                             name = p == null ? null : p.optString("name", null);
+                            missing = "Profile " + id + " isn't on the server";
                         } catch (IOException e) {
-                            name = null;
+                            missing = "Can't reach the server: " + e.getMessage();
                         }
                         String found = name;
+                        String why = missing;
                         runOnUiThread(
                                 () -> {
                                     if (found == null) {
-                                        confirm.setText("Profile " + id + " isn't on the server");
+                                        confirm.setText(why);
                                         return;
                                     }
                                     confirm.setText("Sync this profile (" + found + ")");
@@ -459,6 +462,11 @@ public final class SettingsActivity extends Activity {
                                         "Resync",
                                         () -> resync("a year", Payload.RESYNC_YEAR)))
                 .setEnabled(history);
+        if (!history) {
+            text(
+                    statusBox,
+                    "Resyncing needs Health Connect's \"Past data (over 30 days)\" access.");
+        }
         button(
                 statusBox,
                 "Stop syncing",
@@ -469,8 +477,10 @@ public final class SettingsActivity extends Activity {
                                         + " on the server.",
                                 "Stop syncing",
                                 () -> {
+                                    String name = store.profileName();
                                     SyncJob.stop(this);
                                     store.unbind();
+                                    toast("Stopped syncing " + name);
                                     render();
                                 }));
     }

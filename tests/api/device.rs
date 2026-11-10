@@ -2789,3 +2789,21 @@ async fn a_days_distance_from_one_origin_survives_the_window() {
     let (_, file) = call(&app, "GET", "/api/profiles/1/export", None).await;
     assert_eq!(file["device_days"][0]["distance_m"], 4101, "{file}");
 }
+
+#[tokio::test]
+async fn records_name_the_best_step_day() {
+    let app = app();
+    let (_, none) = call(&app, "GET", "/api/profiles/1/records", None).await;
+    assert_eq!(
+        none["days"],
+        json!({ "steps": null, "night": null, "sleep": null })
+    );
+    let days = [day("2026-10-01", 300, 12_000), day("2026-10-02", 200, 8000)];
+    sync(&app, body("2026-10-01", "2026-10-02", &days, &[])).await;
+    let (status, r) = call(&app, "GET", "/api/profiles/1/records", None).await;
+    assert_eq!(status, StatusCode::OK, "{r}");
+    assert_eq!(
+        r["days"]["steps"],
+        json!({ "day": "2026-10-01", "value": 12_000 })
+    );
+}

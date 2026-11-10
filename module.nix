@@ -5,7 +5,7 @@
 }:
 with lib; let
   cfg = config.services.kaloriina;
-  loopback = [ "127.0.0.1" "::1" "localhost" ];
+  loopback = [ "127.0.0.1" "::1" ];
   db = "${cfg.dataDir}/kaloriina.db";
 
   # Shared by the server and the backup job; each adds its own writable
@@ -43,7 +43,6 @@ with lib; let
   # is loopback; an IPv6 address goes in brackets.
   serverHost = {
     "0.0.0.0" = "127.0.0.1";
-    "localhost" = "127.0.0.1";
     "::" = "[::1]";
     "::1" = "[::1]";
   }.${cfg.address} or (if hasInfix ":" cfg.address then "[${cfg.address}]" else cfg.address);
@@ -60,7 +59,7 @@ in
       defaultText = literalExpression "pkgs.callPackage ./package.nix { }";
       description = ''
         The package to run. Set it to the flake's own build
-        (`inputs.kaloriina.packages.${system}.default`) to use the toolchain
+        (`inputs.kaloriina.packages.''${system}.default`) to use the toolchain
         it was tested with instead of the host's.
       '';
     };
@@ -75,8 +74,9 @@ in
       type = types.str;
       default = "127.0.0.1";
       description = ''
-        Host address for the service. There is no login: keep the default and
-        expose it only over HTTPS (see the README's Security section).
+        IP address the service listens on (`serve --address` takes no host
+        names). There is no login: keep the default and expose it only over
+        HTTPS (see the README's Security section).
       '';
     };
 
@@ -110,9 +110,11 @@ in
       example = "Europe/London";
       description = ''
         IANA time zone for the server's "today": which day a scale reading
-        falls on, the latest day a Health Connect sync may name, and the zone
-        `kaloriina import-google-health --time-zone` must be given. Read from
-        the system's tz database. `null`: the system's, else UTC.
+        falls on, the latest day a Health Connect sync may name, and the days
+        nights and weights are stored under. The database stores it; a
+        different zone makes those days again on the next start, and
+        `kaloriina import-google-health` takes it from there. Read from the
+        system's tz database. `null`: the system's, else UTC.
       '';
     };
 
@@ -258,6 +260,11 @@ in
   };
 
   config = mkIf cfg.enable {
+    assertions = [{
+      assertion = builtins.match "[0-9]+(\\.[0-9]+){3}|[0-9a-fA-F:.]*:[0-9a-fA-F:.]*" cfg.address != null;
+      message = ''services.kaloriina.address must be an IP address, e.g. 127.0.0.1 or ::1, not "${cfg.address}".'';
+    }];
+
     warnings =
       # In a container the address is its private link to the host's proxy.
       optional (!elem cfg.address loopback && !config.boot.isContainer) ''
@@ -304,7 +311,7 @@ in
         RestrictAddressFamilies = "none";
       };
       script = ''
-        set -o pipefail
+        set -euo pipefail
         shopt -s nullglob extglob
         dir=${escapeShellArg cfg.backup.dir}
         rm -f "$dir"/kaloriina-*.tmp*
@@ -324,7 +331,10 @@ in
         # which the syscall filter's ~@privileged kills).
         zstd -q -T0 -10 -c "$name.tmp" > "$name.zst.tmp"
         zstd -tq "$name.zst.tmp"
+        # On disk before it is named and an old copy pruned.
+        sync "$name.zst.tmp"
         mv "$name.zst.tmp" "$name.zst"
+        sync "$dir"
         echo "backed up to $name.zst"
         # Oldest first by name, compressed or not.
         copies=("$dir"/kaloriina-*Z.db?(.zst))
@@ -365,8 +375,12 @@ in
         # and the profiles' Home Assistant hooks (plain HTTP on the LAN: keep
         # it reachable when tightening with IPAddressAllow=), nothing else.
         ReadWritePaths = [ cfg.dataDir ];
-        # The server reads the newest copy's age (GET /api/backups).
-        ReadOnlyPaths = optional (cfg.backup.enable && !hasPrefix "${cfg.dataDir}/" cfg.backup.dir) cfg.backup.dir;
+        # The server reads the newest copy's age (GET /api/backups), and
+        # never writes there: inside the data directory too, the copies stay
+        # out of its reach (the more specific path wins).
+        ReadOnlyPaths = optional cfg.backup.enable cfg.backup.dir;
+        # Link-local, where cloud metadata answers: never a hook's address.
+        IPAddressDeny = [ "169.254.0.0/16" "fe80::/10" ];
         # AF_UNIX: name lookups go through nscd on NixOS.
         RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
         # Ceilings, so a runaway request can't take the host with it. The
@@ -411,6 +425,7 @@ in
         RestrictAddressFamilies = "none";
       };
       script = ''
+        set -euo pipefail
         stamp=${escapeShellArg "${cfg.dataDir}/.fineli-source"}
         source=${escapeShellArg cfg.fineli.source}
         if [ "$(cat "$stamp" 2>/dev/null)" = "$source" ]; then
@@ -441,7 +456,7 @@ in
         IPAddressAllow = [ "localhost" ] ++ optional (!elem cfg.address (loopback ++ [ "0.0.0.0" "::" ])) cfg.address;
       };
       script = ''
-        set -uo pipefail
+        set -euo pipefail
         api=http://${serverHost}:${toString cfg.port}/api
         # Loopback names always pass the server's host check (allowedHosts);
         # no Origin or Sec-Fetch-Site, so its cross-site check lets writes by.

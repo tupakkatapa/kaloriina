@@ -13,6 +13,7 @@ import {
   RECENT,
   recentRows,
   result,
+  section,
   workoutEnergy,
 } from "../rows.mjs";
 import { editLink, empty, h, notesSection, titleBar } from "../ui.mjs";
@@ -122,13 +123,8 @@ export async function workoutView(id, params = new URLSearchParams()) {
         )
       : null,
     h("div", { class: "actions" }, copy, startLink(w)),
-    h(
-      "section",
-      { class: "finder-section" },
-      h("h2", {}, "Steps"),
-      stepList(w.steps, lib),
-    ),
+    section("Steps", stepList(w.steps, lib)),
     notesSection(w.notes),
-    h("section", { class: "finder-section" }, h("h2", {}, "History"), done),
+    section("History", done),
   );
 }

@@ -1,9 +1,9 @@
 // List rows, each built here once: a list's result row, a menu row, a row
 // with an action beside it, a key/value list, a diary entry, a Log card
 // row, a device workout waiting for Add or Dismiss, an activity done, an
-// exercise, a food (with its search and ☆), a tracker's count, and a log
-// screen's context line. Below the screens, so screens import them without
-// importing each other.
+// exercise, a food (with its search and ☆), a tracker's count, a log
+// screen's context line, and a titled section of rows. Below the screens,
+// so screens import them without importing each other.
 
 import { keptHere } from "./actions.mjs";
 import { distanceOf } from "./activities.mjs";
@@ -23,7 +23,7 @@ import {
 import { clockAt, clockOf, pretty, today } from "./dates.mjs";
 import { activeEnergyText, bmrOf } from "./energy-text.mjs";
 import { activeOf } from "./expenditure.mjs";
-import { isNil, lower, NBSP, plural, qty } from "./format.mjs";
+import { fmt, isNil, lower, NBSP, plural, qty } from "./format.mjs";
 import {
   counted,
   habitAmountText,
@@ -32,13 +32,14 @@ import {
 } from "./habits.mjs";
 import { weightGuessed } from "./health.mjs";
 import { href } from "./nav.mjs";
-import { kcal, per100Basis, PLANNED } from "./nutrients.mjs";
+import { kcal, kcalParts, per100Basis, PLANNED } from "./nutrients.mjs";
 import { labelChips } from "./nutrition-panel.mjs";
 import { latest, waiting } from "./outbox.mjs";
 import {
   busy,
   CHEVRON_R,
   confirmDialog,
+  empty,
   field,
   fill,
   formDialog,
@@ -106,6 +107,22 @@ export const menuRow = ({ action, ...opts }) =>
 export const actionRow = (main, ...actions) =>
   h("li", { class: "row-with-action" }, main, actions);
 
+// A titled list: `rows` in a results card, or a list of its own as it is.
+// Without rows, `none` says so; without `none` too, no section.
+export const section = (title, rows, none) =>
+  rows instanceof Node || rows.length > 0 || !isNil(none)
+    ? h(
+        "section",
+        { class: "finder-section" },
+        h("h2", {}, title),
+        rows instanceof Node
+          ? rows
+          : rows.length > 0
+            ? h("ul", { class: "results card" }, rows)
+            : empty(none),
+      )
+    : null;
+
 // A key/value list (`ul.days`): each pair a line, its key left and value
 // right; text is wrapped, a node (a link) stays as it is. `cls` adds to
 // the list's class, `label` names it.
@@ -134,14 +151,43 @@ export function entryAmount(e, waterId = null) {
   return amountText(e, weight);
 }
 
+// A text entry: what was eaten in words, with no food behind it.
+export const isText = (e) => e.kind === "own" && isNil(e.food_id);
+
+// An entry's energy: none for imported history (its group's total has
+// it); a text entry's estimate, "≈", or without one "Estimate kcal" where
+// its row opens its editor (`opens`), else "kcal not known".
+function entryKcal(e, opens) {
+  if (e.kind === "imported") return h("span", { class: "kcal" });
+  if (!isText(e))
+    return h("span", { class: "kcal" }, kcal(e.nutrients?.energy));
+  const { unit } = kcalParts(null);
+  if (!isNil(e.nutrients?.energy))
+    return h("span", { class: "kcal" }, `≈${NBSP}${kcal(e.nutrients.energy)}`);
+  return opens
+    ? h("span", { class: "kcal estimate" }, `Estimate ${unit}`)
+    : h("span", { class: "kcal" }, `${unit} not known`);
+}
+
+// A text entry's macros as given: "P 30 · C 60 · F 20 g", or null.
+function textMacros(e) {
+  const given = [
+    ["P", "protein"],
+    ["C", "carbs"],
+    ["F", "fat"],
+  ].filter(([, key]) => !isNil(e.nutrients?.[key]));
+  if (!isText(e) || given.length === 0) return null;
+  return `${given.map(([p, key]) => `${p}${NBSP}${fmt(e.nutrients[key])}`).join(" · ")}${NBSP}g`;
+}
+
 // An entry's quiet line under it, or null.
 const noteLine = (note) =>
   note ? h("span", { class: "entry-note" }, note) : null;
 
 // A diary entry (`li.entry`): its name; its time, "Daily" when it repeats,
-// its amount and where imported history came from; its energy. It opens
-// its editor at its `key` (a due day's, which has no id, too); in Planned,
-// `onTick` puts its ✓ at the right. `pick` ({picked, changed}) makes it a
+// its amount and where imported history came from, "One-off" and its
+// macros for a text entry; its energy. It opens its editor at its `key` (a due day's, which
+// has no id, too); in Planned, `onTick` puts its ✓ at the right. `pick` ({picked, changed}) makes it a
 // checkbox while selecting: imported history has no values of its own, so
 // can't be copied. `pending` (a write waiting to send: its label as
 // `name`, its group, and this state) makes it a plain row. `note`: a quiet
@@ -158,13 +204,13 @@ export function entryRow(
         e.repeat ? "Daily" : null,
         pick && imported ? "History can't be copied" : entryAmount(e, waterId),
         imported && !pick ? "From Cronometer" : null,
+        isText(e) && "One-off",
+        textMacros(e),
       ];
   const parts = [
     h("span", { class: "name" }, e.name),
     h("span", { class: "muted" }, detail.filter(Boolean).join(" · ")),
-    pending
-      ? null
-      : h("span", { class: "kcal" }, imported ? "" : kcal(e.nutrients?.energy)),
+    pending ? null : entryKcal(e, !pick),
     noteLine(note),
   ];
   if (pick)
@@ -400,7 +446,7 @@ export const contextLine = (day, group, ...rest) =>
     .filter(Boolean)
     .join(" · ");
 
-// Ingredient search, for recipe and meal editors: the same ranking.
+// Ingredient search, for the recipe editor: the same ranking.
 export const searchFoods = (q) =>
   get(scoped(`/foods?${new URLSearchParams({ q })}`));
 

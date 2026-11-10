@@ -57,10 +57,10 @@ const fn shown(label: &'static str, unit: &'static str) -> MetricDisplay {
 }
 
 /// Minutes in a day: the most sleep a night can hold.
-pub const DAY_MIN: f64 = 1440.0;
+pub const DAY_MINUTES: f64 = 1440.0;
 
 /// A clock time to keep each day (bedtime, wake-up): minutes after
-/// midnight, met within [`CLOCK_WINDOW_MIN`] either way, mod 1440.
+/// midnight, met within [`CLOCK_WINDOW_MINUTES`] either way, mod 1440.
 const fn clock(key: &'static str, label: &'static str) -> Metric {
     Metric {
         key,
@@ -76,12 +76,12 @@ const fn clock(key: &'static str, label: &'static str) -> Metric {
             input: "time",
         },
         default: None,
-        range: (0.0, DAY_MIN - 1.0),
+        range: (0.0, DAY_MINUTES - 1.0),
     }
 }
 
 /// How far from a clock target a time still keeps it (minutes).
-pub const CLOCK_WINDOW_MIN: f64 = 30.0;
+pub const CLOCK_WINDOW_MINUTES: f64 = 30.0;
 
 /// Whether `key` is a clock time ([`clock`]).
 #[must_use]

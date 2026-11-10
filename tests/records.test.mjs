@@ -6,7 +6,6 @@ import test from "node:test";
 
 import {
   activitiesMetres,
-  dayRecords,
   distanceOf,
   newTypeRecords,
   paceDistance,
@@ -86,36 +85,7 @@ test("newTypeRecords: what an activity beats among its type's before it", () => 
   assert.equal(newTypeRecords([...before, further], further).length, 3);
 });
 
-test("dayRecords: the best step day and the longest sleep, night and naps", () => {
-  // `/device-days` days: `total_asleep_min` is the night (`asleep_min`) plus
-  // the naps' time asleep.
-  const days = [
-    { day: "2026-09-01", steps: 9000, asleep_min: 480, total_asleep_min: 480 },
-    {
-      day: "2026-09-02",
-      steps: 15_000,
-      asleep_min: null,
-      total_asleep_min: null,
-    },
-    // A shorter night with a 90-minute nap is the longest sleep.
-    { day: "2026-09-03", steps: null, asleep_min: 420, total_asleep_min: 510 },
-  ];
-  // The longest night is the night alone (09-01), never one
-  // lengthened by naps; the most sleep in a day adds them (09-03).
-  assert.deepEqual(dayRecords(days), {
-    steps: { day: "2026-09-02", value: 15_000 },
-    night: { day: "2026-09-01", value: 480 },
-    sleep: { day: "2026-09-03", value: 510 },
-  });
-  // Later days win ties.
-  assert.equal(
-    dayRecords([...days, { day: "2026-09-04", asleep_min: 480 }]).night.day,
-    "2026-09-04",
-  );
-  assert.deepEqual(dayRecords([]), { steps: null, night: null, sleep: null });
-});
-
-test("TFA-A3: a pace needs a speed its type moves at", () => {
+test("a pace needs a speed its type moves at", () => {
   // 317 m in 19 min (1.0 km/h) is no walk: no pace, the distance stays.
   const crawl = {
     type: "walk",
@@ -143,7 +113,7 @@ test("TFA-A3: a pace needs a speed its type moves at", () => {
   assert.equal(typeRecords([slow]).walk.distance, slow);
 });
 
-test("TFA-A4: an other activity's synced metres are no distance; typed ones are", () => {
+test("an other activity's synced metres are no distance; typed ones are", () => {
   const zumba = {
     id: 2,
     day: "2026-09-26",
@@ -157,7 +127,7 @@ test("TFA-A4: an other activity's synced metres are no distance; typed ones are"
   assert.equal(distanceOf({ ...zumba, source: "hand" }), 641);
 });
 
-test("TFA-A1: a device day with only a resting total tracked nothing", () => {
+test("a device day with only a resting total tracked nothing", () => {
   assert.equal(tracksActivity({ day: "2026-01-05", total_kcal: 1554 }), false);
   assert.equal(tracksActivity({ day: "2026-06-03", steps: 4200 }), true);
   assert.equal(tracksActivity({ day: "2026-06-03", active_kcal: 0 }), true);

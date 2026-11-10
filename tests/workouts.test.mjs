@@ -752,7 +752,7 @@ test("targetWeeks leaves out the current week and weeks to come", () => {
   );
 });
 
-test("targetWeeks: no week before tracking began, none for a leftover (AC2-3, AC2-12)", () => {
+test("targetWeeks: no week before tracking began, none for a leftover", () => {
   // The owner's 2026: the first activity Jun 2. The 21 weeks before it are no
   // weeks missed: counted from the week of Jun 1.
   const activities = on("2026-06-02", "2026-06-09");
@@ -1255,4 +1255,10 @@ test("replacing a step swaps all of its fields, the steps given untouched", () =
     [{ kind: "exercise", exercise_id: 2 }],
   );
   assert.equal(steps[0].kg, 20);
+});
+
+test("a set of no seconds is a timed set, not reps", () => {
+  assert.equal(setText({ seconds: 0 }), "0\u00A0s");
+  assert.equal(lastTimeText({ sets: [{ seconds: 0 }] }), "0\u00A0s");
+  assert.equal(setText({ reps: 0 }), "0 reps");
 });

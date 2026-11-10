@@ -536,8 +536,8 @@ test("hydration: its own row in Eaten's totals against the water target, more on
   // No "Approximate", no + Water, nothing to open.
   await expect(row.locator(".hydration > *")).toHaveCount(1);
   await expect(row.locator("details, button")).toHaveCount(0);
-  // Hydration isn't repeated in From food; salt, no longer Hydration's
-  // detail, is From food's.
+  // Hydration isn't repeated in From food; salt is From food's detail,
+  // not Hydration's.
   await expect(totals(page).locator(".habit-builtins")).toHaveText(
     /^Alcohol\s1\.7\sdrinks · Salt\s0\.5\sg$/u,
   );
@@ -663,7 +663,7 @@ test("an activity's row is its type, its name over its line", async ({
   );
 });
 
-// Owner (2026-10-14): a kind never runs into its value, whatever the font.
+// A kind never runs into its value, whatever the font.
 // The owner's system-ui is a wide one; a monospace font stands in for it.
 test("no row's kind overlaps its value, at a phone's width or a desktop's", async ({
   page,

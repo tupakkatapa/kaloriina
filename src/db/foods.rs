@@ -1,10 +1,13 @@
-//! Foods, their servings, search, favourites, recipes and meals.
+//! Foods, their servings, search, favourites and recipes.
 
+use super::Cover;
 use super::prelude::*;
+use crate::model::PLANNED;
 use crate::model::copied;
+use crate::model::suggest::{self, LastAmount, Suggestion};
 use crate::model::{
-    Borne, Facts, Hydration, Known, Labels, Part, Scoring, borne_of, drink_by_kind, labels,
-    recipe_cover, stored_labels, sweetened,
+    Facts, Hydration, Known, Labels, Part, Scoring, borne_of, drink_by_kind, labels, recipe_cover,
+    recipe_per100, stored_labels, sweetened,
 };
 
 /// A food's stored labels (`food_label`) as a JSON array, for `food_id`.
@@ -91,8 +94,12 @@ pub(super) fn food_row(r: &Row) -> rusqlite::Result<Food> {
 pub(super) fn with_servings(conn: &Connection, mut food: Food) -> Result<Food, Error> {
     food.servings = servings_of(conn, food.id)?;
     if food.kind == FoodKind::Recipe {
-        (food.known, food.borne) = recipe_cover_of(conn, food.id, &mut BTreeMap::new())?;
-        let h = super::recipe_hydration(conn, food.id, &mut BTreeMap::new())?;
+        let Cover {
+            known,
+            borne,
+            hydrates: h,
+        } = recipe_facts(conn, food.id, &mut BTreeMap::new())?.cover;
+        (food.known, food.borne) = (known, borne);
         food.hydration = h
             .known()
             .then(|| Hydration::from_parts(h.water * 100.0, h.alcohol * 100.0));
@@ -216,7 +223,7 @@ pub fn food_search(conn: &Connection, query: &FoodQuery) -> Result<Vec<Food>, Er
              FROM food
          ) f
          CROSS JOIN l
-         LEFT JOIN (SELECT food_id, MAX(id) AS last FROM entry
+         LEFT JOIN (SELECT food_id, max(id) AS last FROM entry
                     WHERE profile_id = ?8 GROUP BY food_id) e
              ON e.food_id = f.id
          WHERE archived = ?3
@@ -267,20 +274,169 @@ pub(super) fn foods_with_servings(
 }
 
 /// Foods this profile logged, most recent first, archived ones left out.
-pub fn food_recent(conn: &Connection, profile: ProfileId) -> Result<Vec<Food>, Error> {
+pub fn food_recent(conn: &Connection, pid: ProfileId) -> Result<Vec<Food>, Error> {
     foods_with_servings(
         conn,
         &format!(
             "SELECT {FOOD_COLS} FROM food f
-         JOIN (SELECT food_id, MAX(id) AS last FROM entry
+         JOIN (SELECT food_id, max(id) AS last FROM entry
                WHERE profile_id = ? AND food_id IS NOT NULL GROUP BY food_id) e
              ON e.food_id = f.id
          WHERE NOT archived
          ORDER BY e.last DESC
          LIMIT {RECENT_LIMIT}"
         ),
-        [profile],
+        [pid],
     )
+}
+
+/// The amount of this profile's own last log of `food` (the highest id,
+/// as [`food_recent`] orders; imported history left out), or `None`.
+pub fn food_last(
+    conn: &Connection,
+    pid: ProfileId,
+    food: i64,
+) -> Result<Option<LastAmount>, Error> {
+    Ok(conn
+        .query_row(
+            "SELECT grams, serving, quantity FROM entry
+             WHERE profile_id = ? AND food_id = ? AND src_grp IS NULL AND grams IS NOT NULL
+             ORDER BY id DESC LIMIT 1",
+            params![pid, food],
+            |r| {
+                Ok(LastAmount {
+                    grams: r.get(0)?,
+                    serving: r.get(1)?,
+                    quantity: r.get(2)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
+/// What this profile likely logs next on `day` at `time` ("HH:MM", or
+/// none), best first ([`suggest::score`]): from what it ate (not Planned)
+/// on the day and the [`suggest::HISTORY_DAYS`] before, imported
+/// history too. Archived foods, the water food, foods a daily series
+/// logs, anything with alcohol and foods hidden on the day are none, and
+/// so is an item of a recipe suggested before it.
+pub fn food_suggestions(
+    conn: &Connection,
+    pid: ProfileId,
+    day: &str,
+    time: Option<&str>,
+) -> Result<Vec<Suggestion>, Error> {
+    let Ok(date) = day.parse::<jiff::civil::Date>() else {
+        return Ok(Vec::new());
+    };
+    let weekday = date.weekday();
+    let water = super::water_food_get(conn, pid)?.map(|f| f.id);
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT e.food_id, CAST(julianday(?2) - julianday(e.day) AS INTEGER), e.time, e.id
+         FROM entry e JOIN food f ON f.id = e.food_id
+         WHERE e.profile_id = ?1 AND e.day BETWEEN date(?2, '-{} days') AND ?2
+             AND e.grp != '{PLANNED}' AND NOT f.archived AND f.id IS NOT ?3
+             AND coalesce(json_extract(f.per100, '$.alcohol'), 0) = 0
+             AND NOT EXISTS (SELECT 1 FROM daily_item d
+                             WHERE d.profile_id = ?1 AND d.food_id = f.id AND d.start <= ?2)",
+        suggest::HISTORY_DAYS
+    ))?;
+    let history = stmt
+        .query_map(params![pid, day, water], |r| {
+            Ok(suggest::Logged {
+                food_id: r.get(0)?,
+                age: r.get(1)?,
+                minute: r
+                    .get::<_, Option<String>>(2)?
+                    .as_deref()
+                    .and_then(suggest::day_minute),
+                id: r.get(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut names = BTreeMap::new();
+    for l in history.iter().filter(|l| l.age == 0 && l.minute.is_some()) {
+        if let Some(f) = food_get(conn, l.food_id)? {
+            names.insert(f.id, f.name);
+        }
+    }
+    let mut hidden = conn.prepare_cached(
+        "SELECT 1 FROM suggestion_hidden
+         WHERE profile_id = ? AND food_id = ? AND (until IS NULL OR until >= ?)",
+    )?;
+    let mut items = conn.prepare_cached("SELECT food_id FROM recipe_item WHERE recipe_id = ?")?;
+    let mut shown = Vec::new();
+    let mut recipes = BTreeMap::new();
+    for s in suggest::score(
+        &history,
+        weekday,
+        time.and_then(suggest::day_minute),
+        &names,
+    ) {
+        if hidden.exists(params![pid, s.food_id, day])? {
+            continue;
+        }
+        let held = items
+            .query_map([s.food_id], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        recipes.insert(s.food_id, held);
+        shown.push(s);
+    }
+    suggest::without_ingredients(shown, &recipes)
+        .into_iter()
+        .take(suggest::SUGGESTIONS_MAX)
+        .map(|s| {
+            Ok(Suggestion {
+                food: written(food_get(conn, s.food_id)?),
+                score: s.score,
+                reasons: s.reasons,
+                last: food_last(conn, pid, s.food_id)?,
+            })
+        })
+        .collect()
+}
+
+/// The foods this profile hid from suggestions for good, by name.
+pub fn suggestion_hidden_list(conn: &Connection, pid: ProfileId) -> Result<Vec<Food>, Error> {
+    foods_with_servings(
+        conn,
+        &format!(
+            "SELECT {FOOD_COLS} FROM food WHERE id IN
+                 (SELECT food_id FROM suggestion_hidden WHERE profile_id = ? AND until IS NULL)
+             ORDER BY name COLLATE NOCASE"
+        ),
+        [pid],
+    )
+}
+
+/// Hide a food from suggestions through `until`, or for good; replaces
+/// an earlier hide.
+///
+/// # Errors
+/// 400 `food_id` for an unknown food.
+pub fn suggestion_hide(
+    conn: &Connection,
+    pid: ProfileId,
+    food_id: i64,
+    until: Option<&str>,
+) -> Result<(), Error> {
+    food_get(conn, food_id)?
+        .ok_or_else(|| Error::invalid_field("food_id", format!("unknown food {food_id}")))?;
+    conn.execute(
+        "INSERT INTO suggestion_hidden (profile_id, food_id, until) VALUES (?1, ?2, ?3)
+         ON CONFLICT (profile_id, food_id) DO UPDATE SET until = ?3",
+        params![pid, food_id, until],
+    )?;
+    Ok(())
+}
+
+/// Suggest a hidden food again; one not hidden stays as it is.
+pub fn suggestion_show(conn: &Connection, pid: ProfileId, food_id: i64) -> Result<(), Error> {
+    conn.execute(
+        "DELETE FROM suggestion_hidden WHERE profile_id = ? AND food_id = ?",
+        params![pid, food_id],
+    )?;
+    Ok(())
 }
 
 pub(super) fn write_servings(
@@ -311,7 +467,7 @@ fn unlink_servings(
         if after.iter().any(same) {
             continue;
         }
-        for table in ["recipe_item", "meal_item", "daily_item"] {
+        for table in ["recipe_item", "daily_item"] {
             tx.execute(
                 &format!(
                     "UPDATE {table} SET serving = NULL, quantity = NULL
@@ -445,10 +601,10 @@ fn relabel(conn: &Connection, id: i64) -> rusqlite::Result<()> {
     // A recipe's labels judge what its parts prove (ADR 0030), and its
     // fruit & veg is theirs.
     let (known, fruit_veg) = match kind {
-        FoodKind::Recipe => (
-            recipe_cover_of(conn, id, &mut BTreeMap::new())?.0,
-            fruit_veg_share(conn, id, &mut BTreeMap::new())?,
-        ),
+        FoodKind::Recipe => {
+            let facts = recipe_facts(conn, id, &mut BTreeMap::new())?;
+            (facts.cover.known, facts.fruit_veg)
+        }
         FoodKind::Food => (Known::new(), f64::from(u8::from(veg))),
     };
     let scoring = Scoring {
@@ -590,8 +746,8 @@ fn renamed_entries(tx: &Transaction, id: i64, old: &str, new: &str) -> Result<()
 }
 
 /// Insert or update foods from Fineli, keyed by their Fineli id, in one
-/// transaction. Updated foods keep their id, so diary entries, recipes and
-/// meals using them stay linked. Archiving sticks, whether you or Fineli
+/// transaction. Updated foods keep their id, so diary entries and recipes
+/// using them stay linked. Archiving sticks, whether you or Fineli
 /// (a withdrawn food) did it, and so do servings whose label isn't one of
 /// `own_labels` (Fineli's): yours. Each food's ingredient class is set
 /// from `classes` (by Fineli id) in the same transaction. Returns how many
@@ -710,7 +866,7 @@ pub fn food_upsert_fineli(
 
 /// The food sources there are to search, in the order they're offered: your
 /// own foods and recipes always, a database once it holds a food (one
-/// `food_source` index lookup each).
+/// `food_match` index lookup each).
 pub fn food_sources(conn: &Connection) -> Result<Vec<FoodScope>, Error> {
     let mut sources = vec![FoodScope::Custom, FoodScope::Recipe];
     for (scope, source) in [
@@ -731,7 +887,7 @@ pub fn food_sources(conn: &Connection) -> Result<Vec<FoodScope>, Error> {
 
 /// The profile's favorite foods by name, archived ones included: starring
 /// is an explicit choice.
-pub fn favorite_list(conn: &Connection, profile: ProfileId) -> Result<Vec<Food>, Error> {
+pub fn favorite_list(conn: &Connection, pid: ProfileId) -> Result<Vec<Food>, Error> {
     foods_with_servings(
         conn,
         &format!(
@@ -739,14 +895,14 @@ pub fn favorite_list(conn: &Connection, profile: ProfileId) -> Result<Vec<Food>,
                  (SELECT food_id FROM favorite WHERE profile_id = ?)
              ORDER BY name COLLATE NOCASE"
         ),
-        [profile],
+        [pid],
     )
 }
 
 /// Star or unstar a food; both are idempotent.
 pub fn favorite_set(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     food_id: i64,
     on: bool,
 ) -> Result<(), Error> {
@@ -755,12 +911,12 @@ pub fn favorite_set(
             .ok_or_else(|| Error::invalid(format!("unknown food {food_id}")))?;
         conn.execute(
             "INSERT OR IGNORE INTO favorite (profile_id, food_id) VALUES (?, ?)",
-            params![profile, food_id],
+            params![pid, food_id],
         )?;
     } else {
         conn.execute(
             "DELETE FROM favorite WHERE profile_id = ? AND food_id = ?",
-            params![profile, food_id],
+            params![pid, food_id],
         )?;
     }
     Ok(())
@@ -803,34 +959,29 @@ pub(super) fn item_rows(conn: &Connection, sql: &str, id: i64) -> rusqlite::Resu
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let (mut memo, mut shares) = (BTreeMap::new(), BTreeMap::new());
+    let mut memo = BTreeMap::new();
     for item in &mut items {
         item.servings = servings_of(conn, item.food_id)?;
         if item.kind == FoodKind::Recipe {
-            (item.known, item.borne) = recipe_cover_of(conn, item.food_id, &mut memo)?;
-            item.fruit_veg = fruit_veg_share(conn, item.food_id, &mut shares)?;
+            let facts = recipe_facts(conn, item.food_id, &mut memo)?;
+            (item.known, item.borne) = (facts.cover.known, facts.cover.borne);
+            item.fruit_veg = facts.fruit_veg;
         }
     }
     Ok(items)
 }
 
-/// Store the items of a recipe or meal (`table`, keyed by `key`), each
-/// measured against its food.
-fn write_items(
-    tx: &Transaction,
-    table: &str,
-    key: &str,
-    id: i64,
-    items: &[ItemInput],
-) -> Result<(), Error> {
-    tx.execute(&format!("DELETE FROM {table} WHERE {key} = ?"), [id])?;
+/// Store the items of recipe `id`, each measured against its food.
+fn write_items(tx: &Transaction, id: i64, items: &[ItemInput]) -> Result<(), Error> {
+    tx.execute("DELETE FROM recipe_item WHERE recipe_id = ?", [id])?;
     for item in items {
         let food = food_get(tx, item.food_id)?
             .ok_or_else(|| Error::invalid(format!("unknown food {}", item.food_id)))?;
         let m = item.amount.of(&food)?;
-        tx.prepare_cached(&format!(
-            "INSERT INTO {table} ({key}, food_id, grams, serving, quantity) VALUES (?, ?, ?, ?, ?)"
-        ))?
+        tx.prepare_cached(
+            "INSERT INTO recipe_item (recipe_id, food_id, grams, serving, quantity)
+             VALUES (?, ?, ?, ?, ?)",
+        )?
         .execute(params![id, item.food_id, m.grams, m.serving, m.quantity])?;
     }
     Ok(())
@@ -865,72 +1016,31 @@ pub(super) fn uses(conn: &Connection, haystack: i64, needle: i64) -> rusqlite::R
     )
 }
 
-/// Per-100 g nutrients of a recipe from its ingredients.
-pub fn recipe_per100(parts: &[(Nutrients, f64)], cooked_g: Option<f64>) -> Nutrients {
-    let total: f64 = parts.iter().map(|(_, g)| g).sum();
-    let weight = cooked_g.unwrap_or(total);
-    if weight <= 0.0 {
-        return Nutrients::default();
-    }
-    let mut sum = Nutrients::sum(
-        &parts
-            .iter()
-            .map(|(p, g)| p.scale(g / 100.0))
-            .collect::<Vec<_>>(),
-    );
-    // Cooking changes the weight by water: what's lost boiled off, what's
-    // gained soaked in.
-    if let Some(water) = sum.get("water") {
-        sum.insert("water", (water + weight - total).max(0.0));
-    }
-    sum.scale(100.0 / weight)
+/// What a recipe's parts make of it.
+#[derive(Clone)]
+pub(super) struct RecipeFacts {
+    pub cover: Cover,
+    /// Its share of fruit, vegetables and legumes (0 to 1, ADR 0033) by its
+    /// parts' grams: a food's by its category.
+    pub fruit_veg: f64,
 }
 
-/// A recipe's share of fruit, vegetables and legumes (0 to 1, ADR 0033) by
-/// its parts' grams: a food's by its category, a recipe's by its own parts
-/// (`memo` keeps each once).
-pub(super) fn fruit_veg_share(
+/// A recipe's [`RecipeFacts`] through its parts, its recipes' first (`memo`
+/// keeps each once): its [`Known`] and [`Borne`](crate::model::Borne) per
+/// 100 g ([`recipe_cover`]), its [`Hydrates`](super::Hydrates) and its
+/// fruit & veg.
+pub(super) fn recipe_facts(
     conn: &Connection,
     id: i64,
-    memo: &mut BTreeMap<i64, f64>,
-) -> rusqlite::Result<f64> {
-    if let Some(share) = memo.get(&id) {
-        return Ok(*share);
-    }
-    let parts: Vec<(i64, FoodKind, bool, f64)> = conn
-        .prepare_cached(
-            "SELECT f.id, f.kind, f.category IS 'fruit_veg', i.grams
-             FROM recipe_item i JOIN food f ON f.id = i.food_id WHERE i.recipe_id = ?",
-        )?
-        .query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    let (mut veg, mut all) = (0.0, 0.0);
-    for (part, kind, own, grams) in parts {
-        let share = match kind {
-            FoodKind::Recipe => fruit_veg_share(conn, part, memo)?,
-            FoodKind::Food => f64::from(u8::from(own)),
-        };
-        veg += share * grams;
-        all += grams;
-    }
-    let share = if all > 0.0 { veg / all } else { 0.0 };
-    memo.insert(id, share);
-    Ok(share)
-}
-
-/// A recipe's [`Known`] and [`Borne`] per 100 g ([`recipe_cover`]), its
-/// recipes' first (`memo` keeps each once).
-pub(super) fn recipe_cover_of(
-    conn: &Connection,
-    id: i64,
-    memo: &mut BTreeMap<i64, (Known, Borne)>,
-) -> rusqlite::Result<(Known, Borne)> {
-    if let Some(cover) = memo.get(&id) {
-        return Ok(cover.clone());
+    memo: &mut BTreeMap<i64, RecipeFacts>,
+) -> rusqlite::Result<RecipeFacts> {
+    if let Some(facts) = memo.get(&id) {
+        return Ok(facts.clone());
     }
     let rows = conn
         .prepare_cached(
-            "SELECT f.id, f.kind, f.per100, i.grams, f.drink, f.source, f.fineli_class, f.name
+            "SELECT f.id, f.kind, f.per100, i.grams, f.drink, f.source, f.fineli_class, f.name,
+                 f.category IS 'fruit_veg'
              FROM recipe_item i JOIN food f ON f.id = i.food_id WHERE i.recipe_id = ?",
         )?
         .query_map([id], |r| {
@@ -943,15 +1053,22 @@ pub(super) fn recipe_cover_of(
                 r.get::<_, Source>(5)?,
                 r.get::<_, Option<String>>(6)?,
                 r.get::<_, String>(7)?,
+                r.get::<_, bool>(8)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let cooked_g: Option<f64> =
         conn.query_row("SELECT cooked_g FROM food WHERE id = ?", [id], |r| r.get(0))?;
-    let mut covers = Vec::with_capacity(rows.len());
-    for (food_id, kind, per100, _, drink, source, class, name) in &rows {
-        covers.push(if *kind == FoodKind::Recipe {
-            recipe_cover_of(conn, *food_id, memo)?
+    let mut subs = Vec::with_capacity(rows.len());
+    for (food_id, kind, per100, _, drink, source, class, name, veg) in &rows {
+        subs.push(if *kind == FoodKind::Recipe {
+            let sub = recipe_facts(conn, *food_id, memo)?;
+            let Cover {
+                known,
+                borne,
+                hydrates,
+            } = sub.cover;
+            (known, borne, Some(hydrates), sub.fruit_veg)
         } else {
             let facts = Facts {
                 drink: *drink,
@@ -959,13 +1076,14 @@ pub(super) fn recipe_cover_of(
                 class: class.as_deref(),
                 name,
             };
-            (Known::new(), borne_of(per100, &facts))
+            let borne = borne_of(per100, &facts);
+            (Known::new(), borne, None, f64::from(u8::from(*veg)))
         });
     }
     let parts: Vec<Part> = rows
         .iter()
-        .zip(&covers)
-        .map(|(row, (known, borne))| Part {
+        .zip(&subs)
+        .map(|(row, (known, borne, _, _))| Part {
             per100: &row.2,
             grams: row.3,
             drink: row.4,
@@ -973,9 +1091,28 @@ pub(super) fn recipe_cover_of(
             borne,
         })
         .collect();
-    let cover = recipe_cover(&parts, cooked_g);
-    memo.insert(id, cover.clone());
-    Ok(cover)
+    let (known, borne) = recipe_cover(&parts, cooked_g);
+    let hydrates = super::hydrates_of(
+        rows.iter()
+            .zip(&subs)
+            .map(|(row, sub)| (row.3, row.4, &row.2, sub.2)),
+        cooked_g,
+    );
+    let (mut veg, mut all) = (0.0, 0.0);
+    for (row, sub) in rows.iter().zip(&subs) {
+        veg += sub.3 * row.3;
+        all += row.3;
+    }
+    let facts = RecipeFacts {
+        cover: Cover {
+            known,
+            borne,
+            hydrates,
+        },
+        fruit_veg: if all > 0.0 { veg / all } else { 0.0 },
+    };
+    memo.insert(id, facts.clone());
+    Ok(facts)
 }
 
 pub(super) fn recompute(tx: &Transaction, recipe_id: i64) -> rusqlite::Result<()> {
@@ -1270,7 +1407,7 @@ pub fn recipe_save(
     } else {
         insert_recipe(&tx, input)?
     };
-    write_items(&tx, "recipe_item", "recipe_id", id, &input.items)?;
+    write_items(&tx, id, &input.items)?;
     for item in &input.items {
         if uses(&tx, item.food_id, id)? {
             return Err(Error::invalid("a recipe cannot contain itself"));
@@ -1301,98 +1438,6 @@ pub fn recipe_save(
     Ok(recipe)
 }
 
-// --------------------------------------------------------------- meals
-
-pub(super) const MEAL_ITEMS: &str = concat!(
-    "SELECT i.food_id, i.grams, f.name, f.source, f.per100,
-     i.serving, i.quantity, f.basis_estimated, f.kind, ",
-    labels_of!("i.food_id"),
-    ", f.drink, f.fineli_class, f.category IS 'fruit_veg' FROM meal_item i
-     JOIN food f ON f.id = i.food_id WHERE i.meal_id = ? ORDER BY i.rowid"
-);
-
-pub fn meal_list(conn: &Connection) -> Result<Vec<Meal>, Error> {
-    let ids: Vec<i64> = conn
-        .prepare_cached("SELECT id FROM meal ORDER BY name COLLATE NOCASE")?
-        .query_map([], |r| r.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    ids.into_iter()
-        .map(|id| Ok(written(meal_get(conn, id)?)))
-        .collect()
-}
-
-/// Items' share of fruit, vegetables and legumes by their grams.
-fn share_of(items: &[Item]) -> f64 {
-    let all: f64 = items.iter().map(|i| i.grams).sum();
-    if all > 0.0 {
-        items.iter().map(|i| i.fruit_veg * i.grams).sum::<f64>() / all
-    } else {
-        0.0
-    }
-}
-
-pub fn meal_get(conn: &Connection, id: i64) -> Result<Option<Meal>, Error> {
-    let head: Option<(String, i64)> = conn
-        .query_row("SELECT name, rev FROM meal WHERE id = ?", [id], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })
-        .optional()?;
-    head.map(|(name, rev)| {
-        let items = item_rows(conn, MEAL_ITEMS, id)?;
-        let parts: Vec<_> = items.iter().map(|i| (i.per100.clone(), i.grams)).collect();
-        let cover: Vec<_> = items
-            .iter()
-            .map(|i| Part {
-                per100: &i.per100,
-                grams: i.grams,
-                drink: i.drink,
-                known: &i.known,
-                borne: &i.borne,
-            })
-            .collect();
-        Ok(Meal {
-            id,
-            name,
-            labels: labels(
-                &recipe_per100(&parts, None),
-                &Scoring {
-                    fruit_veg: share_of(&items),
-                    ..Scoring::default()
-                },
-                &recipe_cover(&cover, None).0,
-            ),
-            items,
-            rev,
-        })
-    })
-    .transpose()
-}
-
-pub fn meal_save(conn: &mut Connection, id: Option<i64>, input: &MealInput) -> Result<Meal, Error> {
-    let tx = write(conn)?;
-    let id = if let Some(id) = id {
-        bump_rev(&tx, "meal", "meal", id, input.rev)?;
-        tx.execute(
-            "UPDATE meal SET name = ? WHERE id = ?",
-            params![input.name, id],
-        )?;
-        id
-    } else {
-        if let Some(earlier) = created_before(&tx, "meal", input.uid.as_deref())? {
-            return Ok(written(meal_get(&tx, earlier)?));
-        }
-        tx.execute(
-            "INSERT INTO meal (name, uid) VALUES (?, ?)",
-            params![input.name, input.uid],
-        )?;
-        tx.last_insert_rowid()
-    };
-    write_items(&tx, "meal_item", "meal_id", id, &input.items)?;
-    let meal = written(meal_get(&tx, id)?);
-    tx.commit()?;
-    Ok(meal)
-}
-
 // ---------------------------------------------------------------- copy
 
 /// What a copy doesn't take from its original, by table: its
@@ -1417,8 +1462,6 @@ pub(super) const COPY_RESET: &[(&str, &[&str])] = &[
     ),
     ("serving", &["id", "food_id"]),
     ("recipe_item", &["recipe_id"]),
-    ("meal", &["id", "rev", "uid"]),
-    ("meal_item", &["meal_id"]),
     ("workout", &["id", "rev", "uid", "archived"]),
 ];
 
@@ -1517,31 +1560,6 @@ pub fn food_copy(conn: &mut Connection, id: i64, uid: Option<&str>) -> Result<Fo
     Ok(food)
 }
 
-/// A copy of meal `id` with its items. A `uid` copied before answers with
-/// that copy.
-///
-/// # Errors
-/// 404 meal.
-pub fn meal_copy(conn: &mut Connection, id: i64, uid: Option<&str>) -> Result<Meal, Error> {
-    let tx = write(conn)?;
-    if let Some(earlier) = created_before(&tx, "meal", uid)? {
-        return Ok(written(meal_get(&tx, earlier)?));
-    }
-    meal_get(&tx, id)?.ok_or_else(|| Error::not_found("meal", id))?;
-    let new = copy_row(&tx, "meal", id, uid)?;
-    copy_children(&tx, "meal_item", "meal_id", id, new)?;
-    let meal = written(meal_get(&tx, new)?);
-    tx.commit()?;
-    Ok(meal)
-}
-
-pub fn meal_delete(conn: &Connection, id: i64) -> Result<(), Error> {
-    match conn.execute("DELETE FROM meal WHERE id = ?", [id])? {
-        0 => Err(Error::not_found("meal", id)),
-        _ => Ok(()),
-    }
-}
-
 // --------------------------------------------------------------- merge
 
 /// What uses food `id`; 404 when there's no such food.
@@ -1550,7 +1568,6 @@ pub fn food_usage(conn: &Connection, id: i64) -> Result<Usage, Error> {
     let mut usage = conn.query_row(
         "SELECT (SELECT count(*) FROM entry WHERE food_id = ?1),
              (SELECT count(DISTINCT recipe_id) FROM recipe_item WHERE food_id = ?1),
-             (SELECT count(DISTINCT meal_id) FROM meal_item WHERE food_id = ?1),
              (SELECT count(*) FROM favorite WHERE food_id = ?1),
              (SELECT count(*) FROM daily_item WHERE food_id = ?1),
              (SELECT count(*) FROM profile WHERE water_food_id = ?1)",
@@ -1559,16 +1576,15 @@ pub fn food_usage(conn: &Connection, id: i64) -> Result<Usage, Error> {
             Ok(Usage {
                 entries: r.get(0)?,
                 recipes: r.get(1)?,
-                meals: r.get(2)?,
-                favorites: r.get(3)?,
-                daily_items: r.get(4)?,
-                water: r.get(5)?,
+                favorites: r.get(2)?,
+                daily_items: r.get(3)?,
+                water: r.get(4)?,
                 deletable: false,
             })
         },
     )?;
     usage.deletable = food.source != Source::Fineli
-        && usage.entries + usage.recipes + usage.meals + usage.daily_items + usage.water == 0;
+        && usage.entries + usage.recipes + usage.daily_items + usage.water == 0;
     Ok(usage)
 }
 
@@ -1608,8 +1624,8 @@ pub fn food_delete(conn: &mut Connection, id: i64) -> Result<(), Error> {
 /// (a profile's water food and daily items too), then B is deleted. Diary
 /// entries and recipes using B take A's values. B's barcode moves to A when A
 /// has none, and B's servings A lacks (by label) are added after A's. A
-/// recipe or meal that now holds A twice holds it once, the grams summed.
-/// Recipes and meals that changed move on a `rev`.
+/// recipe that now holds A twice holds it once, the grams summed. Recipes
+/// that changed move on a `rev`.
 ///
 /// # Errors
 /// - 404 A, or 409 `stale` (`rev` is A's);
@@ -1642,39 +1658,29 @@ pub fn food_merge(conn: &mut Connection, id: i64, input: &MergeInput) -> Result<
     for sql in [
         "UPDATE food SET rev = rev + 1
              WHERE id IN (SELECT recipe_id FROM recipe_item WHERE food_id = ?2)",
-        "UPDATE meal SET rev = rev + 1
-             WHERE id IN (SELECT meal_id FROM meal_item WHERE food_id = ?2)",
         "UPDATE entry SET food_id = ?1 WHERE food_id = ?2",
         "INSERT OR IGNORE INTO favorite (profile_id, food_id)
              SELECT profile_id, ?1 FROM favorite WHERE food_id = ?2",
+        "INSERT OR IGNORE INTO suggestion_hidden (profile_id, food_id, until)
+             SELECT profile_id, ?1, until FROM suggestion_hidden WHERE food_id = ?2",
         "UPDATE recipe_item SET food_id = ?1 WHERE food_id = ?2",
-        "UPDATE meal_item SET food_id = ?1 WHERE food_id = ?2",
         "UPDATE profile SET water_food_id = ?1 WHERE water_food_id = ?2",
         "UPDATE daily_item SET food_id = ?1 WHERE food_id = ?2",
     ] {
         tx.prepare_cached(sql)?.execute(params![id, from.id])?;
     }
-    // A recipe or meal holding A twice: the first row gets the grams of all,
+    // A recipe holding A twice: the first row gets the grams of all,
     // measured in grams.
     for sql in [
         "UPDATE recipe_item SET serving = NULL, quantity = NULL
              WHERE food_id = ?1 AND (SELECT count(*) FROM recipe_item t
                  WHERE t.recipe_id = recipe_item.recipe_id AND t.food_id = ?1) > 1",
-        "UPDATE meal_item SET serving = NULL, quantity = NULL
-             WHERE food_id = ?1 AND (SELECT count(*) FROM meal_item t
-                 WHERE t.meal_id = meal_item.meal_id AND t.food_id = ?1) > 1",
         "UPDATE recipe_item SET grams = (SELECT sum(grams) FROM recipe_item t
                  WHERE t.recipe_id = recipe_item.recipe_id AND t.food_id = ?1)
              WHERE food_id = ?1 AND rowid = (SELECT min(rowid) FROM recipe_item t
                  WHERE t.recipe_id = recipe_item.recipe_id AND t.food_id = ?1)",
         "DELETE FROM recipe_item WHERE food_id = ?1 AND rowid != (SELECT min(rowid)
              FROM recipe_item t WHERE t.recipe_id = recipe_item.recipe_id AND t.food_id = ?1)",
-        "UPDATE meal_item SET grams = (SELECT sum(grams) FROM meal_item t
-                 WHERE t.meal_id = meal_item.meal_id AND t.food_id = ?1)
-             WHERE food_id = ?1 AND rowid = (SELECT min(rowid) FROM meal_item t
-                 WHERE t.meal_id = meal_item.meal_id AND t.food_id = ?1)",
-        "DELETE FROM meal_item WHERE food_id = ?1 AND rowid != (SELECT min(rowid)
-             FROM meal_item t WHERE t.meal_id = meal_item.meal_id AND t.food_id = ?1)",
     ] {
         tx.prepare_cached(sql)?.execute([id])?;
     }
@@ -1756,7 +1762,7 @@ fn take_barcode_and_servings(tx: &Transaction, into: &Food, from: &Food) -> rusq
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::ItemInput;
+    use crate::model::{Borne, ItemInput};
 
     fn grams_of(food: &Food, label: &str) -> Option<f64> {
         food.servings
@@ -1875,8 +1881,6 @@ mod tests {
         ),
         ("serving", &["label", "grams"]),
         ("recipe_item", &["food_id", "grams", "serving", "quantity"]),
-        ("meal", &["name"]),
-        ("meal_item", &["food_id", "grams", "serving", "quantity"]),
         ("workout", &["name", "steps", "minutes", "kcal", "notes"]),
     ];
 

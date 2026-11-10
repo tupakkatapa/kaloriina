@@ -69,6 +69,12 @@ async function mock(
     days: inRange(steps, url),
     sessions: [],
   }));
+  // Records: no exercise's or type's bests; the days' are the profile's.
+  await mockJson(page, "**/api/profiles/*/records", (real) => ({
+    ...real,
+    exercises: [],
+    types: {},
+  }));
   await mockJson(page, "**/api/profiles/*/activities?*", (real, url) =>
     inRange(sessions, url),
   );
@@ -465,21 +471,22 @@ test("Highlights show real patterns and nothing else", async ({
   request,
 }, testInfo) => {
   await mock(page, { ...FOOD, sessions: TRAINING.sessions });
-  // Food, September: the strongest three, first on the subtab; Energy's
-  // own change is its tile, not a Highlight.
+  // Food, September: a win first, then the strongest two, first on the
+  // subtab; Energy's own change is its tile, not a Highlight.
   await page.goto("/#/summary/food/month/2025-09-15");
   await expect(highlights(page)).toHaveText([
+    "Energy on target",
     "Steps → energy eaten",
     "Energy highest Sat",
-    "Protein up 20 %",
   ]);
   await expect(numbers(page)).toHaveText(
     [
+      "30 of 30 food days · Sep 1 – 30",
       "On 10,000+ step days you ate ~514 kcal more (7 vs 23 days) · Sep 1 – 30",
       "2,900 kcal vs 2,120 kcal average · Sep 1 – 30",
-      "120 g vs 100 g a day · Sep 1 – 30 vs the month before",
     ].map((x) => words(x)),
   );
+  await expect(cards(page).first()).toHaveClass("tone-win");
   const first = await page
     .locator("section.summary > :not(nav, header)")
     .first()
@@ -491,10 +498,13 @@ test("Highlights show real patterns and nothing else", async ({
     .getByRole("radio", { name: "Protein" })
     .click();
   await expect(highlights(page)).toHaveText([
+    "Energy on target",
     "Steps → energy eaten",
     "Energy highest Sat",
-    "Energy up 18 %",
   ]);
+  await expect(
+    page.locator("section.highlight-stack .more .headline"),
+  ).toContainText(["Energy up 18 %"]);
   await expect(
     page.getByRole("list", { name: "Protein" }).locator(".tile").last(),
   ).toHaveText(words("+20 % vs the month before"));
@@ -502,7 +512,10 @@ test("Highlights show real patterns and nothing else", async ({
   // A week has too few Saturdays to name one (Protein is still picked, so
   // its change is the tile and Energy's the Highlight).
   await page.goto("/#/summary/food/week/2025-09-01");
-  await expect(highlights(page)).toHaveText([words("Energy up 18 %")]);
+  await expect(highlights(page)).toHaveText([
+    "Energy on target",
+    words("Energy up 18 %"),
+  ]);
   await expect(page.locator("ul.highlights")).not.toContainText("run highest");
 
   // October: 5 days logged is no month to compare.
@@ -526,30 +539,31 @@ test("Highlights show real patterns and nothing else", async ({
   ).toBeVisible();
   await expect(page.locator("ul.highlights")).toHaveCount(0);
 
-  // Activity, August against July.
+  // Activity, August against July: the count's and the time's changes are
+  // their tiles'.
   await page.goto("/#/summary/activity/month/2025-08-15");
-  await expect(highlights(page)).toHaveText([
-    "Long gap without activity",
-    "More activities",
-  ]);
+  await expect(highlights(page)).toHaveText(["Long gap without activity"]);
   await expect(numbers(page)).toHaveText([
     words("9 days in a row · Aug 6 – 14"),
-    words("2 more activities than the month before · Aug 1 – 31"),
   ]);
+  await expect(
+    page.getByRole("list", { name: "Activities" }).locator(".tile-vs"),
+  ).toHaveText(["+2 vs the month before", words("+40 % vs the month before")]);
 
-  // Habits: alcohol's weekdays and its change, before "N days logged".
+  // Habits: alcohol's weekdays before "N days logged"; Alcohol, the one
+  // habit, is picked, so its change is its tile's.
   await page.unroute("**/api/profiles/*/summary?*");
   await mock(page, HABITS);
   await page.goto("/#/summary/habits/month/2025-09-15");
-  await expect(highlights(page)).toHaveText([
-    "Alcohol mostly Fri, Sat",
-    "Alcohol down 17 %",
-  ]);
+  await expect(highlights(page)).toHaveText(["Alcohol mostly Fri, Sat"]);
   expect(
     await page
       .locator("section.highlight-stack")
       .evaluate((n) => n.closest(".insights").nextElementSibling.textContent),
   ).toBe("30 days with a habit logged");
+  await expect(
+    page.getByRole("list", { name: "Alcohol" }).locator(".tile-vs"),
+  ).toHaveText([words("−17 % vs the month before")]);
 
   // Body: the BMI fact alone (165 cm, 79.5 kg); the goal is a tile, without
   // a projection in a past month.
@@ -594,7 +608,8 @@ test("the period and the period before come from one union read each", async ({
   const sep = "from=2025-09-01&to=2025-09-30";
   const aug = "from=2025-08-01&to=2025-08-31";
   // Each shared source once, over the period and the 90 days correlations
-  // read (web/series.mjs): August is inside it, so it's sliced, not asked.
+  // read (web/series.mjs), for every subtab: August is inside it, so it's
+  // sliced, not asked.
   const union = "from=2025-07-03&to=2025-09-30";
   for (const [tab, wanted, never] of [
     [
@@ -609,7 +624,6 @@ test("the period and the period before come from one union read each", async ({
     ],
     ["habits", [`/habits/days?${sep}`, `/habits/days?${aug}`], []],
   ]) {
-    asked.length = 0;
     await page.goto(`/#/summary/${tab}/month/2025-09-15`);
     await expect(shown(page, tab)).toHaveAttribute("aria-current", "page");
     await page.waitForLoadState("networkidle");
@@ -620,6 +634,130 @@ test("the period and the period before come from one union read each", async ({
       tab,
     ).toHaveLength(1);
   }
+});
+
+// ---------------------------------------------------- acting on it
+
+// Health Connect days of August and September 2025: September's steps,
+// nights and resting heart rate moved; its HRV barely.
+const MOVED = {
+  steps: daysOf("2025-08-01", "2025-09-30").map((day) => {
+    const sep = day >= "2025-09-01";
+    return {
+      day,
+      steps: sep ? 8000 : 6000,
+      resting_hr: sep ? 55 : 60,
+      hrv_ms: sep ? 50 : 48,
+      asleep_min: sep ? 450 : 420,
+      total_asleep_min: sep ? 450 : 420,
+      in_bed_min: 500,
+      bedtime: "23:30",
+      wake_time: "07:00",
+    };
+  }),
+};
+
+test("tiles say their change from the period before, past the Highlights' gate", async ({
+  page,
+}) => {
+  await mock(page, MOVED);
+  await page.goto("/#/summary/body/month/2025-09-15");
+  const vs = (name) =>
+    page.getByRole("list", { name, exact: true }).locator(".tile-vs");
+  await expect(vs("Sleep")).toHaveText([words("+30 min vs the month before")]);
+  // RHR moved 5 bpm (the bar 3), HRV 4 % (the bar 10 %).
+  await expect(vs("Heart")).toHaveText([words("−5 bpm vs the month before")]);
+  await page.goto("/#/summary/activity/month/2025-09-15");
+  await expect(vs("Daily movement")).toHaveText([
+    words("+33 % vs the month before"),
+  ]);
+  // September's first week compares; not while it runs.
+  await page.goto("/#/summary/body/week/2025-09-01");
+  await expect(vs("Sleep")).toHaveText([words("+30 min vs the week before")]);
+  await page.clock.setFixedTime(new Date("2025-09-04T12:00:00"));
+  await page.reload();
+  await expect(page.getByRole("list", { name: "Sleep" })).toBeVisible();
+  await expect(vs("Sleep")).toHaveCount(0);
+});
+
+test("wins: a logging streak, a new best, and one always among those shown", async ({
+  page,
+}) => {
+  await mock(page, FOOD);
+  // September 15: every day logged since August 1.
+  await page.clock.setFixedTime(new Date("2025-09-15T12:00:00"));
+  await page.goto("/#/summary/food/month/2025-09-15");
+  const streak = cards(page).filter({ hasText: "Logging streak" });
+  await expect(streak.locator(".numbers")).toHaveText(
+    words("≥ 45 days in a row · to Sep 14"),
+  );
+  await expect(streak).toHaveClass("tone-win");
+  // A best set this month, as Records counts it.
+  await mockJson(page, "**/api/profiles/*/records", (real) => ({
+    ...real,
+    exercises: [
+      {
+        exercise_id: 1,
+        name: "Bench press",
+        reps: null,
+        seconds: null,
+        kg: {
+          set: { reps: 5, kg: 80 },
+          day: "2025-09-12",
+          activity_id: 1,
+        },
+      },
+      {
+        exercise_id: 2,
+        name: "Squat",
+        reps: null,
+        seconds: null,
+        kg: { set: { reps: 5, kg: 100 }, day: "2025-08-12", activity_id: 2 },
+      },
+    ],
+    types: {},
+  }));
+  await page.goto("/#/summary/activity/month/2025-09-15");
+  const best = cards(page).filter({ hasText: "New best" });
+  await expect(best.locator(".headline")).toHaveText("New best: Bench press");
+  await best.locator("summary").click();
+  await expect(best.getByRole("link", { name: "See records" })).toHaveAttribute(
+    "href",
+    "#/records",
+  );
+});
+
+// A day's energy by rating: September half healthy, August 44 %.
+const rated = (day) =>
+  day >= "2025-09-01"
+    ? { healthy: 1000, ok: 500, unhealthy: 300, unrated: 200 }
+    : { healthy: 792, ok: 500, unhealthy: 400, unrated: 108 };
+
+test("Food's quality: energy by rating, its change past the gate", async ({
+  page,
+}) => {
+  await mock(page, {
+    ...FOOD,
+    days: FOOD.days.map((d) => ({ ...d, ratings: rated(d.day) })),
+  });
+  await page.goto("/#/summary/food/month/2025-09-15");
+  const quality = page.locator(".food-quality");
+  await expect(quality.getByRole("img")).toHaveAttribute(
+    "aria-label",
+    words(
+      "Energy by rating: Healthy 50 %, OK 25 %, Unhealthy 15 %, Not rated 10 %",
+    ),
+  );
+  await expect(quality.locator(".note")).toHaveText(
+    words(
+      "Healthy 50 % · OK 25 % · Unhealthy 15 % · Not rated 10 % · Healthy +6 points vs the month before",
+    ),
+  );
+  // A week with 3 food days before it compares nothing.
+  await page.goto("/#/summary/food/week/2025-08-04");
+  await expect(quality.locator(".note")).toHaveText(
+    words("Healthy 44 % · OK 28 % · Unhealthy 22 % · Not rated 6 %"),
+  );
 });
 
 // --------------------------------------------------------------- sleep
@@ -868,7 +1006,7 @@ test("a correlation over the 90 days joins Body's Highlights; one a contrast say
 const alcohol = (i) => ((i * 3) % 5) * 10;
 const stepsOn = (i) => 4000 + ((i * 5) % 13) * 500;
 
-// Owner (2026-10-14): "Alcohol → HRV" and "Possible pattern: Higher alcohol
+// "Alcohol → HRV" and "Possible pattern: Higher alcohol
 // tends to go with lower HRV the night after" were one finding twice; the
 // discovery tier keeps to what no card says.
 test("a pattern a pre-registered card already states is not discovered again", async ({

@@ -98,17 +98,6 @@ async fn every_food_view_and_hit_carries_its_labels() {
     let (_, recipe) = call(&app, "GET", &format!("/api/recipes/{}", recipe["id"]), None).await;
     // 30 g fat, the rest of its negatives unknown: no score yet (ADR 0033).
     assert_eq!(label_keys(&recipe), ["high_fat"]);
-    // A meal, from its items' values, as a food.
-    let (status, meal) = call(
-        &app,
-        "POST",
-        "/api/meals",
-        Some(json!({ "name": "Chicken lunch",
-                     "items": [{ "food_id": chicken, "grams": 150.0 }] })),
-    )
-    .await;
-    assert!(status.is_success(), "{meal}");
-    assert_eq!(label_keys(&meal), ["high_fat"]);
     let (_, hits) = search(&app, "label=high_fat").await;
     let names: Vec<&str> = hits
         .as_array()
@@ -441,7 +430,7 @@ async fn an_imported_recipe_is_labelled() {
     assert!(keys.contains(&"high_fat".to_owned()), "{hits}");
 }
 
-/// The why of a food, recipe or meal: its reasons' texts, against then for.
+/// The why of a food or recipe: its reasons' texts, against then for.
 fn why(food: &Value) -> Vec<&str> {
     food["labels"]["why"]
         .as_array()
@@ -453,7 +442,7 @@ fn why(food: &Value) -> Vec<&str> {
 
 /// The owner's fermented pickles (ADR 0033): 3 g of salt, but vegetables,
 /// so OK, not Unhealthy; still "High salt". The verdict follows the food's
-/// category, and its recipes and meals follow it by the share of their
+/// category, and its recipes follow it by the share of their
 /// grams that is fruit & veg, through a recipe inside a recipe too.
 #[tokio::test]
 async fn pickles_score_ok_for_their_vegetables() {
@@ -509,17 +498,7 @@ async fn pickles_score_ok_for_their_vegetables() {
     assert_eq!(jar["labels"]["verdict"], "ok", "{jar}");
     let platter = recipe("Pickle platter", jar["id"].as_i64().unwrap()).await;
     assert_eq!(platter["labels"]["verdict"], "ok", "{platter}");
-    let (status, meal) = call(
-        &app,
-        "POST",
-        "/api/meals",
-        Some(json!({ "name": "Pickle snack",
-                     "items": [{ "food_id": id, "grams": 50.0 }] })),
-    )
-    .await;
-    assert!(status.is_success(), "{meal}");
-    assert_eq!(meal["labels"]["verdict"], "ok", "{meal}");
-    assert_eq!(why(&meal), ["salt", "fruit & veg"]);
+    assert_eq!(why(&jar), ["salt", "fruit & veg"]);
 
     // Out of Fruit and vegetables, salt decides: so do its recipes.
     let (status, f) = put_with_rev(

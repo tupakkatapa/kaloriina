@@ -59,6 +59,7 @@ test("app files are immutable under /v/", async ({ page, request }) => {
 // Diary costs the page's revalidation and the reads the screen makes.
 const DIARY_READS = [
   "/",
+  "/api/backups",
   "/api/meta",
   "/api/profiles",
   "/api/profiles/:id/day/:day",

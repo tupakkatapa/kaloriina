@@ -1,6 +1,6 @@
 //! Profiles, their body measurements and targets.
 
-use super::metric::{CLOCK_WINDOW_MIN, DAY_MIN, ESSENTIAL_FAT, is_clock};
+use super::metric::{CLOCK_WINDOW_MINUTES, DAY_MINUTES, ESSENTIAL_FAT, is_clock};
 use super::prelude::*;
 use super::{Gone, METRICS, Per, find_metric, refuse_gone, target_key};
 
@@ -250,7 +250,7 @@ pub struct Target {
 impl Target {
     /// A target of `value` for `metric`, bounded by its direction; a
     /// point to reach (goal weight) has no bounds; a clock time is kept
-    /// within [`CLOCK_WINDOW_MIN`] either way, mod 1440 (past midnight
+    /// within [`CLOCK_WINDOW_MINUTES`] either way, mod 1440 (past midnight
     /// `min > max`).
     ///
     /// # Panics
@@ -262,8 +262,11 @@ impl Target {
         let (min, max) = if find_metric(metric).is_some_and(|m| m.per == Per::Once) {
             (None, None)
         } else if is_clock(metric) {
-            let at = |m: f64| Some(m.rem_euclid(DAY_MIN));
-            (at(value - CLOCK_WINDOW_MIN), at(value + CLOCK_WINDOW_MIN))
+            let at = |m: f64| Some(m.rem_euclid(DAY_MINUTES));
+            (
+                at(value - CLOCK_WINDOW_MINUTES),
+                at(value + CLOCK_WINDOW_MINUTES),
+            )
         } else {
             goal.bounds(value)
         };
@@ -401,7 +404,7 @@ impl TargetsInput {
             let ok = if ranged {
                 (lo..=hi).contains(&t.value)
             } else {
-                t.value >= 0.0 && (!is_clock(key) || t.value < DAY_MIN)
+                t.value >= 0.0 && (!is_clock(key) || t.value < DAY_MINUTES)
             };
             if !(t.value.is_finite() && ok) {
                 return Err(invalid(key, format!("{label}: target must be {lo}–{hi}")));
@@ -409,5 +412,32 @@ impl TargetsInput {
             list.push(Target::single(key, t.value));
         }
         Ok(list)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn goal_date_must_be_after_today() {
+        let with_goal = |goal: &str| ProfileInput {
+            name: "Me".into(),
+            body: Body {
+                goal_date: Some(goal.into()),
+                ..Body::default()
+            },
+            ..ProfileInput::default()
+        };
+        assert!(with_goal("2027-01-01").checked("2026-12-31", None).is_ok());
+        for goal in ["2026-12-31", "2026-12-30"] {
+            let err = with_goal(goal).checked("2026-12-31", None).unwrap_err();
+            assert_eq!(err.to_string(), "goal date must be after today", "{goal}");
+        }
+        assert!(
+            with_goal("2026-12-30")
+                .checked("2026-12-31", Some("2026-12-30"))
+                .is_ok()
+        );
     }
 }

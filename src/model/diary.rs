@@ -1,7 +1,7 @@
 //! Diary entries, groups, the weight log and imported totals.
 
 use super::prelude::*;
-use super::{Food, Source};
+use super::{Food, Source, day_minute};
 
 /// Food not eaten yet.
 pub const PLANNED: &str = "Planned";
@@ -157,6 +157,9 @@ pub struct DayView {
     pub eaten: Nutrients,
     /// How far `eaten` is known ([`super::Known`]; ADR 0030).
     pub known: super::Known,
+    /// Its food isn't the whole day's: an eaten text entry without energy.
+    /// Left out of what reads a day's food as all it ate.
+    pub incomplete: bool,
     pub targets: Vec<super::Target>,
     pub activities: Vec<super::Activity>,
     /// Workouts planned that day, not done yet.
@@ -195,6 +198,16 @@ pub struct DayView {
     pub pending_activities: Vec<super::PendingActivity>,
     /// The food "+ Water" logs, if any: its entries read as ml or L.
     pub water_food_id: Option<i64>,
+}
+
+/// A day's eaten energy (kcal) by its food's or recipe's verdict; one-off
+/// items, imported history and foods without one are `unrated`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct Ratings {
+    pub healthy: f64,
+    pub ok: f64,
+    pub unhealthy: f64,
+    pub unrated: f64,
 }
 
 /// Body fat, water and muscle in %, each `null` when the scale gave none.
@@ -273,6 +286,12 @@ pub struct Measured {
 }
 
 impl Amount {
+    /// Whether any of it is given.
+    #[must_use]
+    pub fn given(&self) -> bool {
+        self.grams.is_some() || self.serving.is_some() || self.quantity.is_some()
+    }
+
     /// The grams this amount is of `food`: grams as given, or quantity ×
     /// the named serving.
     ///
@@ -319,9 +338,9 @@ impl Amount {
     }
 }
 
-/// What a log writes: a food (an amount of it), a meal (all its items),
-/// copies of earlier entries, or a series' tick. Exactly one of
-/// `food_id`, `meal_id`, `entry_ids` and `repeat_of`.
+/// What a log writes: a food (an amount of it), copies of earlier
+/// entries, a series' tick, or a text entry. Exactly one of `food_id`,
+/// `entry_ids` and `repeat_of`, or else `name`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct EntryInput {
     pub day: String,
@@ -330,12 +349,6 @@ pub struct EntryInput {
     pub food_id: Option<i64>,
     #[serde(flatten)]
     pub amount: Amount,
-    /// A meal instead of a food, logged as one entry per item, times
-    /// `portions` (1 by default).
-    #[serde(default)]
-    pub meal_id: Option<i64>,
-    #[serde(default)]
-    pub portions: Option<f64>,
     /// Entries of the profile to copy (their snapshots, not their time).
     #[serde(default)]
     pub entry_ids: Option<Vec<i64>>,
@@ -344,6 +357,25 @@ pub struct EntryInput {
     /// (the due day's key) unless given, so two devices log it once.
     #[serde(default)]
     pub repeat_of: Option<i64>,
+    /// A text entry: what was eaten, in words, with no food behind it.
+    /// Ignored, as `energy` is, when it logs anything else.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// A text entry's kcal, an estimate; left out, not known.
+    #[serde(default)]
+    pub energy: Option<f64>,
+    /// A text entry's grams of protein, carbs and fat; each left out, not
+    /// known.
+    #[serde(default)]
+    pub protein: Option<f64>,
+    #[serde(default)]
+    pub carbs: Option<f64>,
+    #[serde(default)]
+    pub fat: Option<f64>,
+    /// Quick adds' values, before text entries: refused by name on a text
+    /// entry, ignored on anything else.
+    #[serde(default)]
+    pub nutrients: Gone,
     /// A food's log only: repeat it daily from `start` (its day when left
     /// out), as an entry's patch does, in the same write.
     #[serde(default)]
@@ -351,6 +383,11 @@ pub struct EntryInput {
     /// Before `repeat_of`; refused by name.
     #[serde(default)]
     pub daily_item_id: Gone,
+    /// Before meals were recipes; refused by name.
+    #[serde(default)]
+    pub meal_id: Gone,
+    #[serde(default)]
+    pub portions: Gone,
     /// When it was eaten, "HH:MM"; given to every entry the log writes.
     #[serde(default)]
     pub time: Option<String>,
@@ -378,21 +415,37 @@ pub enum Logs {
         amount: Amount,
         repeat: Option<RepeatInput>,
     },
-    Meal {
-        meal_id: i64,
-        portions: f64,
-    },
     Copy {
         entry_ids: Vec<i64>,
     },
     Daily {
         item: i64,
     },
+    Text {
+        name: String,
+        nutrients: Option<Nutrients>,
+    },
 }
 
-/// A logged entry changed: moved, re-measured or timed.
+/// A logged entry changed: moved, re-measured or timed; a text entry
+/// renamed, its kcal changed, or matched to its food (`food_id` with an
+/// amount: "Find the food").
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct EntryPatch {
+    #[serde(default)]
+    pub food_id: Option<i64>,
+    #[serde(default)]
+    pub name: Option<String>,
+    /// `null` clears a text entry's kcal; left out keeps it.
+    #[serde(default)]
+    pub energy: Nullable<f64>,
+    /// A text entry's grams, as `energy`.
+    #[serde(default)]
+    pub protein: Nullable<f64>,
+    #[serde(default)]
+    pub carbs: Nullable<f64>,
+    #[serde(default)]
+    pub fat: Nullable<f64>,
     #[serde(default)]
     pub group: Option<String>,
     #[serde(flatten)]
@@ -469,6 +522,40 @@ pub fn refuse_gone(keys: &[(Gone, &str, &str)]) -> Result<(), Error> {
     }
 }
 
+/// A text entry's kcal: 0 to [`ENTRY_ENERGY_MAX`].
+///
+/// # Errors
+/// Anything else; blamed on `energy`.
+pub fn checked_energy(kcal: f64) -> Result<f64, Error> {
+    if kcal.is_finite() && (0.0..=ENTRY_ENERGY_MAX).contains(&kcal) {
+        Ok(kcal)
+    } else {
+        Err(Error::invalid_field(
+            "energy",
+            format!("energy must be 0–{ENTRY_ENERGY_MAX} kcal"),
+        ))
+    }
+}
+
+/// A text entry's kcal ([`checked_energy`]), or its grams of protein,
+/// carbs or fat: 0 to [`ENTRY_MACRO_MAX`]. Blamed on `key`.
+///
+/// # Errors
+/// Anything else.
+pub fn checked_text_value(key: &str, v: f64) -> Result<f64, Error> {
+    if key == "energy" {
+        return checked_energy(v);
+    }
+    if v.is_finite() && (0.0..=ENTRY_MACRO_MAX).contains(&v) {
+        Ok(v)
+    } else {
+        Err(Error::invalid_field(
+            key,
+            format!("{key} must be 0–{ENTRY_MACRO_MAX} g"),
+        ))
+    }
+}
+
 /// New entries go to one of [`GROUPS`]; other group names exist only in
 /// imported history.
 ///
@@ -484,7 +571,7 @@ pub fn checked_group(s: &str) -> Result<&'static str, Error> {
 }
 
 /// A client-made id: [`UID_MIN`]–[`UID_MAX`] letters, digits or `-` (`:` is the
-/// server's, for meal items).
+/// server's, for the items of a write logging several).
 ///
 /// # Errors
 /// Anything else.
@@ -514,13 +601,7 @@ pub fn checked_opt_uid(uid: Option<&str>) -> Result<(), Error> {
 /// # Errors
 /// Anything else; blamed on `time`.
 pub fn checked_time(t: &str) -> Result<&str, Error> {
-    let b = t.as_bytes();
-    let ok = b.len() == 5
-        && b[2] == b':'
-        && [0, 1, 3, 4].iter().all(|&i| b[i].is_ascii_digit())
-        && &t[..2] <= "23"
-        && b[3] <= b'5';
-    if ok {
+    if day_minute(t).is_some() {
         Ok(t)
     } else {
         Err(Error::invalid_field(
@@ -534,10 +615,15 @@ impl EntryInput {
     /// What it logs, and where.
     ///
     /// # Errors
-    /// A bad day, group, uid, time, portions, ids or repeat, or not exactly
-    /// one of a food, a meal and entries to copy.
+    /// A bad day, group, uid, time, ids or repeat; not exactly one of a
+    /// food, entries to copy and a series, nor a name; a text entry's bad
+    /// name or energy, an amount or `nutrients`.
     pub fn checked(self) -> Result<EntryLog, Error> {
-        refuse_gone(&[(self.daily_item_id, "daily_item_id", "use repeat_of")])?;
+        refuse_gone(&[
+            (self.daily_item_id, "daily_item_id", "use repeat_of"),
+            (self.meal_id, "meal_id", "meals are recipes now"),
+            (self.portions, "portions", "meals are recipes now"),
+        ])?;
         if !is_date(&self.day) {
             return Err(Error::invalid_field(
                 "day",
@@ -563,23 +649,13 @@ impl EntryInput {
             }
             _ => {}
         }
-        let what = match (self.food_id, self.meal_id, self.entry_ids, self.repeat_of) {
-            (Some(food_id), None, None, None) => Logs::Food {
+        let what = match (self.food_id, self.entry_ids, self.repeat_of, self.name) {
+            (Some(food_id), None, None, _) => Logs::Food {
                 food_id,
                 amount: self.amount,
                 repeat: self.repeat,
             },
-            (None, Some(meal_id), None, None) => {
-                let portions = self.portions.unwrap_or(1.0);
-                if !(portions.is_finite() && portions > 0.0 && portions <= PORTIONS_MAX) {
-                    return Err(Error::invalid_field(
-                        "portions",
-                        format!("portions must be more than 0 and at most {PORTIONS_MAX}"),
-                    ));
-                }
-                Logs::Meal { meal_id, portions }
-            }
-            (None, None, Some(entry_ids), None) => {
+            (None, Some(entry_ids), None, _) => {
                 if !(1..=ITEMS_MAX).contains(&entry_ids.len()) {
                     return Err(Error::invalid_field(
                         "entry_ids",
@@ -588,10 +664,35 @@ impl EntryInput {
                 }
                 Logs::Copy { entry_ids }
             }
-            (None, None, None, Some(item)) => Logs::Daily { item },
+            (None, None, Some(item), _) => Logs::Daily { item },
+            (None, None, None, Some(name)) => {
+                refuse_gone(&[(
+                    self.nutrients,
+                    "nutrients",
+                    "a text entry takes its kcal as energy",
+                )])?;
+                if self.amount.given() {
+                    return Err(bad("a text entry has no amount: give its energy"));
+                }
+                let mut nutrients = Nutrients::default();
+                for (key, v) in [
+                    ("energy", self.energy),
+                    ("protein", self.protein),
+                    ("carbs", self.carbs),
+                    ("fat", self.fat),
+                ] {
+                    if let Some(v) = v {
+                        nutrients.insert(key, checked_text_value(key, v)?);
+                    }
+                }
+                Logs::Text {
+                    name: text(&name, "name", NAME_MAX)?,
+                    nutrients: (!nutrients.is_empty()).then_some(nutrients),
+                }
+            }
             _ => {
                 return Err(bad(
-                    "give exactly one of food_id, meal_id, entry_ids or repeat_of",
+                    "give exactly one of food_id, entry_ids, repeat_of or name",
                 ));
             }
         };
@@ -609,9 +710,48 @@ impl EntryPatch {
     /// Whether it gives a new amount.
     #[must_use]
     pub fn re_measures(&self) -> bool {
-        self.amount.grams.is_some()
-            || self.amount.serving.is_some()
-            || self.amount.quantity.is_some()
+        self.amount.given()
+    }
+
+    /// A text entry's values it sets or clears, by key.
+    #[must_use]
+    pub fn text_values(&self) -> [(&'static str, &Nullable<f64>); 4] {
+        [
+            ("energy", &self.energy),
+            ("protein", &self.protein),
+            ("carbs", &self.carbs),
+            ("fat", &self.fat),
+        ]
+    }
+
+    /// Whether it changes a text entry's own: its name or values.
+    #[must_use]
+    pub fn retexts(&self) -> bool {
+        self.name.is_some()
+            || self
+                .text_values()
+                .iter()
+                .any(|(_, v)| **v != Nullable::Keep)
+    }
+
+    /// A text entry's patch, checked: its name and kcal, and not those
+    /// with a food.
+    ///
+    /// # Errors
+    /// A bad name or energy; a food with a name or energy.
+    pub fn retexted(mut self) -> Result<Self, Error> {
+        if self.food_id.is_some() && self.retexts() {
+            return Err(bad("give a food, or a text entry's name and energy"));
+        }
+        if let Some(n) = &self.name {
+            self.name = Some(text(n, "name", NAME_MAX)?);
+        }
+        for (key, v) in self.text_values() {
+            if let Nullable::Set(v) = v {
+                checked_text_value(key, *v)?;
+            }
+        }
+        Ok(self)
     }
 
     /// # Errors

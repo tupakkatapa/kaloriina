@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::model::{FoodCategory, FoodInput, GRAMS_MAX, LABEL_MAX, NAME_MAX, Serving, sneaky};
+use crate::model::{FoodCategory, FoodInput, GRAMS_MAX, LABEL_MAX, NAME_MAX, Serving, label};
 use crate::nutrients::{IU_PER_UG, KJ_PER_KCAL, Nutrients, SALT_PER_SODIUM};
 
 /// Open Food Facts `nutriments` field, the factor converting its
@@ -54,23 +54,10 @@ const OFF_FIELDS: [(&str, f64, &str); 38] = [
 /// Ethanol's density, g/ml: % vol to g per 100 ml.
 const ETHANOL_G_PER_ML: f64 = 0.789;
 
-/// Trimmed, non-empty string field without control or bidi characters,
-/// cut to `max` characters so it passes the API's validation.
+/// String field `key` as a label ([`label`]), so it passes the API's
+/// validation.
 fn truncated_text(v: &Value, key: &str, max: usize) -> Option<String> {
-    let s: String = v
-        .get(key)?
-        .as_str()?
-        .chars()
-        .filter(|&c| !sneaky(c))
-        .collect();
-    let s = s.trim();
-    (!s.is_empty()).then(|| {
-        s.chars()
-            .take(max)
-            .collect::<String>()
-            .trim_end()
-            .to_owned()
-    })
+    label(v.get(key)?.as_str()?, max)
 }
 
 /// OFF reports numbers as JSON numbers or numeric strings, some with a

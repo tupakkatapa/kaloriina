@@ -9,6 +9,7 @@ import test from "node:test";
 import { shift } from "../web/dates.mjs";
 import { tileThrough } from "../web/dates.mjs";
 import {
+  activitiesVersus,
   changeADay,
   compare,
   contrast,
@@ -20,6 +21,8 @@ import {
   rank,
   RULES,
   sleepSeries,
+  versusBefore,
+  withWin,
 } from "../web/insights.mjs";
 
 const FAR = "2099-01-01";
@@ -59,6 +62,11 @@ const plain = (t) => t.replaceAll(/[\u00A0\u2009\u202F]/gu, " ");
 const line = (r) => plain(`${r.headline}: ${r.numbers}`);
 const texts = (tab, ctx, opts) =>
   highlights(tab, ctx, opts).map((x) => line(x));
+// The same, wins left out (a month mostly on target is one).
+const facts = (tab, ctx) =>
+  highlights(tab, ctx)
+    .filter((x) => x.tone !== "win")
+    .map((x) => line(x));
 // Activity's weekday claims alone.
 const weekdays = (ctx) =>
   highlights("activity", ctx)
@@ -285,6 +293,8 @@ test("comparison: a week still running compares nothing", () => {
 // ------------------------------------------------------------ workouts
 
 const on = (list) => (d) => (list.includes(d.slice(8)) ? 1 : 0);
+// The Activities tile's comparison with the period before.
+const versus = (ctx) => activitiesVersus(prepare(ctx));
 
 test("activities: finished months of one length compare counts", () => {
   // August and July 2025: 31 days each.
@@ -298,18 +308,12 @@ test("activities: finished months of one length compare counts", () => {
       activities: workouts(on(["02", "09", "16", "23"]), "2025-07-01", 31),
     },
   });
-  assert.ok(
-    texts("activity", ctx(["01", "05", "10", "15", "20", "25"])).includes(
-      "More activities: 2 more activities than the month before · Aug 1 – 31",
-    ),
+  assert.equal(
+    versus(ctx(["01", "05", "10", "15", "20", "25"])),
+    "+2 vs the month before",
   );
   // One more is no change.
-  assert.deepEqual(
-    highlights("activity", ctx(["01", "08", "15", "22", "29"])).filter(
-      (r) => r.id === "change:activities",
-    ),
-    [],
-  );
+  assert.equal(versus(ctx(["01", "08", "15", "22", "29"])), null);
 });
 
 test("activities: a month still running compares its first days with last month's", () => {
@@ -336,11 +340,7 @@ test("activities: a month still running compares its first days with last month'
       ),
     },
   };
-  assert.ok(
-    texts("activity", ctx).includes(
-      "More activities: 2 more activities than at this point the month before · this month so far",
-    ),
-  );
+  assert.equal(versus(ctx), "+2 vs this point the month before");
 });
 
 test("activities: day N is clamped to the previous period's length", () => {
@@ -357,10 +357,7 @@ test("activities: day N is clamped to the previous period's length", () => {
     },
     prev: { activities: workouts(on(["03", "10"]), "2025-02-01", 28) },
   };
-  assert.equal(
-    highlights("activity", ctx).some((r) => r.id === "change:activities"),
-    false,
-  );
+  assert.equal(versus(ctx), null);
 });
 
 test("activities: finished months of different lengths compare per week", () => {
@@ -380,17 +377,13 @@ test("activities: finished months of different lengths compare per week", () => 
       ),
     },
   };
-  assert.ok(
-    texts("activity", ctx).includes(
-      "More activities: 0.7 more activities a week than the month before · Sep 1 – 30",
-    ),
-  );
+  assert.equal(versus(ctx), "+0.7 a week vs the month before");
 });
 
 // Workouts on the first `k` days of the month.
 const firstDays = (k) => (d) => (Number(d.slice(8)) <= k ? 1 : 0);
 
-test("1.046 a week reads 1 more activity", () => {
+test("1.046 a week reads +1", () => {
   // October 2025 (31 days) 16 activities: 3.61 a week; September (30) 11:
   // 2.57. The difference shows as "1", so the word is singular.
   const ctx = {
@@ -401,11 +394,7 @@ test("1.046 a week reads 1 more activity", () => {
     series: { activities: workouts(firstDays(16), "2025-10-01", 31) },
     prev: { activities: workouts(firstDays(11), "2025-09-01", 30) },
   };
-  assert.ok(
-    texts("activity", ctx).includes(
-      "More activities: 1 more activity a week than the month before · Oct 1 – 31",
-    ),
-  );
+  assert.equal(versus(ctx), "+1 a week vs the month before");
 });
 
 // ---------------------------------------------------------------- gaps
@@ -426,7 +415,7 @@ test("gap: 9 rest days in a row is named, 6 isn't", () => {
   );
 });
 
-test("gap: its own days, not the period's (AC2-17); a start before any activity is no gap (AC2-3)", () => {
+test("gap: its own days, not the period's; a start before any activity is no gap", () => {
   // Rest Sep 9–20 between a walk on the 8th and one on the 21st.
   const s = workouts(on(["03", "05", "08", "21", "25"]));
   const gap = (ctx) =>
@@ -490,16 +479,16 @@ test("weekend overs: 4 of 5 on weekends is named; 2 of 5 isn't", () => {
     targets: TARGET,
     series: { energy: overs(list) },
   });
-  assert.deepEqual(texts("food", ctx(["06", "07", "10", "13", "14"])), [
+  assert.deepEqual(facts("food", ctx(["06", "07", "10", "13", "14"])), [
     "Weekend energy overs: 4 of the 5 days over target were weekends · Sep 1 – 30",
   ]);
-  assert.deepEqual(texts("food", ctx(["06", "07", "10", "11", "12"])), []);
+  assert.deepEqual(facts("food", ctx(["06", "07", "10", "11", "12"])), []);
   // Half of them: 23 points over the weekends' share of days, still under 60 %.
   assert.deepEqual(
-    texts("food", ctx(["06", "07", "10", "11", "12", "13"])),
+    facts("food", ctx(["06", "07", "10", "11", "12", "13"])),
     [],
   );
-  assert.deepEqual(texts("food", ctx(["06", "07"])), []);
+  assert.deepEqual(facts("food", ctx(["06", "07"])), []);
 });
 
 test("weekend overs: not when you mostly log weekends anyway", () => {
@@ -512,7 +501,7 @@ test("weekend overs: not when you mostly log weekends anyway", () => {
     targets: TARGET,
     series: { energy: overs(["06", "07", "10", "13", "14"], logged) },
   };
-  assert.deepEqual(texts("food", ctx), []);
+  assert.deepEqual(facts("food", ctx), []);
 });
 
 test("weekend overs: no target max, no claim", () => {
@@ -521,7 +510,7 @@ test("weekend overs: no target max, no claim", () => {
     targets: { energy: { value: 2000, min: 2000, max: null } },
     series: { energy: overs(["06", "07", "13", "14", "20"]) },
   };
-  assert.deepEqual(texts("food", ctx), []);
+  assert.deepEqual(facts("food", ctx), []);
 });
 
 // ------------------------------------------------------ steps ↔ energy
@@ -656,9 +645,10 @@ test("ranking: by margin, capped at 3, ties in rule order; every one kept", () =
   );
 });
 
-test("ranking: warning > tip > correlation > fact, then margin", () => {
+test("ranking: warning > win > tip > correlation > fact, then margin", () => {
   const list = [
     { id: "fact", tone: "fact", margin: 3 },
+    { id: "win", tone: "win", margin: 1 },
     { id: "corr", tone: "correlation", margin: 2 },
     { id: "tip", tone: "tip", margin: 1 },
     { id: "warning-weak", tone: "warning", margin: 1 },
@@ -666,7 +656,7 @@ test("ranking: warning > tip > correlation > fact, then margin", () => {
   ];
   assert.deepEqual(
     rank(list).map((r) => r.id),
-    ["warning", "warning-weak", "tip", "corr", "fact"],
+    ["warning", "warning-weak", "win", "tip", "corr", "fact"],
   );
 });
 
@@ -874,8 +864,7 @@ test("steps ↔ energy reads the same through contrast", () => {
   );
 });
 
-const changesWorkouts = (c) =>
-  highlights("activity", c).some((r) => r.id === "change:activities");
+const changesWorkouts = (c) => versus(c) !== null;
 
 test("activities: no change while the comparison starts before the device synced", () => {
   const ctx = (deviceFrom) => ({
@@ -1106,7 +1095,7 @@ test("BMI: the last weigh-in's WHO class, adults with a height only", () => {
   assert.deepEqual(bmi({ birth_date: "1990-05-01" }), []);
 });
 
-test("BMI classifies the shown value: 24.97 reads 25.0 (TFA-H13: one decimal always), overweight", () => {
+test("BMI classifies the shown value: 24.97 reads 25.0 (one decimal always), overweight", () => {
   // 81.8 kg at 181 cm is 24.968: shown "25", so not "healthy".
   const weight = weighIns(1, () => 81.8);
   const [r] = highlights("body", {
@@ -1522,7 +1511,7 @@ test("a pinned pattern (margin ∞) ranks first of its tone, capped at 3", () =>
   assert.deepEqual([first.id, first.margin], ["pattern:a~b", 3]);
 });
 
-test("a contrast a tested correlation already states stays out (AC2-7)", () => {
+test("a contrast a tested correlation already states stays out", () => {
   const nights = daily("2025-09-01", 30, (d, i) => (i < 10 ? 380 : 480));
   const energy = daily("2025-09-01", 30, (d, i) => (i < 10 ? 2400 : 2000));
   const corr = {
@@ -1542,7 +1531,7 @@ test("a contrast a tested correlation already states stays out (AC2-7)", () => {
   );
 });
 
-test("a contrast is said only past its test (AC2-7)", () => {
+test("a contrast is said only past its test", () => {
   // The owner's September: "After drinking you slept 48 min shorter (12 vs 9
   // nights)", noisy nights: Mann–Whitney p ≈ 0.12. A 10 % gap in means is
   // no finding on its own.
@@ -1567,7 +1556,7 @@ test("a contrast is said only past its test (AC2-7)", () => {
   assert.match(r.detail, /Mann–Whitney p < 0\.001, rank-biserial r -1/u);
 });
 
-// Owner (2026-10-14): "Alcohol → HRV" and "Possible pattern: higher
+// "Alcohol → HRV" and "Possible pattern: higher
 // alcohol … lower HRV the night after" are one finding: a discovered pair
 // a shown card already states (the same series, a built-in habit's the
 // same as its food series, either way round, at the same lag) stays out.
@@ -1731,7 +1720,7 @@ test("Highlights prefs: hidden through its day, marked ones first, 2 in all", ()
   assert.deepEqual(keptPatterns(list, new Map(), "2045-06-15").length, 2);
 });
 
-test("sleepSeries: a night's time asleep, naps not added (B-3)", () => {
+test("sleepSeries: a night's time asleep, naps not added", () => {
   const s = sleepSeries([
     { day: "2045-06-01", asleep_min: 400, total_asleep_min: 450 },
     { day: "2045-06-02", asleep_min: null, total_asleep_min: 60 },
@@ -1745,7 +1734,7 @@ const floor = (s) => ({ ...s, partly: new Set([s.samples[3]]) });
 
 // A mean over a floor day ("≥", foods without the value) is a
 // floor; two floors, or a floor and a number, are no trend.
-test("comparison: a floor on either side is no change (UX11-9)", () => {
+test("comparison: a floor on either side is no change", () => {
   const now = protein("2025-09-01", 30, 85);
   const was = protein("2025-08-01", 31, 100);
   const ctx = (a, b) => ({
@@ -1765,7 +1754,7 @@ test("comparison: a floor on either side is no change (UX11-9)", () => {
 
 // A phone's leftover (1 km in 30 min, under a run's 5 km/h)
 // has no pace anywhere else, so none in the pooled pace either.
-test("pace pools only runs with a pace: a leftover is left out (QUAL11-12)", () => {
+test("pace pools only runs with a pace: a leftover is left out", () => {
   const five = (d) => ride(d, 5, 25);
   const sep = ["2025-09-02", "2025-09-09", "2025-09-16"].map((x) => five(x));
   const aug = ["2025-08-02", "2025-08-09", "2025-08-16"].map((x) => five(x));
@@ -1783,7 +1772,7 @@ test("pace pools only runs with a pace: a leftover is left out (QUAL11-12)", () 
 
 // Consecutive trend points a gap apart: the change a day, so a
 // steady loss reads the same over 3 weeks as over one day.
-test("changeADay: a delta over its day gap (QUAL11-13)", () => {
+test("changeADay: a delta over its day gap", () => {
   const out = changeADay(
     [
       { day: "2026-08-15", kg: 80 },
@@ -1805,7 +1794,7 @@ const goalOn = (d) => (Number(d.slice(8)) % 2 ? 2.5 : 3.1);
 // Hydration is judged against each day's goal (the water target
 // plus activity), as the Diary and the Habits calendar judge it, in its
 // own unit.
-test("hydration low: against the day's goal, not the plain target (UX11-4)", () => {
+test("hydration low: against the day's goal, not the plain target", () => {
   const water = (amount) => ({
     ...daily("2025-09-01", 30, () => amount, "Hydration"),
     sampled: "known",
@@ -1829,4 +1818,210 @@ test("hydration low: against the day's goal, not the plain target (UX11-4)", () 
     highlights("habits", ctx(2)).filter((r) => r.id.startsWith("low:")),
     [],
   );
+});
+
+// ---------------------------------------------------- tile comparisons
+
+test("activities: a tile says the change, the Highlights don't", () => {
+  const ctx = {
+    ...SEP,
+    from: "2025-08-01",
+    to: "2025-08-31",
+    before: { from: "2025-07-01", to: "2025-07-31" },
+    series: {
+      activities: workouts(
+        on(["01", "05", "10", "15", "20", "25"]),
+        "2025-08-01",
+        31,
+      ),
+    },
+    prev: {
+      activities: workouts(on(["02", "09", "16", "23"]), "2025-07-01", 31),
+    },
+  };
+  assert.equal(versus(ctx), "+2 vs the month before");
+  assert.equal(changesInHighlights(ctx), false);
+});
+
+const changesInHighlights = (ctx) =>
+  highlights("activity", ctx).some((r) => r.id === "change:activities");
+
+test("versusBefore: past the Highlights' gate, relative or by a bar", () => {
+  const c = prepare(SEP);
+  const before = daily("2025-08-01", 31, () => 100);
+  const now = (v, n = 30, every = 1) =>
+    series(
+      days("2025-09-01", n)
+        .filter((_, i) => i % every === 0)
+        .map((d) => [d, v]),
+    );
+  const vs = (a, b = before, opts) => {
+    const t = versusBefore(c, a, b, opts);
+    return t && plain(t);
+  };
+  assert.equal(vs(now(110)), "+10 % vs the month before");
+  assert.equal(vs(now(91)), null);
+  assert.equal(vs(now(88)), "−12 % vs the month before");
+  // An absolute bar in its own words: 15 min, 3 bpm.
+  const min = { bar: 15, say: (v) => `${v} min` };
+  assert.equal(
+    vs(
+      now(415),
+      daily("2025-08-01", 31, () => 400),
+      min,
+    ),
+    "+15 min vs the month before",
+  );
+  assert.equal(
+    vs(
+      now(414),
+      daily("2025-08-01", 31, () => 400),
+      min,
+    ),
+    null,
+  );
+  // ≥ 7 samples a side, over ≥ half the days.
+  assert.equal(vs(now(200, 6)), null);
+  assert.equal(vs(now(200, 29, 2)), "+100 % vs the month before");
+  assert.equal(vs(now(200, 28, 2)), null);
+  // A floor compares with nothing.
+  assert.equal(vs({ ...now(200), partly: new Set(["2025-09-03"]) }), null);
+  // A week still running never compares.
+  const week = prepare({
+    ...SEP,
+    kind: "week",
+    from: "2025-09-01",
+    to: "2025-09-07",
+    last: "2025-09-06",
+    before: { from: "2025-08-25", to: "2025-08-31" },
+  });
+  assert.equal(
+    versusBefore(
+      week,
+      now(200, 7),
+      daily("2025-08-25", 7, () => 100),
+    ),
+    null,
+  );
+});
+
+// ----------------------------------------------------------------- wins
+
+const FED = {
+  ...SEP,
+  targets: { ...SEP.targets, energy: { value: 2000, min: 1800, max: 2200 } },
+};
+const wins = (ctx) =>
+  highlights("food", ctx)
+    .filter((r) => r.tone === "win")
+    .map((r) => line(r));
+
+test("on target: at least 70 % of a finished period's food days", () => {
+  const energy = (k) =>
+    daily("2025-09-01", 30, (_, i) => (i < k ? 2000 : 2500), "Energy");
+  assert.deepEqual(wins({ ...FED, series: { energy: energy(21) } }), [
+    "Energy on target: 21 of 30 food days · Sep 1 – 30",
+  ]);
+  assert.deepEqual(wins({ ...FED, series: { energy: energy(20) } }), []);
+});
+
+test("on target: 5 of the last 7 food days while the period runs", () => {
+  const ctx = (k) => ({
+    ...FED,
+    last: "2025-09-14",
+    series: {
+      energy: daily(
+        "2025-09-01",
+        14,
+        (_, i) => (i >= 14 - k ? 2000 : 2500),
+        "Energy",
+      ),
+    },
+  });
+  assert.ok(
+    wins(ctx(5)).includes(
+      "Energy on target: 5 of the last 7 food days · this month so far",
+    ),
+  );
+  assert.ok(!wins(ctx(4)).some((t) => t.startsWith("Energy on target")));
+});
+
+test("on target: a floor day is on a range only once proven", () => {
+  const energy = {
+    ...daily("2025-09-01", 30, () => 2000, "Energy"),
+    partly: new Set(days("2025-09-01", 10)),
+  };
+  assert.deepEqual(wins({ ...FED, series: { energy } }), []);
+});
+
+test("logging streak: 7 food days in a row to yesterday", () => {
+  const ctx = (from, n) => ({
+    ...SEP,
+    last: "2025-09-14",
+    series: { energy: daily(from, n, () => 2000, "Energy") },
+    prev: { energy: daily("2025-08-20", 5, () => 2000, "Energy") },
+  });
+  assert.deepEqual(wins(ctx("2025-09-08", 7)), [
+    "Logging streak: 7 days in a row · to Sep 14",
+  ]);
+  assert.deepEqual(wins(ctx("2025-09-09", 6)), []);
+  // Back to the first day loaded: at least.
+  const all = {
+    ...ctx("2025-09-01", 14),
+    prev: { energy: daily("2025-08-01", 31, () => 2000, "Energy") },
+  };
+  assert.deepEqual(wins(all), [
+    "Logging streak: ≥ 45 days in a row · to Sep 14",
+  ]);
+  // A period over says no streak of now.
+  assert.deepEqual(wins({ ...ctx("2025-09-08", 7), last: FAR }), []);
+});
+
+test("new best: the latest record set in the period", () => {
+  const ctx = {
+    ...SEP,
+    bests: [
+      { what: "Best step day", value: "18,240 steps", day: "2025-09-10" },
+      { what: "Bench press", value: "80 kg × 5", day: "2025-09-20" },
+      { what: "Longest night", value: "9 h 10 min", day: "2025-08-30" },
+    ],
+  };
+  const r = highlights("activity", ctx).filter((x) => x.tone === "win");
+  assert.deepEqual(
+    r.map((x) => [x.id, line(x), x.link]),
+    [
+      [
+        "win:best",
+        "New best: Bench press: 80 kg × 5 · Sep 20",
+        { to: "records" },
+      ],
+    ],
+  );
+  assert.match(r[0].detail, /Best step day/u);
+  assert.deepEqual(
+    highlights("activity", { ...SEP, bests: [ctx.bests[2]] }).filter(
+      (x) => x.tone === "win",
+    ),
+    [],
+  );
+});
+
+const card = (id, tone) => ({ id, tone });
+
+test("a win keeps a place among the three shown", () => {
+  const list = [
+    card("a", "warning"),
+    card("b", "warning"),
+    card("c", "warning"),
+    card("w", "win"),
+    card("t", "tip"),
+  ];
+  assert.deepEqual(
+    withWin(list).map((r) => r.id),
+    ["a", "b", "w", "c", "t"],
+  );
+  const early = [card("a", "warning"), card("w", "win"), card("t", "tip")];
+  assert.deepEqual(withWin(early), early);
+  const none = [card("a", "fact"), card("b", "fact")];
+  assert.deepEqual(withWin(none), none);
 });

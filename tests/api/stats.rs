@@ -160,7 +160,7 @@ async fn all_time_counts_the_profiles_days_food_activity_and_sleep() {
     // The library's: instance-wide, the seeded Water and Creatine aside.
     assert_eq!(s["custom_foods"], 4);
     assert_eq!(s["recipes"], 0);
-    assert_eq!(s["meals"], 0);
+    assert!(s.get("meals").is_none(), "meals are recipes: {s}");
 
     let (status, _) = call(&app, "GET", "/api/profiles/9/stats", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -242,7 +242,7 @@ async fn recipe_beef_counts_by_share() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{stew}");
     let stew = stew["id"].as_i64().unwrap();
-    // A meal of half stew (by weight), half Fineli beef.
+    // A plate of half stew (by weight), half Fineli beef.
     let (status, plate) = call(
         &app,
         "POST",

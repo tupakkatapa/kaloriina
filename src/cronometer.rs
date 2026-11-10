@@ -17,8 +17,8 @@ use crate::model::{
 };
 use crate::nutrients::{Nutrients, REGISTRY};
 
-use crate::model::import::Summary;
-pub use crate::model::import::{Parsed, Report, SummaryReport};
+use crate::model::cronometer::Summary;
+pub use crate::model::cronometer::{Parsed, Report, SummaryReport};
 
 /// The export writes amounts as `20.00 g` or `1.00 x 330.0 ml`; drop the
 /// trailing zeros so they read `20 g`, `1 x 330 ml`.
@@ -119,11 +119,11 @@ pub fn read(servings: Option<impl Read>, summary: Option<impl Read>) -> Result<P
 /// As [`read`]; nothing is written then.
 pub fn import(
     conn: &mut Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     servings: Option<impl Read>,
     summary: Option<impl Read>,
 ) -> Result<Report, Error> {
-    db::cronometer_apply(conn, profile, read(servings, summary)?)
+    db::cronometer_apply(conn, pid, read(servings, summary)?)
 }
 
 /// A file's error as bad input in `field`: the CSV reader's own errors

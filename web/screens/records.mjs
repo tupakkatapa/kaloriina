@@ -5,28 +5,18 @@
 // naps. "Log a set" picks an exercise for a record attempt outside a
 // workout.
 
-import { dayRecords, pace } from "../activities.mjs";
+import { exerciseBest, pace } from "../activities.mjs";
 import { activityType, get, meta, scoped } from "../api.mjs";
 import { duration, pretty } from "../dates.mjs";
 import { plural } from "../format.mjs";
 import { go, href } from "../nav.mjs";
-import { exerciseRow, resultRow } from "../rows.mjs";
+import { exerciseRow, resultRow, section } from "../rows.mjs";
 import { h, picker, titleBar } from "../ui.mjs";
 import { distanceText } from "../units.mjs";
 import { library, setText } from "../workouts.mjs";
 
 const row = (name, value, day, to = null) =>
   resultRow({ href: to, name, detail: `${value} · ${pretty(day)}` });
-
-const list = (title, rows) =>
-  rows.length > 0
-    ? h(
-        "section",
-        { class: "finder-section" },
-        h("h2", {}, title),
-        h("ul", { class: "results card" }, rows),
-      )
-    : null;
 
 const at = (s) => href.activityView(s.id, href.records());
 
@@ -62,9 +52,8 @@ function typeRows(type, best) {
 }
 
 export async function recordsScreen() {
-  const [records, device, exercises] = await Promise.all([
+  const [records, exercises] = await Promise.all([
     get(scoped("/records")),
-    get(scoped("/device-days")),
     get("/exercises"),
   ]);
   const lib = library(exercises);
@@ -82,17 +71,17 @@ export async function recordsScreen() {
       ),
   });
   const byType = records.types;
-  const days = dayRecords(device.days);
+  const { days } = records;
   // Every exercise done (by name), its heaviest set, else its most reps or
   // longest.
   const exerciseRows = records.exercises.flatMap((r) => {
-    const best = r.kg ?? r.reps ?? r.seconds;
+    const best = exerciseBest(r);
     return best
       ? [row(r.name, setText(best.set), best.day, href.exercise(r.exercise_id))]
       : [];
   });
   const sections = [
-    list(
+    section(
       "Days",
       [
         days.steps &&
@@ -115,8 +104,8 @@ export async function recordsScreen() {
     ),
     ...meta.activity_types
       .filter((t) => byType[t.key])
-      .map((t) => list(t.label, typeRows(t.key, byType[t.key]))),
-    list("Exercises", exerciseRows),
+      .map((t) => section(t.label, typeRows(t.key, byType[t.key]))),
+    section("Exercises", exerciseRows),
   ].filter(Boolean);
   return h(
     "section",

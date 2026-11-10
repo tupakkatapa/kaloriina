@@ -9,10 +9,10 @@ import vm from "node:vm";
 import {
   add,
   attempted,
-  ATTEMPTS_MAX,
   failed,
   items,
   latest,
+  MAX_ATTEMPTS,
   next,
   queueable,
   remove,
@@ -148,9 +148,9 @@ test("the outbox: same uid, attempts, failure, supersede, a day's items", () => 
   assert.throws(() => add({ ...entry, body: { ...entry.body, grams: 9 } }));
   assert.equal(items().length, 1);
 
-  // Tries count up to ATTEMPTS_MAX, then the item has failed.
-  for (let i = 1; i < ATTEMPTS_MAX; i++) attempted(first.key, "offline");
-  assert.equal(items()[0].attempts, ATTEMPTS_MAX - 1);
+  // Tries count up to MAX_ATTEMPTS, then the item has failed.
+  for (let i = 1; i < MAX_ATTEMPTS; i++) attempted(first.key, "offline");
+  assert.equal(items()[0].attempts, MAX_ATTEMPTS - 1);
   attempted(first.key, "offline");
   assert.equal(items()[0].failed, "offline");
   assert.equal(next(), null);
@@ -275,13 +275,13 @@ test("offline doesn't count as an attempt", () => {
     label: "Note",
   });
   // No network, or a login page: the server never answered.
-  for (let i = 0; i < ATTEMPTS_MAX * 2; i++) {
+  for (let i = 0; i < MAX_ATTEMPTS * 2; i++) {
     assert.equal(replayFailed(item, { code: "offline" }), "wait");
     assert.equal(replayFailed(item, { code: "not_json", status: 200 }), "wait");
   }
   assert.deepEqual([items()[0].attempts, items()[0].failed], [0, null]);
   // The server's own errors count, up to failed.
-  for (let i = 1; i <= ATTEMPTS_MAX; i++)
+  for (let i = 1; i <= MAX_ATTEMPTS; i++)
     assert.equal(replayFailed(item, { status: 500, message: "Down" }), "wait");
   assert.deepEqual([items()[0].attempts, items()[0].failed], [5, "Down"]);
   // A refusal fails at once; a DELETE already gone is done.
@@ -313,7 +313,7 @@ test("outbox_backoff: a restart's 503s wait; 500s back off, then fail", (t) => {
   }
   assert.deepEqual([items()[0].attempts, items()[0].failed], [0, null]);
   // A busy database (an import) and a full disk wait too, uncounted.
-  for (let i = 0; i < ATTEMPTS_MAX * 2; i++) {
+  for (let i = 0; i < MAX_ATTEMPTS * 2; i++) {
     assert.equal(replayFailed(item, { status: 503, code: "busy" }), "wait");
     assert.equal(replayFailed(item, { status: 507, code: "storage" }), "wait");
   }
@@ -322,7 +322,7 @@ test("outbox_backoff: a restart's 503s wait; 500s back off, then fail", (t) => {
   // isn't offered before then, and holds what's behind it.
   const behind = add({ method: "PUT", path: "/m", body: {}, label: "Later" });
   let wait = 30_000;
-  for (let i = 1; i < ATTEMPTS_MAX; i++) {
+  for (let i = 1; i < MAX_ATTEMPTS; i++) {
     assert.equal(replayFailed(item, { status: 500, message: "Bug" }), "wait");
     t.mock.timers.tick(wait * 0.8 - 1);
     assert.equal(next(), null);
@@ -343,10 +343,10 @@ test("outbox_backoff: a restart's 503s wait; 500s back off, then fail", (t) => {
   assert.ok(items()[1].nextAt <= Date.now() + 1.2 * 3_600_000);
 });
 
-test("Try again resends", () => {
+test("Retry resends", () => {
   store.clear();
   const item = add({ method: "PUT", path: "/z", body: {}, label: "Note" });
-  for (let i = 0; i < ATTEMPTS_MAX; i++) attempted(item.key, "Down");
+  for (let i = 0; i < MAX_ATTEMPTS; i++) attempted(item.key, "Down");
   assert.equal(next(), null);
   retry(item.key);
   assert.deepEqual(
@@ -420,4 +420,32 @@ const old = (method, path, body = null, uid = null) => ({
   queuedAt: "2030-01-01T08:00:00.000Z",
   attempts: 0,
   failed: null,
+});
+
+// A JSON answer, as the server sends one.
+const json = (status, body) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+
+test("a read the screen survives losing falls back only when offline", async () => {
+  const { get, offlineOr } = await import("../web/api.mjs");
+  const read = (answer) => {
+    globalThis.fetch = () => answer;
+    return get("/workouts").catch(offlineOr("fallback"));
+  };
+  assert.equal(await read(Promise.reject(new TypeError("down"))), "fallback");
+  assert.equal(
+    await read(Promise.resolve(new Response("<html>", { status: 502 }))),
+    "fallback",
+  );
+  await assert.rejects(
+    read(Promise.resolve(json(500, { error: "boom", code: "internal" }))),
+    { code: "internal" },
+  );
+  await assert.rejects(
+    read(Promise.resolve(json(404, { error: "gone", code: "not_found" }))),
+    { code: "not_found" },
+  );
 });

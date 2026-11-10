@@ -363,6 +363,77 @@ async fn a_synced_copy_whole_hours_off_is_the_same_walk() {
     );
 }
 
+/// The phone files a session under its calendar day; an export, under the
+/// local one. A clock slipped across midnight is still the same walk.
+#[tokio::test]
+async fn a_synced_copy_slipped_across_midnight_is_the_same_walk() {
+    let app = app();
+    // 22:30-22:58 local (+03:00) on the 5th is 19:30Z. The synced copy wrote
+    // local time as UTC: 22:30Z, 01:30 local on the 6th, filed under the 6th.
+    let (status, res) = call(
+        &app,
+        "POST",
+        "/api/profiles/1/sync/health",
+        Some(
+            json!({ "from": "2026-09-06", "to": "2026-09-06", "device": "Pixel 9",
+            "sessions": [{ "key": "hc-w", "day": "2026-09-06",
+                "start_at": "2026-09-05T22:30:00Z", "end_at": "2026-09-05T22:58:00Z",
+                "type": 53, "name": "Walking", "recording_method": 1 }] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    let counts = import(
+        &app,
+        export(&[exercises(&[
+            "301,2026-09-05T19:30:00Z,2026-09-05T19:58:00Z,+03:00,Outdoor Walk,AUTO_DETECTED,,,,,",
+        ])]),
+    )
+    .await;
+    assert_eq!(
+        (&counts["activities"], &counts["kept"]),
+        (&json!(0), &json!(1))
+    );
+}
+
+/// A walk at 01:30 local: the web files it under the diary day before (days
+/// start at 03:00), the phone under the calendar day. One walk.
+#[tokio::test]
+async fn a_late_night_hand_log_claims_its_device_copy() {
+    let app = app();
+    let (status, s) = call(
+        &app,
+        "POST",
+        "/api/profiles/1/activities",
+        Some(
+            json!({ "day": "2026-09-05", "name": "Walk", "minutes": 28, "type": "walk",
+                     "start_at": "2026-09-05T22:30:00Z" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{s}");
+    let (status, res) = call(
+        &app,
+        "POST",
+        "/api/profiles/1/sync/health",
+        Some(
+            json!({ "from": "2026-09-06", "to": "2026-09-06", "device": "Pixel 9",
+            "sessions": [{ "key": "hc-w", "day": "2026-09-06",
+                "start_at": "2026-09-05T22:30:00Z", "end_at": "2026-09-05T22:58:00Z",
+                "type": 53, "name": "Walking", "recording_method": 1, "kcal": 120 }] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    let (_, list) = call(&app, "GET", "/api/profiles/1/activities", None).await;
+    let list = list.as_array().unwrap();
+    assert_eq!(list.len(), 1, "{list:#?}");
+    assert_eq!(
+        (&list[0]["day"], &list[0]["source_key"], &list[0]["kcal"]),
+        (&json!("2026-09-05"), &json!("hc-w"), &json!(120))
+    );
+}
+
 #[tokio::test]
 async fn a_sync_without_a_value_keeps_the_imported_one() {
     let app = app();
@@ -447,9 +518,10 @@ async fn a_restored_profile_keeps_what_was_imported() {
         &format!("/api/profiles/{pid}/device-days?from=2026-09-02&to=2026-09-02"),
     )
     .await;
+    let d = &shown["days"][0];
     assert_eq!(
-        (&shown["days"][0]["steps"], &shown["days"][0]["active_kcal"]),
-        (&json!(8000), &json!(4))
+        (&d["steps"], &d["active_kcal"], &d["resting_hr"]),
+        (&json!(8000), &json!(4), &json!(57))
     );
 }
 
@@ -507,6 +579,18 @@ async fn days_take_the_device_before_the_import() {
     // where it has none, per field.
     let app = app();
     synced_and_logged(&app).await;
+    // Only what Health Connect already shows: no day changes.
+    let steps = file(
+        "Physical Activity_GoogleData/Steps/steps_2026-09-01.csv",
+        "timestamp,steps,data source",
+        &["2026-09-02T10:00:00Z,300,Google Fitbit Air"],
+    );
+    let res = import(&app, export(&[steps])).await;
+    assert_eq!(
+        (&res["days"], &res["activities"]),
+        (&json!(0), &json!(0)),
+        "{res}"
+    );
     import(&app, everything()).await;
     let a = get(
         &app,

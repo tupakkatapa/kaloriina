@@ -185,14 +185,15 @@ test("each subtab shows and loads only its own", async ({
     const { pathname } = new URL(r.url());
     if (pathname.startsWith(prefix)) asked.push(pathname.slice(prefix.length));
   });
-  // The marker each subtab's content shows, and what's never on it. Every
-  // subtab reads the shared sources once, over one union range each
-  // (web/series.mjs: /targets, /device-days, /check-ins, /summary, /activities,
-  // /weights, /scale, /habits/days for caffeine, and the hidden or pinned
-  // /insights/prefs), and slices
-  // the period's reads from them, the energy burned and maintenance
-  // included: Food sets no energy target, so reads nothing about today.
-  // Food without food: its empty line (no balance heading alone).
+  // The marker each subtab's content shows, and what's never on it. The
+  // period's shared sources are read once, over one union range each
+  // (web/series.mjs: /targets, /device-days, /check-ins, /summary,
+  // /activities, /weights, /scale, /habits/days for caffeine, and the
+  // hidden or pinned /insights/prefs), when the period opens; a switch to
+  // another subtab reads only its own, slicing the period's reads from
+  // them, the energy burned and maintenance included: Food sets no energy
+  // target, so reads nothing about today. Food without food: its empty
+  // line (no balance heading alone).
   const all = [
     ".food-nothing",
     "section.weight",
@@ -211,18 +212,11 @@ test("each subtab shows and loads only its own", async ({
     "/weights",
   ];
   const subtabs = [
-    ["Food", ".food-nothing", shared],
-    [
-      "Body",
-      "section.weight",
-      [...shared, "/measurements", "/notes"].toSorted(),
-    ],
-    ["Activity", ".activity-summary", [...shared, "/plans"].toSorted()],
-    [
-      "Habits",
-      ".habits-summary",
-      [...shared, "/habits", "/habits/days", "/habits/days"].toSorted(),
-    ],
+    ["Food", ".food-nothing", []],
+    ["Body", "section.weight", ["/measurements", "/notes"]],
+    // Activity's records too: its bests (Records').
+    ["Activity", ".activity-summary", ["/plans", "/records"]],
+    ["Habits", ".habits-summary", ["/habits", "/habits/days", "/habits/days"]],
   ];
   // Two weigh-ins, so Body shows its weight section.
   for (const [day, kg] of [
@@ -230,9 +224,14 @@ test("each subtab shows and loads only its own", async ({
     ["2025-01-08", 69.8],
   ])
     await request.put(`${prefix}/weights/${day}`, { data: { kg } });
+  asked.length = 0;
   await page.goto("/#/summary/habits/week/2025-01-06");
   await expect(hydration(page)).toBeChecked();
   await page.waitForLoadState("networkidle");
+  expect(
+    [...new Set(asked.filter((x) => shared.includes(x)))].toSorted(),
+    "opening",
+  ).toEqual(shared);
   for (const [name, marker, expected] of subtabs) {
     asked.length = 0;
     await subtab(page, name).click();

@@ -90,3 +90,26 @@ test("a disk under 10 % free is a warning", async ({
     "Disk space low: 7 % free",
   );
 });
+
+test("the Diary says when backups need looking at", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { tag } = unique(1265, testInfo);
+  await ownProfile(page, request, `Diary backup ${tag}`);
+  const warning = page.getByRole("link", { name: "Backups need looking at" });
+  await backingUp(page, { newest: Date.now() - 49 * HOUR, stale: true });
+  await page.goto("/#/");
+  await expect(warning).toHaveAttribute("href", "#/profile");
+  await backingUp(page, {
+    newest: Date.now() - 3 * HOUR,
+    stale: false,
+    free_bytes: 5 * GB,
+  });
+  await page.reload();
+  await expect(warning).toBeVisible();
+  await backingUp(page, { newest: Date.now() - 3 * HOUR, stale: false });
+  await page.reload();
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await expect(warning).toHaveCount(0);
+});

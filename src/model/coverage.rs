@@ -267,7 +267,7 @@ pub fn known_from(
     out
 }
 
-/// A part of a recipe or meal: its values per 100 g, its grams, whether
+/// A part of a recipe: its values per 100 g, its grams, whether
 /// it's a drink, and a recipe's own [`Known`] and [`Borne`] (a food's
 /// [`borne_of`]; a food's Known is empty).
 pub struct Part<'a> {
@@ -291,10 +291,32 @@ fn carried(p: &Part, key: &str) -> f64 {
         })
 }
 
-/// A recipe's (or meal's) [`Known`] and [`Borne`] per 100 g from its parts,
-/// as its values are ([`super::super::db`]'s `recipe_per100`): each key's
-/// share of the parts' dry matter (cooking moves water only), a [`BORNE`]
-/// key's of what could hold it. Computed when read, never stored.
+/// Per-100 g nutrients of a recipe from its ingredients.
+#[must_use]
+pub fn recipe_per100(parts: &[(Nutrients, f64)], cooked_g: Option<f64>) -> Nutrients {
+    let total: f64 = parts.iter().map(|(_, g)| g).sum();
+    let weight = cooked_g.unwrap_or(total);
+    if weight <= 0.0 {
+        return Nutrients::default();
+    }
+    let mut sum = Nutrients::sum(
+        &parts
+            .iter()
+            .map(|(p, g)| p.scale(g / 100.0))
+            .collect::<Vec<_>>(),
+    );
+    // Cooking changes the weight by water: what's lost boiled off, what's
+    // gained soaked in.
+    if let Some(water) = sum.get("water") {
+        sum.insert("water", (water + weight - total).max(0.0));
+    }
+    sum.scale(100.0 / weight)
+}
+
+/// A recipe's [`Known`] and [`Borne`] per 100 g from its parts,
+/// as its values are ([`recipe_per100`]): each key's share of the parts' dry
+/// matter (cooking moves water only), a [`BORNE`] key's of what could hold
+/// it. Computed when read, never stored.
 #[must_use]
 pub fn recipe_cover(parts: &[Part], cooked_g: Option<f64>) -> (Known, Borne) {
     let total: f64 = parts.iter().map(|p| p.grams).sum();
@@ -461,7 +483,7 @@ mod tests {
     }
 
     /// A recipe's values per 100 g as the web's `recipePer100` works them
-    /// out (`db::recipe_per100` computes them, alongside this rule).
+    /// out ([`recipe_per100`]).
     #[test]
     fn recipe_per100_matches_the_parity_fixture() {
         for case in parity_cases()["recipes"].as_array().unwrap() {
@@ -471,13 +493,40 @@ mod tests {
                 .iter()
                 .map(|p| (nutrients(&p["per100"]), p["grams"].as_f64().unwrap()))
                 .collect();
-            let per100 = crate::db::recipe_per100(&parts, case["cooked_g"].as_f64());
+            let per100 = recipe_per100(&parts, case["cooked_g"].as_f64());
             let got = per100
                 .keys()
                 .map(|k| (k.to_owned(), per100.get(k).unwrap()))
                 .collect();
             assert_near(&got, &case["per100"], case["name"].as_str().unwrap());
         }
+    }
+
+    #[test]
+    fn recipe_per100_uses_cooked_weight() {
+        let parts = [
+            (Nutrients::of(&[("protein", 10.0)]), 200.0),
+            (Nutrients::of(&[("protein", 0.0)]), 200.0),
+        ];
+        assert_eq!(
+            recipe_per100(&parts, None),
+            Nutrients::of(&[("protein", 5.0)])
+        );
+        assert_eq!(
+            recipe_per100(&parts, Some(200.0)),
+            Nutrients::of(&[("protein", 10.0)])
+        );
+        assert_eq!(recipe_per100(&[], None), Nutrients::default());
+        // The weight cooking takes or gives is water.
+        let soup = [
+            (Nutrients::of(&[("water", 100.0)]), 900.0),
+            (Nutrients::of(&[("water", 0.0), ("protein", 25.0)]), 100.0),
+        ];
+        let water = |cooked| recipe_per100(&soup, Some(cooked)).get("water");
+        assert_eq!(water(800.0), Some(87.5), "700 g of water in 800 g");
+        assert_eq!(water(1000.0), Some(90.0));
+        assert_eq!(water(50.0), Some(0.0), "never below none");
+        assert_eq!(recipe_per100(&parts, Some(100.0)).get("water"), None);
     }
 
     #[test]

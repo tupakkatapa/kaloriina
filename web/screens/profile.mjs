@@ -3,6 +3,7 @@
 // profiles, and this device's settings (screens/settings.mjs).
 
 import { saveOnce } from "../actions.mjs";
+import { lowDisk } from "../backups.mjs";
 import {
   api,
   currentProfile,
@@ -45,7 +46,12 @@ import {
   unitSystem,
 } from "../units.mjs";
 import { ago, connectionsLine } from "./connections.mjs";
-import { importCronometer, importProfile, thisDevice } from "./settings.mjs";
+import {
+  hiddenSuggestions,
+  importCronometer,
+  importProfile,
+  thisDevice,
+} from "./settings.mjs";
 
 // EFSA physical activity levels.
 const ACTIVITY = [
@@ -72,9 +78,6 @@ const switchTo = (o) =>
     notify(`Now using ${o.name}`);
   });
 
-// Below this share of the database disk free, the row warns.
-const LOW_DISK = 0.1;
-
 // "Backups: last copy 3 hours ago". An error when the job needs looking
 // at (no copy yet, or none in 48 hours: the server's `stale`) or the
 // disk is nearly full; nothing when the server doesn't back up.
@@ -89,8 +92,8 @@ function backupRow({ configured, newest, stale, free_bytes, total_bytes }) {
       `${copy}${stale ? ": check the backup job" : ""}`,
     ),
   ];
-  const free = total_bytes ? free_bytes / total_bytes : null;
-  if (free != null && free < LOW_DISK) {
+  const free = lowDisk({ free_bytes, total_bytes });
+  if (free !== null) {
     parts.push(
       " · ",
       h(
@@ -109,14 +112,16 @@ function backupRow({ configured, newest, stale, free_bytes, total_bytes }) {
 export async function profileHub() {
   await loadProfiles();
   const p = currentProfile();
-  const [targetList, habits, sync, backups, feedback] = await Promise.all([
-    get(scoped("/targets")),
-    get(scoped("/habits")),
-    get(scoped("/sync/openscale")),
-    // Its status is a nicety: a failed read hides the row, not the hub.
-    get("/backups").catch(() => ({ configured: false })),
-    get("/feedback").catch(() => null),
-  ]);
+  const [targetList, habits, sync, backups, feedback, hidden] =
+    await Promise.all([
+      get(scoped("/targets")),
+      get(scoped("/habits")),
+      get(scoped("/sync/openscale")),
+      // Its status is a nicety: a failed read hides the row, not the hub.
+      get("/backups").catch(() => ({ configured: false })),
+      get("/feedback").catch(() => null),
+      get(scoped("/suggestions/hidden")),
+    ]);
   const own = habits.filter((x) => !x.archived).length;
   const byKey = Object.fromEntries(targetList.map((t) => [t.metric, t]));
   // In this device's units; redrawn when they change.
@@ -178,7 +183,7 @@ export async function profileHub() {
         download: "",
         name: `Export ${p.name}`,
         detail:
-          "Everything in this profile: Diary, Body, habits, activities and targets",
+          "Diary, Body, habits, activities and targets; photos and the Home Assistant hook stay here",
       }),
       menuRow({
         onclick: busy(importCronometer),
@@ -229,6 +234,7 @@ export async function profileHub() {
       { class: "muted" },
       "Profiles have no passwords: anyone who can open Kaloriina sees all of them.",
     ),
+    hiddenSuggestions(hidden),
     thisDevice({
       onEnergy: () => {
         targetsRow.querySelector(".muted").textContent = targetsLine();

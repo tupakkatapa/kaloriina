@@ -1,13 +1,13 @@
 //! The night rule (ADR 0032): sleep sessions as nights, naps and stage
-//! spans. Sessions ≤ [`SLEEP_JOIN_S`] apart are one block; a block ≥
-//! [`NIGHT_MIN_MIN`] in bed is a night filed under its wake day, minutes
+//! spans. Sessions ≤ [`SLEEP_JOIN_SECONDS`] apart are one block; a block ≥
+//! [`NIGHT_MINUTES_MIN`] in bed is a night filed under its wake day, minutes
 //! are interval unions, its stage spans clipped to it. A session under a
-//! night long, ≥ [`SLEEP_SPLIT_S`] after a block already a night, starts a
+//! night long, ≥ [`SLEEP_SPLIT_SECONDS`] after a block already a night, starts a
 //! block of its own (a nap after waking). A block too short for a night
-//! ending before [`NIGHT_PART_END_MIN`] on the wake day of the night after
+//! ending before [`NIGHT_PART_END_MINUTES`] on the wake day of the night after
 //! it is that night's start. A second night on a wake day (the shorter) is
 //! skipped and counted. Each session of a block too short for a night is
-//! a nap on its wake day; a block over [`IN_BED_MAX_MIN`] is neither.
+//! a nap on its wake day; a block over [`IN_BED_MINUTES_MAX`] is neither.
 //!
 //! One rule, two inputs: a Google Takeout export's sleep files
 //! (`google_health`) and Health Connect's raw `SleepSession` records, which
@@ -20,9 +20,9 @@ use jiff::tz::{Offset, TimeZone};
 use jiff::{Timestamp, Zoned};
 
 use super::{
-    DeviceDay, IN_BED_MAX_MIN, NIGHT_MIN_MIN, NIGHT_PART_END_MIN, NapIn, SLEEP_JOIN_S,
-    SLEEP_SPLIT_S, SleepStage, SleepStageKind, StageSource, checked_nap, day_so_far, is_date,
-    mean_rounded,
+    DeviceDay, IN_BED_MINUTES_MAX, NIGHT_MINUTES_MIN, NIGHT_PART_END_MINUTES, NapIn,
+    SLEEP_JOIN_SECONDS, SLEEP_SPLIT_SECONDS, SleepStage, SleepStageKind, StageSource, checked_nap,
+    day_so_far, hh_mm, is_date, mean_rounded,
 };
 
 /// `+03:00` (also `+3:0`, `Z`); `None` when it doesn't read or is out of
@@ -51,7 +51,7 @@ pub(crate) fn local(at: Timestamp, off: Option<Offset>, tz: &TimeZone) -> Zoned 
 }
 
 pub(crate) fn clock(z: &Zoned) -> String {
-    format!("{:02}:{:02}", z.hour(), z.minute())
+    hh_mm(i64::from(z.hour()) * 60 + i64::from(z.minute()))
 }
 
 /// Whether `day` may be stored: a four-digit year, not after
@@ -86,26 +86,39 @@ pub(crate) struct Sleep {
     pub(crate) bpm: Option<i64>,
 }
 
+/// `spans` as the disjoint spans they cover, by start.
+pub(crate) fn merged(mut spans: Vec<Span>) -> Vec<Span> {
+    spans.sort_unstable();
+    let mut out: Vec<Span> = Vec::with_capacity(spans.len());
+    for (a, b) in spans {
+        match out.last_mut() {
+            Some(last) if a <= last.1 => last.1 = last.1.max(b),
+            _ => out.push((a, b)),
+        }
+    }
+    out
+}
+
 /// Whole minutes the union of `spans` covers (overlaps count once).
 pub(crate) fn union_minutes(mut spans: Vec<Span>) -> i64 {
     spans.retain(|(a, b)| b > a);
-    spans.sort();
-    let mut seconds = 0;
-    let mut open: Option<Span> = None;
-    for (a, b) in spans {
-        open = match open {
-            Some((from, to)) if a <= to => Some((from, to.max(b))),
-            Some((from, to)) => {
-                seconds += to.as_second() - from.as_second();
-                Some((a, b))
-            }
-            None => Some((a, b)),
-        };
-    }
-    if let Some((from, to)) = open {
-        seconds += to.as_second() - from.as_second();
-    }
+    let seconds: i64 = merged(spans)
+        .iter()
+        .map(|(a, b)| b.as_second() - a.as_second())
+        .sum();
     (seconds + 30).div_euclid(60)
+}
+
+/// Where a tail of `awake` spans reaching the end of `span` begins (its end
+/// without one): awake or out of bed after the last sleep.
+pub(crate) fn tail_start((start, mut end): Span, awake: &[Span]) -> Timestamp {
+    while let Some(&(a, _)) = awake
+        .iter()
+        .find(|&&(a, b)| a > start && a < end && b >= end)
+    {
+        end = a;
+    }
+    end
 }
 
 /// A night read from the export: its sleep fields, its span, its stage
@@ -117,7 +130,7 @@ pub(crate) struct Night {
     pub(crate) heart: (i64, i64),
 }
 
-/// The night a block of sleep sessions (≥ [`NIGHT_MIN_MIN`] in bed) makes:
+/// The night a block of sleep sessions (≥ [`NIGHT_MINUTES_MIN`] in bed) makes:
 /// its wake day and the night.
 fn night(block: &[Sleep], in_bed: i64, tz: &TimeZone) -> Option<(Date, Night)> {
     let start = block.iter().map(|s| s.span.0).min()?;
@@ -276,7 +289,7 @@ fn in_bed(block: &[Sleep]) -> i64 {
 }
 
 /// Whether `part`, too short for a night, is the start of `night`, the
-/// block after it: it ends before [`NIGHT_PART_END_MIN`] on the night's
+/// block after it: it ends before [`NIGHT_PART_END_MINUTES`] on the night's
 /// wake day.
 fn starts_night(part: &[Sleep], night: &[Sleep], tz: &TimeZone) -> bool {
     let woke = |b: &[Sleep]| {
@@ -287,10 +300,10 @@ fn starts_night(part: &[Sleep], night: &[Sleep], tz: &TimeZone) -> bool {
     let (Some(a), Some(b)) = (woke(part), woke(night)) else {
         return false;
     };
-    in_bed(part) < NIGHT_MIN_MIN
-        && (NIGHT_MIN_MIN..=IN_BED_MAX_MIN).contains(&in_bed(night))
+    in_bed(part) < NIGHT_MINUTES_MIN
+        && (NIGHT_MINUTES_MIN..=IN_BED_MINUTES_MAX).contains(&in_bed(night))
         && a.date() == b.date()
-        && i64::from(a.hour()) * 60 + i64::from(a.minute()) < NIGHT_PART_END_MIN
+        && i64::from(a.hour()) * 60 + i64::from(a.minute()) < NIGHT_PART_END_MINUTES
 }
 
 /// Sleep sessions as nights and naps (the module's rule, the phone's);
@@ -303,12 +316,12 @@ pub(crate) fn sleeps(sleeps: Vec<Sleep>, prefix: &str, tz: &TimeZone, latest: Da
         // A short sleep a while after a night is a nap, not the night's
         // end (its wake time stays the night's).
         let after_night = |b: &[Sleep]| {
-            gap >= SLEEP_SPLIT_S
-                && union_minutes(vec![s.span]) < NIGHT_MIN_MIN
-                && union_minutes(b.iter().map(|s| s.span).collect()) >= NIGHT_MIN_MIN
+            gap >= SLEEP_SPLIT_SECONDS
+                && union_minutes(vec![s.span]) < NIGHT_MINUTES_MIN
+                && union_minutes(b.iter().map(|s| s.span).collect()) >= NIGHT_MINUTES_MIN
         };
         match blocks.last_mut() {
-            Some(b) if gap <= SLEEP_JOIN_S && !after_night(b) => {
+            Some(b) if gap <= SLEEP_JOIN_SECONDS && !after_night(b) => {
                 end = end.max(s.span.1.as_second());
                 b.push(s);
             }
@@ -323,6 +336,8 @@ pub(crate) fn sleeps(sleeps: Vec<Sleep>, prefix: &str, tz: &TimeZone, latest: Da
         if starts_night(&blocks[i], &blocks[i + 1], tz) {
             let part = blocks.remove(i);
             blocks[i].splice(0..0, part);
+            // The part before may start this night too, now it is one.
+            i = i.saturating_sub(1);
         } else {
             i += 1;
         }
@@ -331,9 +346,9 @@ pub(crate) fn sleeps(sleeps: Vec<Sleep>, prefix: &str, tz: &TimeZone, latest: Da
     let mut nights: BTreeMap<Date, Night> = BTreeMap::new();
     for b in &blocks {
         let in_bed = in_bed(b);
-        if in_bed > IN_BED_MAX_MIN {
+        if in_bed > IN_BED_MINUTES_MAX {
             out.skipped += 1;
-        } else if in_bed >= NIGHT_MIN_MIN {
+        } else if in_bed >= NIGHT_MINUTES_MIN {
             match night(b, in_bed, tz) {
                 Some((day, n)) if plausible(day, latest) => {
                     // Two nights ending one day: the longer is the day's,
@@ -439,15 +454,13 @@ pub struct HealthConnectSleeps {
 /// When `n`'s sleep ended: its end, less a tail of awake stages reaching it
 /// (awake or out of bed after the last sleep isn't the night).
 fn asleep_end(n: &Night) -> Timestamp {
-    let (start, mut end) = n.span;
-    while let Some(&((a, _), _)) = n
+    let awake: Vec<Span> = n
         .stages
         .iter()
-        .find(|&&((a, b), st)| st == Stage::Awake && a > start && a < end && b >= end)
-    {
-        end = a;
-    }
-    end
+        .filter(|(_, st)| *st == Stage::Awake)
+        .map(|&(span, _)| span)
+        .collect();
+    tail_start(n.span, &awake)
 }
 
 /// `records` (`(record id, data)` of `SleepSession`s) as nights and naps by
@@ -499,20 +512,13 @@ mod tests {
                 &f["in_bed_max_min"]
             ),
             (
-                &serde_json::json!(SLEEP_JOIN_S),
-                &serde_json::json!(SLEEP_SPLIT_S),
-                &serde_json::json!(NIGHT_MIN_MIN),
-                &serde_json::json!(IN_BED_MAX_MIN)
+                &serde_json::json!(SLEEP_JOIN_SECONDS),
+                &serde_json::json!(SLEEP_SPLIT_SECONDS),
+                &serde_json::json!(NIGHT_MINUTES_MIN),
+                &serde_json::json!(IN_BED_MINUTES_MAX)
             )
         );
-        assert_eq!(
-            f["night_part_end"],
-            format!(
-                "{:02}:{:02}",
-                NIGHT_PART_END_MIN / 60,
-                NIGHT_PART_END_MIN % 60
-            )
-        );
+        assert_eq!(f["night_part_end"], hh_mm(NIGHT_PART_END_MINUTES));
         let tz = TimeZone::get(f["zone"].as_str().unwrap()).unwrap();
         let text = |v: &serde_json::Value, k: &str| v[k].as_str().unwrap().to_owned();
         for case in f["cases"].as_array().unwrap() {

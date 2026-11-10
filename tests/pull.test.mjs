@@ -7,6 +7,7 @@ import {
   heading,
   MAX,
   mayStart,
+  reach,
   releases,
   stretch,
   THRESHOLD,
@@ -50,4 +51,11 @@ test("released at the threshold, it refreshes; short of it, it doesn't", () => {
   assert.equal(releases(THRESHOLD), true);
   assert.equal(releases(THRESHOLD - 1), false);
   assert.equal(releases(stretch(150)), false, "a 150 px drag");
+});
+
+test("the line spans the screen as the pull reaches the threshold", () => {
+  assert.equal(reach(0), 0);
+  assert.equal(reach(THRESHOLD / 2), 0.5);
+  assert.equal(reach(THRESHOLD), 1);
+  assert.equal(reach(MAX), 1, "never past the screen");
 });

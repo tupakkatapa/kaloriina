@@ -97,9 +97,8 @@ pub struct Stats {
     pub activities_from: Option<String>,
     pub naps_from: Option<String>,
     pub weigh_ins_from: Option<String>,
-    /// The library's foods of your own (archived and seeded ones aside),
-    /// recipes and meals (every profile's: the library is shared).
+    /// The library's foods of your own (archived and seeded ones aside)
+    /// and recipes (every profile's: the library is shared).
     pub custom_foods: i64,
     pub recipes: i64,
-    pub meals: i64,
 }

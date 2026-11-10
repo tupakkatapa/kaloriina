@@ -14,12 +14,12 @@ import {
 import { touching } from "../correlate.mjs";
 import { clockOf, duration, pretty, shift, today } from "../dates.mjs";
 import {
-  GOAL_STEP_MIN,
+  GOAL_STEP_MINUTES,
   goalShade,
   heartDaysOver,
   MIN_NIGHTS,
   nightText,
-  ON_SCHEDULE_MIN,
+  ON_SCHEDULE_MINUTES,
   onSchedule,
   sleepStats,
 } from "../device.mjs";
@@ -34,7 +34,7 @@ import {
   plural,
   qty,
 } from "../format.mjs";
-import { bmi, seriesOf } from "../insights.mjs";
+import { bmi, prepare, present, seriesOf, versusBefore } from "../insights.mjs";
 import { href } from "../nav.mjs";
 import { kvList } from "../rows.mjs";
 import {
@@ -52,8 +52,8 @@ import {
   withHidden,
 } from "../series.mjs";
 import { convert, seriesInfo, shownUnit, source } from "../series-keys.mjs";
-import { CHECK, choice, fill, h, icon } from "../ui.mjs";
 import { tiles } from "../tiles.mjs";
+import { CHECK, choice, fill, h, icon } from "../ui.mjs";
 import { toShown, unitOf, unitQty } from "../units.mjs";
 import { seriesChart } from "./summary-charts.mjs";
 import { highlightStack } from "./summary-highlights.mjs";
@@ -64,7 +64,8 @@ export const LABEL = "Body";
 // The period's weigh-ins (from the trend window before it: the trend at its
 // first weigh-in averages the days before), the last weeks' for the goal's
 // projection (with a goal weight only), scale readings, maintenance by day
-// (web/series.mjs), measurements and notes; the goals, Health Connect days
+// (web/series.mjs), measurements and notes, and the period before's Health
+// Connect days (the tiles compare them); the goals, Health Connect days
 // (sleep, heart), check-ins, the energy burned and the weigh-in and
 // reading rows come `shared` (web/series.mjs, a promise).
 export async function load(p, sharing) {
@@ -77,20 +78,30 @@ export async function load(p, sharing) {
     get(scoped(`/measurements?${range}`)),
     get(scoped(`/notes?${range}`)),
   ]);
-  const [weighed, readings, recent, maintenance] = await Promise.all([
-    shared.rows("weights", weighFrom, p.to),
-    shared.rows("readings", p.from, p.to),
-    isNil(shared.targets.goal_weight?.value)
-      ? []
-      : shared.rows("weights", recentFrom, today()),
-    maintenanceOver(p, shared),
-  ]);
-  return { weighed, readings, measured, notes, recent, maintenance };
+  const [weighed, readings, recent, maintenance, beforeDays] =
+    await Promise.all([
+      shared.rows("weights", weighFrom, p.to),
+      shared.rows("readings", p.from, p.to),
+      isNil(shared.targets.goal_weight?.value)
+        ? []
+        : shared.rows("weights", recentFrom, today()),
+      maintenanceOver(p, shared),
+      shared.rows("deviceDays", p.before.from, p.before.to),
+    ]);
+  return {
+    weighed,
+    readings,
+    measured,
+    notes,
+    recent,
+    maintenance,
+    beforeDays,
+  };
 }
 
 export function render(
   p,
-  { weighed, readings, measured, notes, recent, maintenance },
+  { weighed, readings, measured, notes, recent, maintenance, beforeDays },
   shared,
 ) {
   const { deviceDays: days, checkIns, targets } = shared;
@@ -98,6 +109,33 @@ export function render(
   const weights = weighed.filter((w) => w.day >= p.from);
   const person = currentProfile() ?? {};
   const fat = chosenReadings(readings).filter((r) => !isNil(r.body_fat));
+  // The tiles' changes from the period before: HRV by MEAN_BAR, resting
+  // heart rate past 3 bpm, sleep past 15 min.
+  const c = prepare({
+    kind: p.kind,
+    from: p.from,
+    to: p.to,
+    last: today(),
+    before: p.before,
+  });
+  const vs = (key, opts) =>
+    versusBefore(c, present(days, key), present(beforeDays, key), opts);
+  const nights = (list) =>
+    seriesOf(
+      list.filter((d) => !isNil(slept(d)) && d.bedtime),
+      "asleep_min",
+    );
+  const heartVs = {
+    hrv_ms: vs("hrv_ms"),
+    resting_hr: vs("resting_hr", {
+      bar: 3,
+      say: (v) => qty(Math.round(v), "bpm"),
+    }),
+  };
+  const sleepVs = versusBefore(c, nights(days), nights(beforeDays), {
+    bar: 15,
+    say: (v) => duration(Math.round(v)),
+  });
   return [
     // Sleep ↔ check-ins, BMI, the loss rate, recovery, body fat; the tiles
     // carry the weight trend.
@@ -132,11 +170,17 @@ export function render(
     }) ?? h("p", { class: "muted" }, `Nothing logged this ${p.kind}.`),
     goal === null ? null : goalTiles(p, goal, recent),
     heartChart(p, heartDaysOver(days, today())),
-    heartTiles(heartDaysOver(days, today())),
-    sleepSection(p, days, targets.sleep_min?.value ?? null, {
-      bedtime: targets.bedtime?.value ?? null,
-      wake: targets.wake_time?.value ?? null,
-    }),
+    heartTiles(heartDaysOver(days, today()), heartVs),
+    sleepSection(
+      p,
+      days,
+      targets.sleep_min?.value ?? null,
+      {
+        bedtime: targets.bedtime?.value ?? null,
+        wake: targets.wake_time?.value ?? null,
+      },
+      sleepVs,
+    ),
     checkInSection(p, checkIns),
     measured.length > 0
       ? null
@@ -526,8 +570,9 @@ const OVER_DAYS = "Averaged over the days your device read it.";
 
 // The period's heart: the average HRV, resting heart rate and heart rate
 // over the days that have each (`days` heartDaysOver: today's heart rate
-// left out); null without any.
-function heartTiles(days) {
+// left out), each with its change `vs` the period before (by key); null
+// without any.
+function heartTiles(days, vs) {
   const mean = (key) => {
     const list = days.map((d) => d[key]).filter((v) => !isNil(v));
     return list.length > 0
@@ -541,6 +586,7 @@ function heartTiles(days) {
           value: qty(mean(key), unit),
           short: caption,
           long: `${words} ${OVER_DAYS}`,
+          vs: vs[key],
         };
   return tiles("Heart", [
     tile(
@@ -629,9 +675,9 @@ const hours = (min) => fmt(min / 60, 1);
 // an hour over), a night at the goal or more marked ✓, a day without a
 // night hatched (its naps in its label). Without a goal the nights shade by
 // their quartiles. With a bedtime or wake-up target (`schedule`, minutes),
-// a night that kept it (ON_SCHEDULE_MIN either way) is marked ◷ and counted
-// in a tile.
-function sleepSection(p, days, goal, schedule) {
+// a night that kept it (ON_SCHEDULE_MINUTES either way) is marked ◷ and counted
+// in a tile. `vs`: the time asleep's change from the period before.
+function sleepSection(p, days, goal, schedule, vs) {
   const nights = days.filter((d) => !isNil(slept(d)));
   const stats = sleepStats(days);
   if (!stats)
@@ -643,7 +689,7 @@ function sleepSection(p, days, goal, schedule) {
   const bounds =
     goal === null
       ? quartiles(nights.map((x) => slept(x)))
-      : [goal - GOAL_STEP_MIN, goal, goal + GOAL_STEP_MIN];
+      : [goal - GOAL_STEP_MINUTES, goal, goal + GOAL_STEP_MINUTES];
   const byDay = new Map(nights.map((d) => [d.day, d]));
   const napDays = new Map(
     days.filter((d) => isNil(slept(d)) && nightText(d)).map((d) => [d.day, d]),
@@ -685,6 +731,7 @@ function sleepSection(p, days, goal, schedule) {
         value: duration(Math.round(stats.asleep)),
         short: "asleep a night",
         long: `Your average time asleep a night, over the ${plural(stats.nights, "night")} your device recorded; naps not counted.`,
+        vs,
       },
       stats.bedtime
         ? {
@@ -718,7 +765,7 @@ function sleepSection(p, days, goal, schedule) {
         ? {
             value: `${judged.filter((d) => kept(d.day)).length} of ${judged.length}`,
             short: "nights on schedule",
-            long: `Nights you went to bed and woke up within ${ON_SCHEDULE_MIN}${NBSP}min of your bedtime and wake-up targets.`,
+            long: `Nights you went to bed and woke up within ${ON_SCHEDULE_MINUTES}${NBSP}min of your bedtime and wake-up targets.`,
           }
         : null,
     ]),
@@ -783,7 +830,7 @@ function sleepSection(p, days, goal, schedule) {
                   "li",
                   {},
                   h("span", { "aria-hidden": "true" }, "◷"),
-                  `On schedule: within ${ON_SCHEDULE_MIN}${NBSP}min of your bedtime and wake-up`,
+                  `On schedule: within ${ON_SCHEDULE_MINUTES}${NBSP}min of your bedtime and wake-up`,
                 )
               : null,
           ),

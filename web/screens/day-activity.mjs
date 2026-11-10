@@ -15,7 +15,6 @@ import { go, goDay, href } from "../nav.mjs";
 import { latest, waiting } from "../outbox.mjs";
 import { activityBrief, logRow, pendingRow, result } from "../rows.mjs";
 import { dayContext, dayEnergy } from "../series.mjs";
-import { unitQty } from "../units.mjs";
 import {
   empty,
   h,
@@ -25,6 +24,7 @@ import {
   tickButton,
   undoable,
 } from "../ui.mjs";
+import { unitQty } from "../units.mjs";
 
 // A workout planned on the day: its name opens the workout (back to the
 // day); today Start runs it there (Resume, a run of it kept); ✕ drops the

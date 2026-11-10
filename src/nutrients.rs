@@ -581,24 +581,6 @@ impl Nutrients {
     }
 }
 
-impl Nutrients {
-    /// A food these nutrients are `grams` of (100 when unknown), or of
-    /// more grams where that's needed to keep every per-100 value within
-    /// [`per100_max`]: the grams, and the food's per-100 values. How quick
-    /// adds became foods (migration 31 and old export files).
-    #[must_use]
-    pub fn per100_fitting(&self, grams: Option<f64>) -> (f64, Self) {
-        let mut g = grams.unwrap_or(100.0);
-        for (n, v) in self.pairs() {
-            // Aimed at what 100 g can physically hold, not the rounding
-            // margin; the next float up, so the division can't round over.
-            let need = (v * 100.0 / physical(n.unit)).next_up();
-            g = g.max(need);
-        }
-        (g, self.scale(100.0 / g))
-    }
-}
-
 /// What 100 g of food can physically hold of a nutrient, by stored unit:
 /// energy 900 kcal (pure fat), anything else 100 g in that unit.
 pub const PER100_PHYSICAL: [(&str, f64); 5] = [
@@ -868,20 +850,5 @@ mod tests {
         for (unit, max) in PER100_MAX {
             exact(unit, max);
         }
-    }
-
-    #[test]
-    fn a_quick_add_fits_as_a_food() {
-        let snack = nut(&[("energy", 100.0)]);
-        assert_eq!(snack.per100_fitting(None), (100.0, snack.clone()));
-        let (g, per100) = snack.per100_fitting(Some(50.0));
-        assert_close!(g, 50.0);
-        assert_close!(per100.get("energy").unwrap(), 200.0);
-        // 2,500 kcal at 100 g would be 2,500 kcal per 100 g: more grams.
-        let feast = nut(&[("energy", 2500.0), ("fat", 150.0), ("protein", 1.0 / 3.0)]);
-        let (g, per100) = feast.per100_fitting(None);
-        assert!(g > 277.7 && g < 277.8, "{g}");
-        assert!(per100.validate_per100().is_ok(), "{per100:?}");
-        assert_close!(per100.scale(g / 100.0).get("energy").unwrap(), 2500.0);
     }
 }

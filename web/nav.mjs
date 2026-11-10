@@ -55,13 +55,13 @@ export const href = {
   day: (day) => `#/day/${day}`,
   // A day with a group in select mode, the entry ticked (Log again).
   select: (day, id) => `#/day/${day}${q({ select: id })}`,
-  add: (day, group) => `#/add/${day}/${g(group)}`,
+  // A group's Add screen; `{q}` searched, `{replace}` (a text entry's id)
+  // finding that entry's food.
+  add: (day, group, params = {}) => `#/add/${day}/${g(group)}${q(params)}`,
   // Log a food: into a group (from the diary), or from the Foods tab
-  // (today, no group yet).
-  log: (day, group, id) =>
-    group ? `#/log/${day}/${g(group)}/${id}` : `#/log/${id}`,
-  logMeal: (day, group, id) =>
-    group ? `#/log-meal/${day}/${g(group)}/${id}` : `#/log-meal/${id}`,
+  // (today, no group yet); `{replace}` makes text entry `replace` it.
+  log: (day, group, id, params = {}) =>
+    group ? `#/log/${day}/${g(group)}/${id}${q(params)}` : `#/log/${id}`,
   scan: (day, group) => (group ? `#/scan/${day}/${g(group)}` : "#/scan"),
   // An entry's editor at its `key`: its id, or a series' due day's
   // `daily-{item}-{day}` (no id until ticked: ADR 0023).
@@ -84,8 +84,6 @@ export const href = {
   // Pick a duplicate to merge into food (or recipe) `id`.
   merge: (id) => `#/food/${id}/merge`,
   recipe: (id, back = null) => `#/recipe/${id}${q({ back })}`,
-  // A meal's editor; `back` is where saving returns to.
-  meal: (id, back = null) => `#/meal/${id}${q({ back })}`,
   // Summary: period `kind` (a month by default) around `day` on subtab
   // `tab` (food, body, activity, habits); without one, the subtab last used
   // on this device; `{metric}` opens the Body chart on it.
@@ -176,15 +174,24 @@ const TAB_ROOT = {
   profile: [href.profile(), "Go to Profile"],
 };
 
-// A screen that failed to build: why, and the way back to its tab, as on
-// Not found.
+// A screen that failed to build: why, Retry (on a tab's own screen, its
+// way back is where it is) and the way back to its tab, as on Not found.
 const failed = (err, back, backLabel) =>
   h(
     "section",
-    {},
+    { class: "failed-screen" },
     titleBar("Something went wrong", back),
     errorBox(err),
-    h("p", {}, h("a", { class: "button", href: back }, backLabel)),
+    h(
+      "p",
+      { class: "actions" },
+      h(
+        "button",
+        { type: "button", class: "button", onclick: () => route() },
+        "Retry",
+      ),
+      h("a", { class: "button", href: back }, backLabel),
+    ),
   );
 
 // A screen with unsaved work may keep you: `guardLeave(node, ask)`, where
@@ -297,6 +304,13 @@ function screenAt(found, path, params) {
   return found.view(...args, params);
 }
 
+// The screen's heading takes focus: a screen reader starts there.
+export function focusHeading(options) {
+  const heading = app.querySelector("h1");
+  heading?.setAttribute("tabindex", "-1");
+  heading?.focus(options);
+}
+
 // A new screen opens at its top and takes focus at its heading, so screen
 // readers start there (the address names no element, so the window would
 // keep the last screen's offset); re-renders of the same screen (after a
@@ -306,9 +320,7 @@ function screenAt(found, path, params) {
 function markShown(path, tab) {
   if (path !== shown) {
     window.scrollTo(0, 0);
-    const heading = app.querySelector("h1");
-    heading?.setAttribute("tabindex", "-1");
-    heading?.focus({ preventScroll: true });
+    focusHeading({ preventScroll: true });
     shown = path;
   }
   for (const a of document.querySelectorAll(".tabs a"))

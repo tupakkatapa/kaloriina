@@ -7,7 +7,7 @@
 //!   name ignoring case, is counted into if it counts the same unit; else
 //!   the habit is skipped. A yes/no habit counts "times"; a numerical one's
 //!   target is its goal when it is per day; archived stays archived. Past
-//!   [`HABITS_MAX`] trackers the rest are skipped.
+//!   [`HABITS_MAX`](crate::model::HABITS_MAX) trackers the rest are skipped.
 //! - **Repetitions:** on their UTC date (Loop stores a day as its midnight
 //!   in UTC). A yes, by hand (2) or automatic (1), is 1; no (0), skipped (3)
 //!   and unknown (−1) are none. A numerical value is in thousandths: 0 is
@@ -21,13 +21,14 @@ use std::path::Path;
 use anyhow::Context;
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rusqlite::config::DbConfig;
+use rusqlite::{Connection, OpenFlags};
 
 use crate::db;
 use crate::model::sleep::plausible;
 use crate::model::{
-    GoalDir, Gone, HABIT_AMOUNT_MAX, HABITS_MAX, HabitInput, LABEL_MAX, ProfileId, UNIT_MAX,
-    checked_uid, day_so_far,
+    GoalDir, Gone, HABIT_AMOUNT_MAX, HabitInput, LABEL_MAX, ProfileId, UNIT_MAX, checked_uid,
+    day_so_far,
 };
 
 /// What an import did.
@@ -138,6 +139,10 @@ fn repetitions(src: &Connection) -> rusqlite::Result<Repetitions> {
 fn read(path: &Path) -> anyhow::Result<(Vec<Habit>, Repetitions)> {
     let src = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .with_context(|| format!("opening {}", path.display()))?;
+    // A file from elsewhere: its schema runs no functions, and nothing can
+    // write through it.
+    src.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
+    src.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
     let not_loop = || format!("{} is no Loop Habit Tracker backup", path.display());
     let has = |table: &str, wanted: &[&str]| -> anyhow::Result<Vec<String>> {
         let have = columns(&src, table).with_context(not_loop)?;
@@ -171,7 +176,7 @@ fn clipped(s: &str, max: usize) -> String {
 /// new one; `Err` the reason it is skipped.
 fn tracker(
     tx: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     h: &Habit,
     report: &mut Report,
 ) -> anyhow::Result<Result<i64, String>> {
@@ -199,61 +204,28 @@ fn tracker(
         Ok(i) => i,
         Err(e) => return Ok(Err(e.to_string())),
     };
-    let had: Option<(i64, String, String)> = tx
-        .query_row(
-            "SELECT id, name, unit FROM habit WHERE profile_id = ?1
-             AND (uid = ?2 OR name = ?3 COLLATE NOCASE) ORDER BY uid IS NOT ?2 LIMIT 1",
-            params![profile, input.uid, input.name],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .optional()?;
-    if let Some((id, name, unit)) = had {
-        if !unit.eq_ignore_ascii_case(&input.unit) {
-            return Ok(Err(format!(
-                "the habit {name:?} here counts {unit:?}, Loop's {:?}",
-                input.unit
-            )));
+    Ok(db::habit_adopt(tx, pid, &input)?.map(|(id, new)| {
+        if new {
+            report.added += 1;
+        } else {
+            report.reused += 1;
         }
-        report.reused += 1;
-        return Ok(Ok(id));
-    }
-    let count: u32 = tx.query_row(
-        "SELECT count(*) FROM habit WHERE profile_id = ?",
-        [profile],
-        |r| r.get(0),
-    )?;
-    if count >= HABITS_MAX {
-        return Ok(Err(format!("a profile has at most {HABITS_MAX} habits")));
-    }
-    tx.execute(
-        "INSERT INTO habit (profile_id, name, unit, goal_value, goal_dir, archived, uid)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
-        params![
-            profile,
-            input.name,
-            input.unit,
-            input.goal_value,
-            input.goal_dir,
-            input.archived,
-            input.uid
-        ],
-    )?;
-    report.added += 1;
-    Ok(Ok(tx.last_insert_rowid()))
+        id
+    }))
 }
 
-/// Add the Loop backup at `path` to `profile`'s habits.
+/// Add the Loop backup at `path` to `pid`'s habits.
 ///
 /// # Errors
 /// The backup missing or unreadable, or a database error; nothing is
 /// written then.
-pub fn import(conn: &mut Connection, profile: ProfileId, path: &Path) -> anyhow::Result<Report> {
+pub fn import(conn: &mut Connection, pid: ProfileId, path: &Path) -> anyhow::Result<Report> {
     let (habits, mut reps) = read(path)?;
     let latest = day_so_far();
     let mut report = Report::default();
     let tx = db::write(conn)?;
     for h in &habits {
-        let id = match tracker(&tx, profile, h, &mut report)? {
+        let id = match tracker(&tx, pid, h, &mut report)? {
             Ok(id) => id,
             Err(why) => {
                 report.skipped.push((h.name.clone(), why));
@@ -279,15 +251,10 @@ pub fn import(conn: &mut Connection, profile: ProfileId, path: &Path) -> anyhow:
                 report.bad += 1;
                 continue;
             };
-            let added = tx.execute(
-                "INSERT INTO habit_day (habit_id, day, amount) VALUES (?, ?, ?)
-                 ON CONFLICT (habit_id, day) DO NOTHING",
-                params![id, day.to_string(), amount],
-            )?;
-            if added == 0 {
-                report.kept += 1;
-            } else {
+            if db::habit_day_add_missing(&tx, id, &day.to_string(), amount)? {
                 report.days += 1;
+            } else {
+                report.kept += 1;
             }
         }
     }

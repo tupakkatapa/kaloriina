@@ -312,6 +312,9 @@ export const guessed = (x) =>
 // bound ("≥ x") that no verdict (to go, low, on target) is drawn from.
 export const KNOWN = 0.8;
 
+// Whether a total with `share` of its food behind it reads "≥ x".
+export const atLeastShown = (share) => share < KNOWN;
+
 // A day's mean of `key` over `days` ([{total}], the logged days): every
 // day counts, one without it as 0, so under full coverage it is a lower
 // bound as its total is. One definition for the Summary's averages and the
@@ -337,6 +340,11 @@ export function carbsFloor(totals) {
 // not in a chart, a bucket, a calendar or a tally.
 export const foodDay = (d) => (d.total.energy ?? 0) > 0;
 
+// A food day read as all it ate: not one whose food isn't the whole day's
+// (`incomplete`: ticked "not fully logged", or a text entry without kcal).
+// Out of averages, charts, the balance and maintenance; shown, unjudged.
+export const countedDay = (d) => foodDay(d) && !d.incomplete;
+
 // A share as a percentage that never rounds to all or none: "99 %" for
 // 0.996, "< 1 %" for 0.004.
 export function sharePct(share) {
@@ -346,13 +354,13 @@ export function sharePct(share) {
 }
 
 // How `value`, a total of `key` with `share` of the food behind it carrying
-// it, reads: {text, lower, judged, hint}. Any share short of all: "≥ x",
-// `lower` (a floor), with `hint` "from 45 % of `of`"; at KNOWN or more it
-// is still `judged` (ADR 0030), as a floor: what's left is "at most". A
-// value with none behind it (what carried it is no part of the food's dry
-// matter) is still a floor, never "–" over a real sum. None (no
-// value): "–", no hint. `lower` forces the floor (energy with some
-// unknown).
+// it, reads: {text, lower, judged, hint}. Any share short of all is
+// `lower` (a floor), with `hint` "from 45 % of `of`"; under KNOWN it reads
+// "≥ x", at KNOWN or more as it is (the hint still says the share), still
+// `judged` (ADR 0030) as a floor: what's left is "at most". A value with
+// none behind it (what carried it is no part of the food's dry matter) is
+// still a floor, never "–" over a real sum. None (no value): "–", no hint.
+// `lower` forces the floor and its "≥" (energy with some unknown).
 export function amountShown(
   key,
   value,
@@ -365,7 +373,7 @@ export function amountShown(
   const judged = share >= KNOWN;
   const isLower = forced ?? share < 1;
   return {
-    text: isLower ? `≥${NBSP}${plain}` : plain,
+    text: (forced ?? atLeastShown(share)) ? `≥${NBSP}${plain}` : plain,
     lower: isLower,
     judged,
     hint: share < 1 ? `from ${sharePct(share)} of ${of}` : null,

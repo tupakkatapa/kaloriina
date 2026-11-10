@@ -14,6 +14,8 @@ import { abbreviated, h } from "./ui.mjs";
 //   counted (which days; what a "≥" or "≈" means here). The tile's
 //   tooltip (tips.mjs: its aria-describedby; on hover and keyboard focus
 //   on a desktop, on a tap on a phone; above the tile).
+// - `vs`: its change from the period before, small print under the
+//   caption (insights.mjs versusBefore), or null.
 // - `cls`: a class for the tile.
 // Null when no item is left. An item without `long` is a bug: logged, and
 // shown without a tip.
@@ -24,14 +26,19 @@ export function tiles(label, items) {
     "ul",
     { class: "tiles", "aria-label": label },
     list.map((item) => {
-      const { value, short, long, cls } = item;
+      const { value, short, long, vs, cls } = item;
       if (!long) console.error(`A tile of "${label}" has no long text`, item);
       const button = h(
         "button",
         { type: "button", class: "tile" },
         h("b", { class: "tile-value" }, value),
         " ",
-        h("span", { class: "tile-caption" }, abbreviated(short)),
+        h(
+          "span",
+          { class: "tile-caption" },
+          abbreviated(short),
+          vs ? h("span", { class: "tile-sub tile-vs" }, vs) : null,
+        ),
       );
       return h(
         "li",

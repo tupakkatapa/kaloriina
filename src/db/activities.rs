@@ -1,13 +1,13 @@
 //! Activities done (a workout, a run, a walk…), per profile, with their
-//! sets; the device's among them (see `sync_workouts`). History, bests and
+//! sets; the device's among them (see `device_sessions`). History, bests and
 //! last done are queries over `activity_set`.
 
+use super::device_sessions::{bury, claim_for};
 use super::prelude::*;
-use super::sync_workouts::{bury, claim_for};
 use super::{workout_get, workout_list};
 use crate::model::{
-    BestSet, Bests, ExerciseHistory, ExerciseRecord, HistoryDay, KcalSource, Plan, PlanInput,
-    Records, TypeBests, WorkoutDone,
+    BestSet, Bests, DayRecords, ExerciseHistory, ExerciseRecord, HistoryDay, KcalSource, Plan,
+    PlanInput, Records, TypeBests, WorkoutDone,
 };
 
 /// `sets`: its `activity_set` rows, in order, as the JSON the API nests.
@@ -57,14 +57,14 @@ pub(super) fn activity_row(r: &Row) -> rusqlite::Result<Activity> {
 /// oldest first; with `exercise`, only those with a set of it.
 pub fn activity_list(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     from: Option<&str>,
     to: Option<&str>,
     exercise: Option<i64>,
 ) -> Result<Vec<Activity>, Error> {
     activity_find(
         conn,
-        profile,
+        pid,
         (from, to),
         &ActivityFilter {
             exercise,
@@ -86,7 +86,7 @@ pub struct ActivityFilter {
 /// keeps, oldest first (with a `limit`, the latest that many).
 pub fn activity_find(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     (from, to): (Option<&str>, Option<&str>),
     filter: &ActivityFilter,
 ) -> Result<Vec<Activity>, Error> {
@@ -101,29 +101,18 @@ pub fn activity_find(
     ))?;
     Ok(stmt
         .query_map(
-            params![
-                profile,
-                from,
-                to,
-                filter.exercise,
-                filter.workout,
-                filter.limit
-            ],
+            params![pid, from, to, filter.exercise, filter.workout, filter.limit],
             activity_row,
         )?
         .collect::<rusqlite::Result<_>>()?)
 }
 
-/// An activity of `profile`; another profile's reads as missing.
-pub fn activity_get(
-    conn: &Connection,
-    profile: ProfileId,
-    id: i64,
-) -> Result<Option<Activity>, Error> {
+/// An activity of `pid`; another profile's reads as missing.
+pub fn activity_get(conn: &Connection, pid: ProfileId, id: i64) -> Result<Option<Activity>, Error> {
     Ok(conn
         .query_row(
             &format!("SELECT {ACTIVITY_COLS} FROM activity WHERE profile_id = ? AND id = ?"),
-            params![profile, id],
+            params![pid, id],
             activity_row,
         )
         .optional()?)
@@ -196,7 +185,7 @@ pub(super) fn sets_put(tx: &Connection, id: i64, sets: &[ActivitySet]) -> Result
 /// matches.
 pub fn activity_save(
     conn: &mut Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     id: Option<i64>,
     input: &ActivityInput,
 ) -> Result<Activity, Error> {
@@ -207,16 +196,16 @@ pub fn activity_save(
         let earlier: Option<i64> = tx
             .query_row(
                 "SELECT id FROM activity WHERE profile_id = ? AND uid = ?",
-                params![profile, uid],
+                params![pid, uid],
                 |r| r.get(0),
             )
             .optional()?;
         if let Some(earlier) = earlier {
-            return Ok(written(activity_get(&tx, profile, earlier)?));
+            return Ok(written(activity_get(&tx, pid, earlier)?));
         }
     }
     let old = id
-        .map(|id| activity_get(&tx, profile, id)?.ok_or_else(|| Error::not_found("activity", id)))
+        .map(|id| activity_get(&tx, pid, id)?.ok_or_else(|| Error::not_found("activity", id)))
         .transpose()?;
     if let Some(old) = &old
         && old.source == ActivitySource::HealthConnect
@@ -269,7 +258,7 @@ pub fn activity_save(
                  uid, type, distance_m, start_at, kcal_source)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
-                profile,
+                pid,
                 input.day,
                 workout_id,
                 input.name,
@@ -289,14 +278,14 @@ pub fn activity_save(
                  SELECT id FROM planned_workout
                  WHERE profile_id = ? AND day = ? AND workout_id = ?
                  ORDER BY id LIMIT 1)",
-            params![profile, input.day, workout_id],
+            params![pid, input.day, workout_id],
         )?;
         new
     };
     sets_put(&tx, id, &sets)?;
-    let mut session = written(activity_get(&tx, profile, id)?);
-    if claim_for(&tx, profile, &session)? {
-        session = written(activity_get(&tx, profile, id)?);
+    let mut session = written(activity_get(&tx, pid, id)?);
+    if claim_for(&tx, pid, &session)? {
+        session = written(activity_get(&tx, pid, id)?);
     }
     tx.commit()?;
     Ok(session)
@@ -304,25 +293,25 @@ pub fn activity_save(
 
 /// Delete an activity; one holding a device workout leaves a tombstone, so
 /// the next sync doesn't bring it back.
-pub fn activity_delete(conn: &mut Connection, profile: ProfileId, id: i64) -> Result<(), Error> {
+pub fn activity_delete(conn: &mut Connection, pid: ProfileId, id: i64) -> Result<(), Error> {
     let tx = write(conn)?;
-    let old = activity_get(&tx, profile, id)?.ok_or_else(|| Error::not_found("activity", id))?;
+    let old = activity_get(&tx, pid, id)?.ok_or_else(|| Error::not_found("activity", id))?;
     tx.execute("DELETE FROM activity WHERE id = ?", [id])?;
     if let Some(key) = &old.source_key {
-        bury(&tx, profile, key, &old)?;
+        bury(&tx, pid, key, &old)?;
     }
     tx.commit()?;
     Ok(())
 }
 
-/// The workouts, each with the day `profile` last did it.
-pub fn workouts_done(conn: &Connection, profile: ProfileId) -> Result<Vec<WorkoutDone>, Error> {
+/// The workouts, each with the day `pid` last did it.
+pub fn workouts_done(conn: &Connection, pid: ProfileId) -> Result<Vec<WorkoutDone>, Error> {
     let last: BTreeMap<i64, String> = conn
         .prepare_cached(
             "SELECT workout_id, max(day) FROM activity
              WHERE profile_id = ? AND workout_id IS NOT NULL GROUP BY workout_id",
         )?
-        .query_map([profile], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .query_map([pid], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
     Ok(workout_list(conn)?
         .into_iter()
@@ -346,12 +335,12 @@ fn set_at(r: &Row, at: usize) -> rusqlite::Result<ActivitySet> {
     })
 }
 
-/// `profile`'s bests at each exercise it did (or only `exercise`), by
+/// `pid`'s bests at each exercise it did (or only `exercise`), by
 /// exercise id: per measure, the set ranked first by it, then by the
 /// latest day, activity and place.
 fn bests(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     exercise: Option<i64>,
 ) -> Result<BTreeMap<i64, Bests>, Error> {
     let rank = |col: &str| {
@@ -383,7 +372,7 @@ fn bests(
     );
     let mut out: BTreeMap<i64, Bests> = BTreeMap::new();
     let mut stmt = conn.prepare_cached(&sql)?;
-    let mut rows = stmt.query(params![profile, exercise])?;
+    let mut rows = stmt.query(params![pid, exercise])?;
     while let Some(r) = rows.next()? {
         let key: String = r.get(0)?;
         let best = Some(BestSet {
@@ -401,11 +390,11 @@ fn bests(
     Ok(out)
 }
 
-/// Exercise `id` as `profile` did it: its bests, and its sets by activity,
+/// Exercise `id` as `pid` did it: its bests, and its sets by activity,
 /// newest first. 404 for an exercise that doesn't exist.
 pub fn exercise_history(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     id: i64,
 ) -> Result<ExerciseHistory, Error> {
     exercise_get(conn, id)?.ok_or_else(|| Error::not_found("exercise", id))?;
@@ -416,7 +405,7 @@ pub fn exercise_history(
          WHERE a.profile_id = ? AND s.exercise_id = ?
          ORDER BY a.day DESC, a.id DESC, s.idx",
     )?;
-    let mut rows = stmt.query(params![profile, id])?;
+    let mut rows = stmt.query(params![pid, id])?;
     while let Some(r) = rows.next()? {
         let activity_id: i64 = r.get(0)?;
         let set = set_at(r, 2)?;
@@ -430,9 +419,7 @@ pub fn exercise_history(
         }
     }
     Ok(ExerciseHistory {
-        bests: bests(conn, profile, Some(id))?
-            .remove(&id)
-            .unwrap_or_default(),
+        bests: bests(conn, pid, Some(id))?.remove(&id).unwrap_or_default(),
         days,
     })
 }
@@ -456,16 +443,16 @@ fn min_kmh_sql() -> String {
     sql
 }
 
-/// `profile`'s records: each exercise's bests, by name; each activity
+/// `pid`'s records: each exercise's bests, by name; each activity
 /// type's longest distance ([`REAL_DISTANCE`]) and time and fastest pace
 /// (1 km or more, at a speed its type moves: [`ActivityType::min_kmh`]),
 /// the later day (then the later logged) winning a tie.
-pub fn records(conn: &Connection, profile: ProfileId) -> Result<Records, Error> {
+pub fn records(conn: &Connection, pid: ProfileId) -> Result<Records, Error> {
     let names: BTreeMap<i64, String> = conn
         .prepare_cached("SELECT id, name FROM exercise")?
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
-    let mut exercises: Vec<ExerciseRecord> = bests(conn, profile, None)?
+    let mut exercises: Vec<ExerciseRecord> = bests(conn, pid, None)?
         .into_iter()
         .map(|(id, bests)| ExerciseRecord {
             exercise_id: id,
@@ -499,11 +486,11 @@ pub fn records(conn: &Connection, profile: ProfileId) -> Result<Records, Error> 
     .join(" UNION ALL ");
     let held: Vec<(String, ActivityType, i64)> = conn
         .prepare_cached(&sql)?
-        .query_map([profile], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .query_map([pid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
     let mut types: BTreeMap<&'static str, TypeBests> = BTreeMap::new();
     for (key, kind, id) in held {
-        let a = activity_get(conn, profile, id)?;
+        let a = activity_get(conn, pid, id)?;
         let at = types.entry(kind.as_str()).or_default();
         match key.as_str() {
             "distance" => at.distance = a,
@@ -511,7 +498,12 @@ pub fn records(conn: &Connection, profile: ProfileId) -> Result<Records, Error> 
             _ => at.pace = a,
         }
     }
-    Ok(Records { exercises, types })
+    let days = DayRecords::of(&super::device_day_list(conn, pid, None, None)?.days);
+    Ok(Records {
+        exercises,
+        types,
+        days,
+    })
 }
 
 const PLAN_COLS: &str = "p.id, p.uid, p.day, p.workout_id, w.name";
@@ -540,13 +532,13 @@ fn plan_range() -> String {
 /// A profile's plans in `[from, to]` (either end open), by day, oldest first.
 pub fn plan_list(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     from: Option<&str>,
     to: Option<&str>,
 ) -> Result<Vec<Plan>, Error> {
     let mut stmt = conn.prepare_cached(&plan_range())?;
     Ok(stmt
-        .query_map(params![profile, from, to], plan_row)?
+        .query_map(params![pid, from, to], plan_row)?
         .collect::<rusqlite::Result<_>>()?)
 }
 
@@ -564,7 +556,7 @@ fn plan_get(conn: &Connection, id: i64) -> Result<Plan, Error> {
 /// An unknown workout (400 `workout_id`).
 pub fn plan_insert(
     conn: &mut Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     input: &PlanInput,
 ) -> Result<Plan, Error> {
     let tx = write(conn)?;
@@ -572,7 +564,7 @@ pub fn plan_insert(
         let earlier: Option<i64> = tx
             .query_row(
                 "SELECT id FROM planned_workout WHERE profile_id = ? AND uid = ?",
-                params![profile, uid],
+                params![pid, uid],
                 |r| r.get(0),
             )
             .optional()?;
@@ -588,17 +580,17 @@ pub fn plan_insert(
     }
     tx.execute(
         "INSERT INTO planned_workout (profile_id, day, workout_id, uid) VALUES (?, ?, ?, ?)",
-        params![profile, input.day, input.workout_id, input.uid],
+        params![pid, input.day, input.workout_id, input.uid],
     )?;
     let plan = plan_get(&tx, tx.last_insert_rowid())?;
     tx.commit()?;
     Ok(plan)
 }
 
-pub fn plan_delete(conn: &Connection, profile: ProfileId, id: i64) -> Result<(), Error> {
+pub fn plan_delete(conn: &Connection, pid: ProfileId, id: i64) -> Result<(), Error> {
     match conn.execute(
         "DELETE FROM planned_workout WHERE profile_id = ? AND id = ?",
-        params![profile, id],
+        params![pid, id],
     )? {
         0 => Err(Error::not_found("plan", id)),
         _ => Ok(()),

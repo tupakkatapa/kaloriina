@@ -29,3 +29,16 @@ test("a nutrient's sources without a range show this month", async ({
     new RegExp(`^${month} 1 – ${month} \\d+ · `, "u"),
   );
 });
+
+test("a screen that failed to load tries again", async ({ page }) => {
+  await page.route("**/api/profiles/*/activities*", (route) => route.abort());
+  await page.goto("/#/activity");
+  await expect(
+    page.getByRole("heading", { name: "Something went wrong" }),
+  ).toBeVisible();
+  await page.unroute("**/api/profiles/*/activities*");
+  await page.getByRole("button", { name: "Retry" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Activity", level: 1 }),
+  ).toBeVisible();
+});

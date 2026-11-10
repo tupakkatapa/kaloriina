@@ -26,6 +26,27 @@ test("a failed action shows an error", async ({ page, request }, testInfo) => {
   await expect(page.getByRole("alert")).toContainText("server on fire");
 });
 
+test("an error stays until it is closed", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { day, tag } = unique(1266, testInfo);
+  const f = await food(request, { name: `Pear ${tag}` });
+  await entry(request, { day, group: "Planned", food_id: f.id, grams: 50 });
+  await page.clock.install();
+  await page.route("**/api/profiles/*/entries/*", (route) =>
+    route.fulfill({ status: 500, json: { error: "server on fire" } }),
+  );
+  await page.goto(`/#/day/${day}`);
+  await page.getByRole("button", { name: `Mark Pear ${tag} eaten` }).click();
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("server on fire");
+  await page.clock.runFor(60_000);
+  await expect(alert).toContainText("server on fire");
+  await page.locator("#toast").getByRole("button", { name: "Close" }).click();
+  await expect(page.locator("#toast")).toBeHidden();
+});
+
 test("the bottom tabs lead everywhere, Profile holds targets", async ({
   page,
 }) => {
@@ -63,6 +84,23 @@ test("moving between screens puts focus on the new heading", async ({
     page.getByRole("heading", { level: 1, name: "Foods" }),
   ).toBeFocused();
   await expect(page.locator("main")).not.toHaveAttribute("aria-live", /.*/u);
+});
+
+test("Skip to content reaches the heading of a screen read again", async ({
+  page,
+}) => {
+  await page.goto("/#/foods");
+  const heading = page.getByRole("heading", { level: 1, name: "Foods" });
+  await expect(heading).toBeFocused();
+  // As after a save: the same screen, built anew.
+  await page.evaluate(async () => {
+    const main = document.querySelector('script[type="module"]').src;
+    const { route } = await import(new URL("nav.mjs", main));
+    await route();
+  });
+  await page.locator("button.skip").focus();
+  await page.keyboard.press("Enter");
+  await expect(heading).toBeFocused();
 });
 
 test("Back closes an open dialog, which then does nothing", async ({
@@ -140,6 +178,23 @@ test("an unknown address says so and leads back", async ({ page }) => {
   await expect(page).toHaveURL(/#\/$/u);
   await expect(page.locator(".headline")).toBeVisible();
 });
+
+// Meals are recipes: their addresses lead nowhere.
+for (const address of [
+  "#/meal/new",
+  "#/meal/1",
+  "#/log-meal/1",
+  "#/log-meal/2030-01-01/Eaten/1",
+])
+  test(`a meal's address (${address}) is unknown`, async ({ page }) => {
+    await page.goto(`/${address}`);
+    await expect(
+      page.getByRole("heading", { level: 1, name: "Not found" }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("There's no screen at this address."),
+    ).toBeVisible();
+  });
 
 for (const [address, what, back, tab] of [
   ["#/food/999999", "food", "Go to Foods", /#\/foods$/u],
@@ -355,7 +410,6 @@ test("every address builder has a route", async ({ page }) => {
       select: [d, 1],
       add: [d, "Eaten"],
       log: [d, "Eaten", 1],
-      logMeal: [d, "Eaten", 1],
       scan: [d, "Eaten"],
       entry: [1],
       activityEdit: [1],
@@ -367,7 +421,6 @@ test("every address builder has a route", async ({ page }) => {
       newFood: [],
       merge: [1],
       recipe: [1],
-      meal: [1],
       summary: ["week", d, "body"],
       sources: ["energy", d, d],
       activity: [],
@@ -394,8 +447,8 @@ test("every address builder has a route", async ({ page }) => {
       if (!routes.some((r) => r.re.test(address))) out.push(address);
     }
     // From the Foods tab: no day, no group.
-    for (const address of [href.log(d, null, 1), href.logMeal(d, null, 1)])
-      if (!routes.some((r) => r.re.test(address))) out.push(address);
+    const address = href.log(d, null, 1);
+    if (!routes.some((r) => r.re.test(address))) out.push(address);
     return {
       out,
       unsampled: Object.keys(href).filter((k) => !(k in samples)),

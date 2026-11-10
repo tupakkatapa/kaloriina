@@ -5,7 +5,8 @@
 // measured value (a device's active, a total netted of resting) reads
 // without it, an estimate with it.
 
-import { isNil, whole } from "./format.mjs";
+import { estimateKcal, REACHED_KG } from "./expenditure.mjs";
+import { isNil, NBSP, whole } from "./format.mjs";
 import { kcal, kcalParts } from "./nutrients.mjs";
 
 export { balanceWhy } from "./energy.mjs";
@@ -41,3 +42,24 @@ export function activeEnergyText({ active, total, estimated }) {
 // movement left out), "≈ " when an estimate is in it, none when measured.
 export const activeMark = ({ floor = false, estimated = false }) =>
   whole(floor ? "≥ " : estimated ? "≈ " : "");
+
+// "Your goal date needs a deficit ≈ 450 kcal a day" (a surplus to gain):
+// `plan`'s target (web/energy.mjs, Targets' Needed energy) against its
+// maintenance, for `goalWeight` by `goalDate` still after `today`; "≥" and
+// "Targets plans no faster" when a guard limited it; "Your goal weight is
+// reached." within REACHED_KG of it; else null.
+export function goalPaceText({ plan, goalWeight, goalDate, today }) {
+  if (isNil(goalWeight) || !goalDate || goalDate <= today) return null;
+  const n = plan?.needed;
+  const m = plan?.maintenance;
+  if (!n || !m || n.recomp || n.muscle || isNil(plan.weight)) return null;
+  if (Math.abs(goalWeight - plan.weight) <= REACHED_KG)
+    return "Your goal weight is reached.";
+  const gap = n.target - m.kcal;
+  const shown = estimateKcal(Math.abs(gap));
+  if (!(shown > 0)) return null;
+  const word = gap < 0 ? "deficit" : "surplus";
+  return n.limited
+    ? `Your goal date needs a ${word} ≥${NBSP}${kcal(shown)} a day: Targets plans no faster.`
+    : `Your goal date needs a ${word} ≈${NBSP}${kcal(shown)} a day.`;
+}

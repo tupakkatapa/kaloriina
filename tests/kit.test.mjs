@@ -7,10 +7,6 @@ import test from "node:test";
 
 const WEB = new URL("../web/", import.meta.url);
 
-// Modules that adopt the kit in round 2 of the refactor; each package's patch
-// takes its own out, and the set ends empty.
-const PENDING = new Set();
-
 // Every app module (vendored code aside), as `screens/x.mjs` or `x.mjs`.
 const modules = [
   ...readdirSync(WEB).filter((f) => f.endsWith(".mjs")),
@@ -19,11 +15,10 @@ const modules = [
     .map((f) => `screens/${f}`),
 ];
 
-// "file:line: text" for each match of `re` (global) outside `home` and the
-// pending modules.
+// "file:line: text" for each match of `re` (global) outside `home`.
 function builtOutside(re, home) {
   return modules
-    .filter((m) => m !== home && !PENDING.has(m))
+    .filter((m) => m !== home)
     .flatMap((m) => {
       const text = readFileSync(new URL(m, WEB), "utf8");
       return [...text.matchAll(re)].map((x) => {
@@ -39,10 +34,6 @@ const classOf = (names) =>
     `class:\\s*(?:[^,\\n]*\\?\\s*)?"(?:[^"]*\\s)?(?:${names.join("|")})(?:\\s[^"]*)?"`,
     "gu",
   );
-
-test("the pending modules are still there to convert", () => {
-  for (const m of PENDING) assert.ok(modules.includes(m), `${m}: gone`);
-});
 
 test("rows are built in rows.mjs", () => {
   assert.deepEqual(
@@ -137,8 +128,6 @@ test("nothing a phone needs hides in a title: a tooltip is tips.mjs", () => {
     "bars.mjs": /title: shown\.hint/u,
     "nutrition-panel.mjs": /title: shown\.hint/u,
     "screens/diary.mjs": /title: "Some energy unknown"/u,
-    // The sign (≥, ≤, =) is visible; its words are a pointer's extra.
-    "screens/targets.mjs": /title: GOAL_HINT\[r\.goal\]/u,
     // A day with no link repeats its own sr-only label.
     "calendar.mjs": /title: label/u,
   };

@@ -318,6 +318,19 @@ async fn series_edit_reaches_future_unticked_days() {
     );
     let (status, edited) = call(&app, "PATCH", &uri, Some(json!({ "grams": 60 }))).await;
     assert_eq!((status, &edited["serving"]), (StatusCode::OK, &Value::Null));
+    // A text entry's keys are ignored: a due day is its series' food.
+    let (status, edited) = call(
+        &app,
+        "PATCH",
+        &uri,
+        Some(json!({ "grams": 70, "name": "", "energy": 5, "food_id": 9999 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{edited}");
+    assert_eq!(
+        (&edited["name"], &edited["grams"]),
+        (&json!("Shake"), &json!(70.0))
+    );
     // A due day stays in Planned (a tick moves it); its time is a tick's.
     for (body, field) in [
         (json!({ "serving": "Cup", "quantity": 1 }), json!("serving")),

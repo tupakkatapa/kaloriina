@@ -6,10 +6,10 @@ use crate::model::target_key;
 
 /// The profile's targets, bounds derived from each metric's direction;
 /// then the registry defaults the profile has no row for.
-pub fn target_list(conn: &Connection, profile: ProfileId) -> Result<Vec<Target>, Error> {
+pub fn target_list(conn: &Connection, pid: ProfileId) -> Result<Vec<Target>, Error> {
     let mut stmt = conn.prepare_cached("SELECT metric, value FROM target WHERE profile_id = ?")?;
     let rows = stmt
-        .query_map([profile], |r| Ok((r.get::<_, String>(0)?, r.get(1)?)))?
+        .query_map([pid], |r| Ok((r.get::<_, String>(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut list: Vec<Target> = rows
         .into_iter()
@@ -27,15 +27,15 @@ pub fn target_list(conn: &Connection, profile: ProfileId) -> Result<Vec<Target>,
 /// Replace the profile's targets with `list`.
 pub(super) fn write_targets(
     tx: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     list: &[Target],
 ) -> rusqlite::Result<()> {
-    tx.execute("DELETE FROM target WHERE profile_id = ?", [profile])?;
+    tx.execute("DELETE FROM target WHERE profile_id = ?", [pid])?;
     for t in list {
         tx.execute(
             "INSERT INTO target (profile_id, metric, value) VALUES (?1, ?2, ?3)
              ON CONFLICT (profile_id, metric) DO UPDATE SET value = ?3",
-            params![profile, t.metric, t.value],
+            params![pid, t.metric, t.value],
         )?;
     }
     Ok(())
@@ -46,13 +46,13 @@ pub(super) fn write_targets(
 /// moves it on.
 pub fn target_replace(
     conn: &mut Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     rev: Option<i64>,
     list: &[Target],
 ) -> Result<(), Error> {
     let tx = write(conn)?;
-    bump_rev(&tx, "profile", "profile", profile.0, rev)?;
-    write_targets(&tx, profile, list)?;
+    bump_rev(&tx, "profile", "profile", pid.0, rev)?;
+    write_targets(&tx, pid, list)?;
     tx.commit()?;
     Ok(())
 }

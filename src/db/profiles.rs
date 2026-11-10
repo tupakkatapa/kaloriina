@@ -163,7 +163,7 @@ pub fn profile_delete(conn: &mut Connection, id: ProfileId) -> Result<(), Error>
 /// A profile's weights in `[from, to]` (either end open), oldest first.
 pub fn weight_list(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     from: Option<&str>,
     to: Option<&str>,
 ) -> Result<Vec<Weight>, Error> {
@@ -173,7 +173,7 @@ pub fn weight_list(
          ORDER BY day"
     ))?;
     Ok(stmt
-        .query_map(params![profile, from, to], |r| {
+        .query_map(params![pid, from, to], |r| {
             Ok(Weight {
                 day: r.get(0)?,
                 kg: r.get(1)?,
@@ -265,14 +265,14 @@ const TAKES_OVER_TYPED: Provenance = Provenance::OpenScale;
 /// takes the day over, at once if one is stored already.
 fn weight_write(
     tx: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     day: &str,
     kg: f64,
     set_at: i64,
     tz: &TimeZone,
 ) -> Result<(), Error> {
-    weight_put(tx, profile, day, kg, WeightSource::Hand, set_at)?;
-    day_weight_refresh(tx, profile, day, set_at, tz)
+    weight_put(tx, pid, day, kg, WeightSource::Hand, set_at)?;
+    day_weight_refresh(tx, pid, day, set_at, tz)
 }
 
 /// Log `kg` for `day` (replacing that day's), typed at `set_at`; answers
@@ -280,15 +280,15 @@ fn weight_write(
 /// same as once.
 pub fn weight_set(
     conn: &mut Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     day: &str,
     kg: f64,
     set_at: i64,
     tz: &TimeZone,
 ) -> Result<Weight, Error> {
     let tx = write(conn)?;
-    weight_write(&tx, profile, day, kg, set_at, tz)?;
-    let weight = written(weight_list(&tx, profile, Some(day), Some(day))?.pop());
+    weight_write(&tx, pid, day, kg, set_at, tz)?;
+    let weight = written(weight_list(&tx, pid, Some(day), Some(day))?.pop());
     tx.commit()?;
     Ok(weight)
 }
@@ -297,13 +297,13 @@ pub fn weight_set(
 /// openScale weight goes only with its reading (409 `scale_weight`).
 pub fn weight_delete(
     conn: &mut Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     day: &str,
     now: i64,
     tz: &TimeZone,
 ) -> Result<(), Error> {
     let tx = write(conn)?;
-    match weight_source(&tx, profile, day)? {
+    match weight_source(&tx, pid, day)? {
         None => return Err(Error::not_found("weight", day)),
         Some(WeightSource::OpenScale) => {
             return Err(Error::conflict(
@@ -321,9 +321,9 @@ pub fn weight_delete(
     }
     tx.execute(
         "DELETE FROM weight WHERE profile_id = ? AND day = ?",
-        params![profile, day],
+        params![pid, day],
     )?;
-    day_weight_refresh(&tx, profile, day, now, tz)?;
+    day_weight_refresh(&tx, pid, day, now, tz)?;
     tx.commit()?;
     Ok(())
 }
@@ -333,7 +333,7 @@ pub fn weight_delete(
 /// The food a profile's "+ Water" logs: its own pick while not archived,
 /// else Fineli water (`Vesi`, `Vesi, …`, `Vesijohtovesi`; the shortest
 /// name), else a food of your own named "Water". `None` without any.
-pub fn water_food_get(conn: &Connection, profile: ProfileId) -> Result<Option<Food>, Error> {
+pub fn water_food_get(conn: &Connection, pid: ProfileId) -> Result<Option<Food>, Error> {
     let id: Option<i64> = conn.query_row(
         "SELECT coalesce(
              (SELECT f.id FROM profile p JOIN food f ON f.id = p.water_food_id
@@ -344,7 +344,7 @@ pub fn water_food_get(conn: &Connection, profile: ProfileId) -> Result<Option<Fo
                  ORDER BY length(name), id LIMIT 1),
              (SELECT id FROM food WHERE source = 'custom' AND NOT archived
                  AND name = 'Water' COLLATE NOCASE ORDER BY id LIMIT 1))",
-        [profile],
+        [pid],
         |r| r.get(0),
     )?;
     Ok(id.map(|id| food_get(conn, id)).transpose()?.flatten())
@@ -354,7 +354,7 @@ pub fn water_food_get(conn: &Connection, profile: ProfileId) -> Result<Option<Fo
 /// unknown or archived food is refused (400 `food_id`).
 pub fn water_food_set(
     conn: &mut Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     food_id: Option<i64>,
 ) -> Result<Option<Food>, Error> {
     let tx = write(conn)?;
@@ -377,7 +377,7 @@ pub fn water_food_set(
     }
     tx.execute(
         "UPDATE profile SET water_food_id = ?2 WHERE id = ?1",
-        params![profile, food_id],
+        params![pid, food_id],
     )?;
     // The water food is a drink, unless you said otherwise.
     if let Some(id) = food_id {
@@ -387,16 +387,16 @@ pub fn water_food_set(
         )?;
         super::foods::derive(&tx, id)?;
     }
-    let food = water_food_get(&tx, profile)?;
+    let food = water_food_get(&tx, pid)?;
     tx.commit()?;
     Ok(food)
 }
 
 /// The water food the profile picked, if any (archived or not).
-pub fn water_food_choice(conn: &Connection, profile: ProfileId) -> Result<Option<i64>, Error> {
+pub fn water_food_choice(conn: &Connection, pid: ProfileId) -> Result<Option<i64>, Error> {
     Ok(conn.query_row(
         "SELECT water_food_id FROM profile WHERE id = ?",
-        [profile],
+        [pid],
         |r| r.get(0),
     )?)
 }

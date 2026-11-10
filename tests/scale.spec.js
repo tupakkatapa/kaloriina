@@ -75,29 +75,13 @@ test("Connections shows the URL and how-to, then binds a user seen", async ({
   );
   await page.getByRole("button", { name: "Copy" }).click();
   await expect(page.getByText("Copied the webhook URL")).toBeVisible();
-  // The setup steps fold inside the card, with the README's section.
-  await expect(page.getByRole("heading", { name: "Set up" })).toHaveCount(0);
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
     await url.inputValue(),
   );
-  const steps = card(page).locator(".card details li");
-  await expect(steps.first()).toBeHidden();
-  await card(page).getByText("How to set up", { exact: true }).click();
-  await expect(steps).toHaveCount(5);
-  await expect(steps.nth(4)).toHaveText(
-    "Run a full sync in openScale sync to bring in your history.",
-  );
+  // The setup steps are the README's.
   await expect(
     card(page).getByRole("link", { name: "openScale setup in the README" }),
   ).toHaveAttribute("href", /#openscale$/u);
-  // The steps stay inside the card's edges.
-  const inside = await page.evaluate(() => {
-    const li = document.querySelector(".connections details li");
-    const box = li.closest(".card").getBoundingClientRect();
-    const r = li.getBoundingClientRect();
-    return r.left >= box.left && r.right <= box.right;
-  });
-  expect(inside).toBe(true);
   await expect(card(page)).toContainText("Nothing received yet");
 
   // The phone syncs two users' readings: nothing applied until you choose.

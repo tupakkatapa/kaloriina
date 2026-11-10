@@ -121,10 +121,13 @@ export function stepDrag(ed) {
       handle.removeEventListener("pointercancel", onEnd);
       marker.remove();
       row.classList.remove("dragging");
-      if (e.type === "pointerup" && target)
-        ed.change(move(ed.steps(), path, target.list, target.index, ed.depth), {
-          message: `Moved ${title}`,
-        });
+      const moved =
+        e.type === "pointerup" && target
+          ? move(ed.steps(), path, target.list, target.index, ed.depth)
+          : null;
+      // Dropped where it was: nothing moved, nothing to undo.
+      if (moved && pathKey(moved.path) !== pathKey(path))
+        ed.change(moved, { message: `Moved ${title}` });
     };
     handle.addEventListener("pointermove", onMove);
     handle.addEventListener("pointerup", onEnd);

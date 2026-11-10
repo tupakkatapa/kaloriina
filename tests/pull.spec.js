@@ -138,11 +138,11 @@ test("short, sideways, two-finger, scrolled-down or in-dialog drags don't refres
   await quiet("a dialog open");
 });
 
-test("the spinner, refreshing, sits clear of the screen's title", async ({
+test("refreshing is the loading bar at the top, never below the title", async ({
   page,
   request,
 }, testInfo) => {
-  const { day, tag } = unique(1143, testInfo);
+  const { day, tag } = unique(1259, testInfo);
   await ownProfile(page, request, `Held pull ${tag}`);
   await page.goto(`/#/day/${day}`);
   await expect(page.getByRole("heading", { name: "Eaten" })).toBeVisible();
@@ -155,18 +155,22 @@ test("the spinner, refreshing, sits clear of the screen's title", async ({
     await r.continue();
   });
   await drag(page, {});
-  const spinner = page.locator("#pull");
-  await expect(spinner).toHaveClass(/refreshing/u);
-  // The spinner's travel and the page's room for it settled.
+  await expect(page.locator("#app")).toHaveAttribute("aria-busy", "true");
+  // Any glide back settled.
   await page.waitForTimeout(400);
-  const a = await spinner.boundingBox();
-  const b = await page.locator(".day-nav h1").boundingBox();
+  const line = await page.locator("#pull").boundingBox();
+  const title = await page.locator(".day-nav h1").boundingBox();
   release();
-  expect(
-    a.y + a.height <= b.y || b.y + b.height <= a.y,
-    JSON.stringify({ spinner: a, title: b }),
-  ).toBe(true);
+  expect(line?.height ?? 0).toBeLessThanOrEqual(4);
+  if (line) {
+    expect(line.y).toBe(0);
+    expect(
+      line.y + line.height,
+      JSON.stringify({ line, title }),
+    ).toBeLessThanOrEqual(title.y);
+  }
   await expect(toast(page)).toHaveText("Updated");
+  await expect(page.locator("#app")).not.toHaveAttribute("aria-busy");
 });
 
 test.describe("in the Android app", () => {
@@ -189,21 +193,7 @@ test.describe("in the Android app", () => {
     });
   });
 
-  // The app's answer, as its evaluateJavascript sends it, until the page
-  // shows one (the page listens once its outbox is sent).
-  const answer = (page, detail) =>
-    expect
-      .poll(async () => {
-        await page.evaluate(
-          (d) =>
-            dispatchEvent(new CustomEvent("kaloriina-sync", { detail: d })),
-          detail,
-        );
-        return toast(page).isVisible();
-      })
-      .toBe(true);
-
-  test("a pull waits for the phone's Health Connect sync and says how it went", async ({
+  test("a pull asks nothing of the app: it reads the server and says so", async ({
     page,
     request,
   }, testInfo) => {
@@ -213,19 +203,8 @@ test.describe("in the Android app", () => {
     await expect(page.getByRole("heading", { name: "Eaten" })).toBeVisible();
 
     await drag(page, {});
-    await answer(page, { synced: true });
-    await expect(toast(page)).toHaveText("Synced");
-    expect(await page.evaluate(() => window.asked)).toEqual([
-      "kaloriina-app://sync",
-    ]);
-    await expect(page.locator("#app")).toBeVisible();
-
-    await clearToast(page);
-    await drag(page, {});
-    const error = 'Health Connect access not granted: open Settings ("Steps")';
-    await answer(page, { error });
-    await expect(toast(page)).toContainText(error);
-    await expect(toast(page)).toHaveAttribute("role", "alert");
+    await expect(toast(page)).toHaveText("Updated");
+    expect(await page.evaluate(() => window.asked)).toEqual([]);
   });
 });
 

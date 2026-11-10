@@ -672,7 +672,7 @@ test("Activity's one + logs an activity: a type, a saved workout's Start, or an 
   await expect(page.getByPlaceholder("Add an exercise")).toBeVisible();
 });
 
-test("an activity row reads active energy, real distances and its source (AC2-6, AC2-11, AC2-12)", async ({
+test("an activity row reads active energy, real distances and its source", async ({
   page,
   request,
 }, testInfo) => {
@@ -723,7 +723,7 @@ test("an activity row reads active energy, real distances and its source (AC2-6,
   ]);
 });
 
-test("Summary → Activity: activities alone are a floor, a leftover no target (AC2-10, AC2-12)", async ({
+test("Summary → Activity: activities alone are a floor, a leftover no target", async ({
   page,
   request,
 }, testInfo) => {

@@ -13,11 +13,11 @@ use super::prelude::*;
 use super::{
     ActivityInput, ActivitySet, ActivitySource, ActivityType, Basis, Body, BodyPart, CheckIn,
     CheckInInput, DeviceDay, DeviceSession, ExerciseInput, ExerciseTraits, FoodInput, FoodKind,
-    GoalDir, HabitInput, InsightPref, ItemInput, KcalSource, MeasurementInput, NapIn, NapSource,
-    NoteInput, PlanInput, ProfileInput, RecipeInput, Serving, Side, SleepStage, Source, Step,
-    SyncedWorkouts, Target, TargetInput, TargetsInput, WeightInput, WeightSource, WorkoutInput,
-    checked_day, checked_group, checked_habit_amount, checked_nap, checked_session, checked_stage,
-    checked_time, checked_uid, is_barcode, is_key,
+    GoalDir, HabitInput, HideInput, InsightPref, ItemInput, KcalSource, MeasurementInput, NapIn,
+    NapSource, NoteInput, PlanInput, ProfileInput, RecipeInput, Serving, Side, SleepStage, Source,
+    Step, SyncedWorkouts, Target, TargetInput, TargetsInput, WeightInput, WeightSource,
+    WorkoutInput, checked_day, checked_group, checked_habit_amount, checked_nap, checked_session,
+    checked_stage, checked_text_value, checked_time, checked_uid, is_barcode, is_key,
 };
 
 /// What the file says it is.
@@ -48,6 +48,10 @@ pub struct ProfileExport {
     /// Insights hidden until a day or pinned.
     #[serde(default)]
     pub insight_prefs: Vec<InsightPref>,
+    /// Days ticked "not fully logged", from before they were one-off
+    /// items: read, never written.
+    #[serde(default, skip_serializing)]
+    pub incomplete_days: Vec<String>,
     #[serde(default)]
     pub entries: Vec<ExportedEntry>,
     #[serde(default)]
@@ -57,6 +61,9 @@ pub struct ProfileExport {
     /// Food refs.
     #[serde(default)]
     pub favorites: Vec<String>,
+    /// Foods left out of suggestions; files from before have none.
+    #[serde(default)]
+    pub hidden_suggestions: Vec<ExportedHiddenSuggestion>,
     #[serde(default)]
     pub foods: Vec<ExportedFood>,
     #[serde(default)]
@@ -110,6 +117,14 @@ pub struct ProfileExport {
     /// that ticked one name it (`entries[].repeat`).
     #[serde(default)]
     pub daily_items: Vec<ExportedDailyItem>,
+}
+
+/// A food left out of suggestions, by ref: through `until`, or for good.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportedHiddenSuggestion {
+    pub food: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
 }
 
 /// A daily item: its food by ref, its amount, and the days skipped. Its
@@ -597,7 +612,7 @@ fn within(field: &'static str, what: String) -> impl Fn(Error) -> Error {
 }
 
 /// A uid as stored: a client uid, optionally followed by `:<digits>` (the
-/// items of one meal or copy write).
+/// items of one write logging several).
 fn checked_stored_uid(uid: &str) -> Result<(), Error> {
     let base = match uid.rsplit_once(':') {
         Some((base, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => base,
@@ -733,6 +748,21 @@ impl ProfileExport {
                 format!("unknown food ref “{r}”"),
             ));
         }
+        let mut hidden = BTreeSet::new();
+        for h in &self.hidden_suggestions {
+            let at = within("hidden_suggestions", h.food.clone());
+            if !foods.contains(&h.food) {
+                return Err(at(bad("unknown food ref")));
+            }
+            HideInput {
+                until: h.until.clone(),
+            }
+            .checked()
+            .map_err(&at)?;
+            if !hidden.insert(&h.food) {
+                return Err(at(bad("the food is listed twice")));
+            }
+        }
         self.check_daily_items(&foods)?;
         self.check_entries(&foods)?;
         if let Some(r) = self.water_food.as_ref().filter(|r| !foods.contains(*r)) {
@@ -756,8 +786,21 @@ impl ProfileExport {
         })
     }
 
-    /// Weights, measurements, notes and check-ins as their routes take them
-    /// (a check-in's day once); imported
+    /// Days not fully logged: each a real day up to tomorrow, once.
+    fn check_incomplete_days(&self) -> Result<(), Error> {
+        let mut ticked = BTreeSet::new();
+        for d in &self.incomplete_days {
+            let at = within("incomplete_days", d.clone());
+            checked_day_so_far(d).map_err(&at)?;
+            if !ticked.insert(d) {
+                return Err(at(bad("the day is listed twice")));
+            }
+        }
+        Ok(())
+    }
+
+    /// Weights, measurements, notes, check-ins and days not fully logged
+    /// as their routes take them (a check-in's or ticked day once); imported
     /// totals with a known shape, one per day and group.
     fn check_days(&mut self) -> Result<(), Error> {
         for w in &self.weights {
@@ -807,6 +850,7 @@ impl ProfileExport {
                 return Err(at(bad("the day is listed twice")));
             }
         }
+        self.check_incomplete_days()?;
         let mut prefs = BTreeSet::new();
         for i in &mut self.insight_prefs {
             let at = within("insight_prefs", i.id.clone());
@@ -1343,7 +1387,8 @@ fn check_item_serving(i: &mut ExportedItem) -> Result<(), Error> {
 
 /// One entry as stored rows look: imported history (it names its
 /// `src_group`) has no food and no nutrients (its totals are `day_totals`),
-/// or, matched to a food, both; a logged food names one.
+/// or, matched to a food, both; a logged food names one; a text entry has
+/// no food, no amount and at most its energy, protein, carbs and fat.
 fn check_entry(e: &mut ExportedEntry, foods: &BTreeSet<String>) -> Result<(), Error> {
     if !is_date(&e.day) {
         return Err(bad("day must be a real date (YYYY-MM-DD)"));
@@ -1356,7 +1401,10 @@ fn check_entry(e: &mut ExportedEntry, foods: &BTreeSet<String>) -> Result<(), Er
         checked_group(&e.group)?.to_owned()
     };
     e.name = text(&e.name, "name", NAME_MAX)?;
-    e.amount = text(&e.amount, "amount", NAME_MAX)?;
+    let typed = !imported && e.food.is_none();
+    if !(typed && e.amount.is_empty()) {
+        e.amount = text(&e.amount, "amount", NAME_MAX)?;
+    }
     e.serving = opt_text(e.serving.as_deref(), "serving", LABEL_MAX)?;
     if let Some(g) = e.grams {
         grams(g)?;
@@ -1380,12 +1428,25 @@ fn check_entry(e: &mut ExportedEntry, foods: &BTreeSet<String>) -> Result<(), Er
     }
     let shape_ok = if imported {
         e.food.is_some() == e.nutrients.is_some()
+    } else if typed {
+        e.amount.is_empty()
+            && e.grams.is_none()
+            && e.serving.is_none()
+            && e.quantity.is_none()
+            && e.repeat.is_none()
+            && e.nutrients.as_ref().is_none_or(|n| {
+                n.keys().all(|k| {
+                    ["energy", "protein", "carbs", "fat"].contains(&k)
+                        && n.get(k).is_some_and(|v| checked_text_value(k, v).is_ok())
+                })
+            })
     } else {
-        e.food.is_some()
+        true
     };
     if !shape_ok {
         return Err(bad(
-            "imported history has a food and nutrients or neither, a logged food names its food",
+            "imported history has a food and nutrients or neither, a logged food names its food, \
+             a text entry has no amount and at most its energy, protein, carbs and fat",
         ));
     }
     Ok(())

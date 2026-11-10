@@ -21,21 +21,21 @@ import { labelChips, nutritionPanel } from "../nutrition-panel.mjs";
 import { resultRow } from "../rows.mjs";
 import { field, h, notesSection, timeField } from "../ui.mjs";
 
-// A meal or recipe item: its name, and its amount as written (by its
-// serving when it has one) times `times`; it opens its food (a recipe's
-// own editor for a nested one), whose Save returns to `back`.
-export const itemRow = (i, back, times = 1) =>
+// A recipe item: its name, and its amount as written (by its serving when
+// it has one); it opens its food (a recipe's own editor for a nested one),
+// whose Save returns to `back`.
+const itemRow = (i, back) =>
   resultRow({
     href: href.food({ id: i.food_id, kind: i.kind }, back),
     name: i.name,
     detail: i.serving
       ? servingText(
-          i.quantity * times,
+          i.quantity,
           i.serving,
-          weightText(i.grams * times, weightGuessed(i), null, byVolume(i)),
+          weightText(i.grams, weightGuessed(i), null, byVolume(i)),
           byVolume(i),
         )
-      : weightText(i.grams * times, weightGuessed(i), null, byVolume(i)),
+      : weightText(i.grams, weightGuessed(i), null, byVolume(i)),
   });
 
 // A recipe's ingredients, each opening its food (whose Save returns to

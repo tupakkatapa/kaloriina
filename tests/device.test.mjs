@@ -68,7 +68,7 @@ test("sharesOf: whole shares summing to 100 by largest remainder", () => {
   assert.deepEqual(sharesOf({ a: 0, b: 0 }), { a: 0, b: 0 });
 });
 
-test("goalShade: a night at the goal shades as reaching it (B-12)", () => {
+test("goalShade: a night at the goal shades as reaching it", () => {
   const goal = 420;
   assert.deepEqual(
     [0, 300, 359, 360, 419, 420, 479, 480, 600].map((m) => goalShade(m, goal)),
@@ -76,7 +76,7 @@ test("goalShade: a night at the goal shades as reaching it (B-12)", () => {
   );
 });
 
-test("heartDaysOver: today's heart rate waits for the day's end (B-8)", () => {
+test("heartDaysOver: today's heart rate waits for the day's end", () => {
   const days = [
     { day: "2026-10-13", avg_hr: 66, min_hr: 45, max_hr: 150, resting_hr: 55 },
     { day: "2026-10-14", avg_hr: 56, min_hr: 39, max_hr: 90, resting_hr: 53 },

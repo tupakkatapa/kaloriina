@@ -6,10 +6,10 @@
 
 import { currentProfile } from "./api.mjs";
 import { nextDayStart, today } from "./dates.mjs";
-import { register, reloadIfStale, route } from "./nav.mjs";
-import { diary, entryEditor } from "./screens/diary.mjs";
+import { focusHeading, register, reloadIfStale, route } from "./nav.mjs";
 import { installPull } from "./pull.mjs";
 import { refresh, refreshable } from "./refresh.mjs";
+import { diary, entryEditor } from "./screens/diary.mjs";
 import { outboxScreen, startSync } from "./screens/outbox.mjs";
 import { installSwipe } from "./swipe.mjs";
 import { h, showError } from "./ui.mjs";
@@ -76,17 +76,12 @@ register(
   {
     re: at(`/add/${DAY}/${GROUP}`),
     tab: "diary",
-    view: (d, g) => lazy("finder", "add")(d, g),
+    view: (d, g, params) => lazy("finder", "add")(d, g, params),
   },
   {
     re: at(`/log/${DAY}/${GROUP}/${ID}`),
     tab: "diary",
-    view: (d, g, id) => lazy("finder", "log")(d, g, id),
-  },
-  {
-    re: at(`/log-meal/${DAY}/${GROUP}/${ID}`),
-    tab: "diary",
-    view: (d, g, id) => lazy("finder", "logMeal")(d, g, id),
+    view: (d, g, id, params) => lazy("finder", "log")(d, g, id, params),
   },
   {
     re: at(`/scan/${DAY}/${GROUP}`),
@@ -128,16 +123,11 @@ register(
     tab: "foods",
     view: () => lazy("finder", "scan")(today(), null),
   },
-  // Log a food or meal from the Foods tab: today, no group yet.
+  // Log a food from the Foods tab: today, no group yet.
   {
     re: at(`/log/${ID}`),
     tab: "foods",
     view: (id) => lazy("finder", "log")(today(), null, id),
-  },
-  {
-    re: at(`/log-meal/${ID}`),
-    tab: "foods",
-    view: (id) => lazy("finder", "logMeal")(today(), null, id),
   },
   {
     re: at(`/food/${NEW_OR_ID}`),
@@ -153,11 +143,6 @@ register(
     re: at(`/recipe/${NEW_OR_ID}`),
     tab: "foods",
     view: (id, params) => lazy("foods", "recipeEditor")(id, params),
-  },
-  {
-    re: at(`/meal/${NEW_OR_ID}`),
-    tab: "foods",
-    view: (id, params) => lazy("foods", "mealEditor")(id, params),
   },
   // Summary
   {
@@ -277,7 +262,7 @@ document.body.prepend(
     {
       type: "button",
       class: "skip",
-      onclick: () => document.querySelector("#app h1")?.focus(),
+      onclick: () => focusHeading(),
     },
     "Skip to content",
   ),
@@ -330,7 +315,7 @@ addEventListener("focus", rollover);
 startSync();
 // Swipes between days, periods and Summary subtabs.
 installSwipe();
-// Pull down from the top to send, sync and re-read.
+// Pull down from the top to send and re-read.
 installPull(refresh, refreshable);
 // The service worker is an extra: where it is blocked (tests, some
 // browsers) the app works as before, online.

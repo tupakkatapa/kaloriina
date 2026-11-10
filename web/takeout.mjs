@@ -40,6 +40,8 @@ const u32 = (v, at) => v.getUint32(at, true);
 const view = async (blob, from, to) =>
   new DataView(await blob.slice(from, to).arrayBuffer());
 
+const broken = () => new Error("The zip is broken.");
+
 // Every entry of the zip `blob`: its name, compression, packed size and
 // where its local header starts.
 async function entries(blob) {
@@ -53,12 +55,15 @@ async function entries(blob) {
   const at = u32(tail, end + 16);
   if (count === 0xffff || at === 0xffffffff)
     throw new Error("Zips over 4 GB aren't read: export in 2 GB parts.");
-  const dir = await view(blob, at, at + u32(tail, end + 12));
+  const size = u32(tail, end + 12);
+  const dir = await view(blob, at, at + size);
+  if (dir.byteLength !== size) throw broken();
   const names = new TextDecoder();
   const out = [];
   for (let n = 0, p = 0; n < count; n++) {
-    if (u32(dir, p) !== 0x02014b50) throw new Error("The zip is broken.");
+    if (p + 46 > size || u32(dir, p) !== 0x02014b50) throw broken();
     const length = u16(dir, p + 28);
+    if (p + 46 + length > size) throw broken();
     out.push({
       name: names.decode(
         new Uint8Array(dir.buffer, dir.byteOffset + p + 46, length),
@@ -85,7 +90,9 @@ const tooMuch = () =>
 // Entry `e` of `blob` inflated, refused past `room` bytes: {name, text, bytes}.
 async function inflate(blob, e, room) {
   const head = await view(blob, e.local, e.local + 30);
+  if (head.byteLength < 30 || u32(head, 0) !== 0x04034b50) throw broken();
   const from = e.local + 30 + u16(head, 26) + u16(head, 28);
+  if (from + e.packed > blob.size) throw broken();
   let stream = blob.slice(from, from + e.packed).stream();
   if (e.method === 8)
     stream = stream.pipeThrough(new DecompressionStream("deflate-raw"));

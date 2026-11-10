@@ -10,6 +10,7 @@ use std::collections::btree_map;
 
 use jiff::Timestamp;
 
+use super::derived::shift;
 use super::prelude::*;
 use super::{ACTIVITY_COLS, activity_get, activity_row};
 use crate::model::{
@@ -252,9 +253,10 @@ fn slipped(s: &Activity, kind: ActivityType, start: Timestamp, minutes: u32) -> 
 
 /// Workouts from an export, oldest first, each added as an `import` session
 /// holding its key, unless already there: its key held or tombstoned, a
-/// tombstone of its type starting within a minute, or any session that day it
-/// [`matches`] (whatever the type: one person, one workout at a time) or that
-/// is its [`slipped`] copy. Added, kept.
+/// tombstone of its type starting within a minute, or any session filed that
+/// day or either side of it that it [`matches`] (whatever the type: one
+/// person, one workout at a time) or that is its [`slipped`] copy. Added,
+/// kept.
 pub(super) fn import_workouts(
     tx: &Connection,
     pid: ProfileId,
@@ -275,13 +277,14 @@ pub(super) fn import_workouts(
         };
         let that_day: Vec<Activity> = tx
             .prepare_cached(&format!(
-                "SELECT {ACTIVITY_COLS} FROM activity WHERE profile_id = ? AND day = ?"
+                "SELECT {ACTIVITY_COLS} FROM activity
+                 WHERE profile_id = ?1 AND day BETWEEN date(?2, '-1 day') AND date(?2, '+1 day')"
             ))?
             .query_map(params![pid, w.day], activity_row)?
             .collect::<rusqlite::Result<_>>()?;
         let minutes = activity_minutes(end.as_second() - start.as_second());
-        if holder(tx, pid, &w.key)?.is_none()
-            && !tombstoned(tx, pid, &w.key)?
+        let known = holder(tx, pid, &w.key)?.is_some() || tombstoned(tx, pid, &w.key)?;
+        if !known
             && let Some(log) = untimed_log(tx, pid, &w.day, w.kind)?
             && sole_candidate(tx, pid, &w.day, log.kind, &buried)?.is_none()
         {
@@ -290,8 +293,7 @@ pub(super) fn import_workouts(
             kept += 1;
             continue;
         }
-        if holder(tx, pid, &w.key)?.is_some()
-            || tombstoned(tx, pid, &w.key)?
+        if known
             || buried.near(w.kind, start)
             || that_day
                 .iter()
@@ -349,18 +351,30 @@ impl Held {
     }
 
     /// The session holding a key that `w` is a copy of, if any
-    /// ([`copies`]).
+    /// ([`copies`]), filed on `w`'s day or either side of it.
     fn covering(
         &mut self,
         conn: &Connection,
         pid: ProfileId,
         w: &Raw,
     ) -> Result<Option<Activity>, Error> {
-        Ok(self
-            .day(conn, pid, &w.a.day)?
-            .iter()
-            .find(|s| copies(&s.span(), &w.span()))
-            .cloned())
+        for day in [
+            shift(&w.a.day, -1),
+            Some(w.a.day.clone()),
+            shift(&w.a.day, 1),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(s) = self
+                .day(conn, pid, &day)?
+                .iter()
+                .find(|s| copies(&s.span(), &w.span()))
+            {
+                return Ok(Some(s.clone()));
+            }
+        }
+        Ok(None)
     }
 
     fn add(&mut self, conn: &Connection, pid: ProfileId, id: i64) -> Result<(), Error> {
@@ -451,8 +465,8 @@ fn hand_match(conn: &Connection, pid: ProfileId, w: &Raw) -> Result<Option<i64>,
     let logged: Vec<Activity> = conn
         .prepare_cached(&format!(
             "SELECT {ACTIVITY_COLS} FROM activity
-             WHERE profile_id = ? AND day = ? AND source = 'hand'
-               AND source_key IS NULL AND start_at IS NOT NULL"
+             WHERE profile_id = ?1 AND day BETWEEN date(?2, '-1 day') AND date(?2, '+1 day')
+               AND source = 'hand' AND source_key IS NULL AND start_at IS NOT NULL"
         ))?
         .query_map(params![pid, w.a.day], activity_row)?
         .collect::<rusqlite::Result<_>>()?;
@@ -570,6 +584,36 @@ fn untimed_log(
     })
 }
 
+/// Raw rows filed from `days.0` to `days.1` that no hand log holds and no
+/// tombstone names, each with the session holding it (a promoted one), oldest
+/// first.
+fn day_raws(
+    conn: &Connection,
+    pid: ProfileId,
+    days: (&str, &str),
+) -> Result<Vec<(Option<i64>, Raw)>, Error> {
+    let rows = conn
+        .prepare_cached(&format!(
+            "SELECT (SELECT h.id FROM activity h
+                     WHERE h.profile_id = ?1 AND h.source_key = r.source_key), {RAW_COLS}
+             FROM device_session r
+             WHERE r.profile_id = ?1 AND r.day BETWEEN ?2 AND ?3
+               AND NOT EXISTS (SELECT 1 FROM workout_tombstone t
+                               WHERE t.profile_id = ?1 AND t.source_key = r.source_key)
+               AND NOT EXISTS (SELECT 1 FROM activity h WHERE h.profile_id = ?1
+                               AND h.source_key = r.source_key AND h.source = 'hand')
+             ORDER BY r.start_at, r.source_key"
+        ))?
+        .query_map(params![pid, days.0, days.1], |r| {
+            Ok((r.get::<_, Option<i64>>(0)?, raw_at(r, 1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(holder, raw)| Some((holder, raw?)))
+        .collect())
+}
+
 /// A workout an untimed hand log may claim.
 enum Candidate {
     /// A device workout, pending or held by its promoted session.
@@ -589,26 +633,9 @@ fn sole_candidate(
     kind: ActivityType,
     buried: &Buried,
 ) -> Result<Option<Candidate>, Error> {
-    let raws = conn
-        .prepare_cached(&format!(
-            "SELECT (SELECT h.id FROM activity h
-                     WHERE h.profile_id = ?1 AND h.source_key = r.source_key), {RAW_COLS}
-             FROM device_session r
-             WHERE r.profile_id = ?1 AND r.day = ?2
-               AND NOT EXISTS (SELECT 1 FROM workout_tombstone t
-                               WHERE t.profile_id = ?1 AND t.source_key = r.source_key)
-               AND NOT EXISTS (SELECT 1 FROM activity h WHERE h.profile_id = ?1
-                               AND h.source_key = r.source_key AND h.source = 'hand')
-             ORDER BY r.start_at, r.source_key"
-        ))?
-        .query_map(params![pid, day], |r| {
-            Ok((r.get::<_, Option<i64>>(0)?, raw_at(r, 1)?))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut found: Vec<Candidate> = Vec::new();
     let mut spans: Vec<Raw> = Vec::new();
-    for (holder, raw) in raws {
-        let Some(raw) = raw else { continue };
+    for (holder, raw) in day_raws(conn, pid, (day, day))? {
         if raw.seconds() < SHORTEST_SECONDS
             || buried.covers(&raw)
             || !ActivityType::compatible(kind, raw.kind)
@@ -836,27 +863,13 @@ pub(super) fn claim_for(tx: &Connection, pid: ProfileId, s: &Activity) -> Result
     if s.start_at.is_none() {
         return claim_untimed(tx, pid, s);
     }
-    let rows = tx
-        .prepare_cached(&format!(
-            "SELECT (SELECT h.id FROM activity h
-                     WHERE h.profile_id = ?1 AND h.source_key = r.source_key), {RAW_COLS}
-             FROM device_session r
-             WHERE r.profile_id = ?1 AND r.day = ?2
-               AND NOT EXISTS (SELECT 1 FROM workout_tombstone t
-                               WHERE t.profile_id = ?1 AND t.source_key = r.source_key)
-               AND NOT EXISTS (SELECT 1 FROM activity h WHERE h.profile_id = ?1
-                               AND h.source_key = r.source_key AND h.source = 'hand')
-             ORDER BY r.start_at, r.source_key"
-        ))?
-        .query_map(params![pid, s.day], |r| {
-            Ok((r.get::<_, Option<i64>>(0)?, raw_at(r, 1)?))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let (Some(from), Some(to)) = (shift(&s.day, -1), shift(&s.day, 1)) else {
+        return Ok(false);
+    };
     let buried = Buried::load(tx, pid)?;
     let span = s.span();
-    let best = rows
+    let best = day_raws(tx, pid, (&from, &to))?
         .into_iter()
-        .filter_map(|(holder, w)| Some((holder, w?)))
         .filter(|(_, w)| !buried.covers(w) && matches(&span, &w.span()))
         .max_by_key(|(_, w)| span.overlap(&w.span()));
     let Some((holder, w)) = best else {

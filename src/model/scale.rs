@@ -5,15 +5,15 @@
 
 use std::collections::BTreeMap;
 
-use jiff::Timestamp;
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
+use jiff::{Timestamp, ToSpan};
 
 use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 
 use super::prelude::*;
-use super::{Provenance, sneaky};
+use super::{Provenance, day_minute, label};
 
 /// openScale's source key; Health Connect readings use `health_connect`.
 pub const OPENSCALE: &str = "openscale";
@@ -62,14 +62,11 @@ pub const WEIGH_IN_FROM_HOUR: i8 = 4;
 /// when `day` or `wake` doesn't read.
 #[must_use]
 pub fn woke_at(day: &str, wake: Option<&str>, tz: &TimeZone) -> Option<i64> {
-    let (h, m) = match wake {
-        Some(w) => {
-            let (h, m) = w.split_once(':')?;
-            (h.parse().ok()?, m.parse().ok()?)
-        }
-        None => (WEIGH_IN_FROM_HOUR, 0),
+    let minute = match wake {
+        Some(w) => day_minute(w)?,
+        None => i64::from(WEIGH_IN_FROM_HOUR) * 60,
     };
-    let at = day.parse::<Date>().ok()?.at(h, m, 0, 0);
+    let at = day.parse::<Date>().ok()?.at(0, 0, 0, 0) + minute.minutes();
     Some(at.to_zoned(tz.clone()).ok()?.timestamp().as_millisecond())
 }
 
@@ -294,18 +291,9 @@ fn measured(m: &Map<String, Value>, key: &str, max: f64) -> Option<f64> {
         .filter(|v| *v > 0.0 && *v <= max)
 }
 
-/// The display name, as a label: control characters dropped, trimmed,
-/// at most [`LABEL_MAX`] characters.
+/// The display name, as a label ([`label`]).
 fn username(m: &Map<String, Value>) -> Option<String> {
-    let name: String = m
-        .get("username")?
-        .as_str()?
-        .chars()
-        .filter(|c| !sneaky(*c))
-        .take(LABEL_MAX)
-        .collect();
-    let name = name.trim();
-    (!name.is_empty()).then(|| name.to_owned())
+    label(m.get("username")?.as_str()?, LABEL_MAX)
 }
 
 /// One measurement, or `None` to skip it: no user or date, a weight out of
@@ -381,6 +369,12 @@ mod tests {
         assert_eq!(i.username.as_deref(), Some("Alex"));
     }
 
+    #[test]
+    fn a_name_is_trimmed_before_it_is_cut() {
+        let m = json!({ "username": format!("{}Alex", " ".repeat(LABEL_MAX)) });
+        assert_eq!(username(m.as_object().unwrap()).as_deref(), Some("Alex"));
+    }
+
     fn weighed(at: &str, weight: f64) -> ScaleReading {
         ScaleReading {
             source: WeightSource::OpenScale,
@@ -422,6 +416,7 @@ mod tests {
         let both = [phone, day[1].clone()];
         assert_close!(day_reading(&both, woke, true).unwrap().weight, 77.35);
         assert_eq!(woke_at("2026-07-10", Some("nonsense"), &tz), None);
+        assert_eq!(woke_at("2026-07-10", Some("25:00"), &tz), None);
     }
 
     /// A wake time the clock skips (03:30 on the night daylight

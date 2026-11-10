@@ -35,7 +35,7 @@ export async function sources(key, params) {
       ? h(
           "p",
           { class: "muted" },
-          `${fmtUnit(key, data.unattributed)} (${percent(data.unattributed / data.total)}) is from imported history, which doesn't name its foods.`,
+          `${fmtUnit(key, data.unattributed)} (${percent(data.unattributed / data.total)}) is from imported history and one-off items, which don't name their foods.`,
         )
       : null;
   return h(

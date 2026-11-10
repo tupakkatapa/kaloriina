@@ -1,6 +1,8 @@
 //! Library behind the `kaloriina` binary: the JSON API with the embedded web
 //! UI, the `SQLite` store (diary, foods, profiles, weights, exercises,
-//! workouts, sessions), the Cronometer import and the Fineli import.
+//! workouts, activities, habits, device data, photos), its backups, the Home
+//! Assistant hooks, and the Cronometer, Google Health, Loop Habits and Fineli
+//! imports.
 
 #![forbid(unsafe_code)]
 
@@ -14,12 +16,14 @@ macro_rules! assert_close {
 }
 
 mod api;
+mod backups;
+pub mod cronometer;
 mod db;
 mod dri;
 mod error;
 pub mod fineli;
 pub mod google_health;
-pub mod import;
+mod hooks;
 pub mod loop_habits;
 pub mod model;
 mod nutrients;
@@ -28,8 +32,12 @@ mod off;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-pub use api::{newest_backup, router, stale_backup};
-pub use db::{derived_current, feedback_list, feedback_pull, vacuum_when_free};
+pub use api::router;
+pub use backups::{newest_backup, stale_backup};
+pub use db::{
+    derived_current, feedback_list, feedback_pull, is_zoned, open_read_only, stored_time_zone,
+    vacuum_when_free,
+};
 pub use error::Error;
 pub use model::ProfileId;
 pub use rusqlite::Connection;
@@ -87,8 +95,8 @@ impl AppState {
         Self {
             db: Arc::new(Mutex::new(conn)),
             http,
-            hooks: api::hook_client(),
-            hook_timeout: api::HOOK_TIMEOUT,
+            hooks: hooks::hook_client(),
+            hook_timeout: hooks::HOOK_TIMEOUT,
             off_url,
             allowed_hosts: Vec::new(),
             tz: jiff::tz::TimeZone::UTC,

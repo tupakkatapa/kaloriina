@@ -71,12 +71,8 @@ export async function send(method, path, body) {
   if (method !== "GET" && res.ok)
     globalThis.dispatchEvent?.(new Event("written"));
   if (res.status === 204) return null;
-  // An HTTPS proxy whose login expired answers with its own page.
   if (!(res.headers.get("content-type") ?? "").startsWith("application/json"))
-    throw new ApiError(
-      "The server sent a page instead of data; the login may have expired. Please reload.",
-      { status: res.status, code: "not_json" },
-    );
+    throw notData(res.status);
   outbox.setStatus({ signIn: false });
   const data = await res.json();
   if (!res.ok)
@@ -88,6 +84,26 @@ export async function send(method, path, body) {
     });
   return data;
 }
+
+// A page where data was asked for: a proxy's own. Its error page means the
+// server behind it isn't answering; any other, its login expired.
+const notData = (status) =>
+  status >= 500
+    ? new ApiError(
+        "The server isn't answering (it may be restarting). Try again.",
+        { status, code: "offline" },
+      )
+    : new ApiError(
+        "The server sent a page instead of data; the login may have expired. Please reload.",
+        { status, code: "not_json" },
+      );
+
+// A read the screen does without when offline: `.catch(offlineOr(x))`
+// gives `x` then, and lets any other failure show.
+export const offlineOr = (fallback) => (err) => {
+  if (err?.code === "offline") return fallback;
+  throw err;
+};
 
 // Whether a write was kept on this device to send later (`{queue: true}`).
 export const isQueued = (err) => err?.code === "queued";

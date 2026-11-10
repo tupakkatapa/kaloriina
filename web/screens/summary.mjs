@@ -5,6 +5,7 @@
 // it). Links inside keep the subtab; a tabless address opens the one last
 // used on this device.
 
+import { profileId } from "../api.mjs";
 import { period, today } from "../dates.mjs";
 import { href, route } from "../nav.mjs";
 import { sharedSeries } from "../series.mjs";
@@ -38,7 +39,7 @@ export async function summary(
     metric: params.get("metric"),
     ...period(kind, day),
   };
-  // The period before, for the Highlights' comparisons.
+  // The period before, for the Highlights' and the tiles' comparisons.
   const { from, to } = period(kind, p.prev);
   p.before = { from, to };
   const content = await subtabContent(p, sub).catch((err) => {
@@ -74,10 +75,34 @@ export async function summary(
   );
 }
 
+// The period's shared data, kept for a switch to another of its subtabs:
+// a re-read of the same one (a pull), a return from another screen or a
+// write reads it anew.
+let kept = null;
+globalThis.addEventListener?.("written", () => {
+  kept = null;
+});
+function sharedOf(p) {
+  const key = [profileId, p.from, p.to, today()].join(" ");
+  const switching =
+    kept?.key === key &&
+    kept.tab !== p.tab &&
+    document.querySelector("#app > .summary") !== null;
+  if (!switching) {
+    const rows = sharedSeries(p);
+    rows.catch(() => {
+      if (kept?.rows === rows) kept = null;
+    });
+    kept = { key, rows };
+  }
+  kept.tab = p.tab;
+  return kept.rows;
+}
+
 // A period's content: shared data loads beside the subtab's own; a subtab
 // may wait on it.
 async function subtabContent(p, sub) {
-  const sharing = sharedSeries(p);
+  const sharing = sharedOf(p);
   const [data, shared] = await Promise.all([sub.load(p, sharing), sharing]);
   return sub.render(p, data, shared);
 }

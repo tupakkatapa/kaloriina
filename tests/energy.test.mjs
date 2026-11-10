@@ -125,6 +125,16 @@ test("too little data says what is missing", () => {
   assert.equal(balance({ days: old, weights: [], yesterday: Y }).foodDays, 0);
 });
 
+test("a day not fully logged is no food day of the balance", () => {
+  const w = weights([
+    [9, 80],
+    [0, 79],
+  ]);
+  const all = days(20, 2000);
+  all[5] = { ...all[5], incomplete: true };
+  assert.equal(balance({ days: all, weights: w, yesterday: Y }).foodDays, 19);
+});
+
 test("maintenance is intake minus the trend's energy; the balance offers nothing", () => {
   // Losing 0.1 kg a day on 2,000 kcal: maintenance is 2,770 a day.
   const w = weights([
@@ -618,7 +628,7 @@ test("plan: a scale share following weight plans from goal weight alone", () => 
   close(p.needed.split.lean, (82 * 45 - trend(w).at(-1).kg * m) / 100);
 });
 
-test("weeklyRate: a rate only over two weeks, clear only past its margin (B-6)", () => {
+test("weeklyRate: a rate only over two weeks, clear only past its margin", () => {
   // Oct 1–13: 12 days apart, too short for a rate whatever the scatter.
   const short = weights(
     [77.2, 77.6, 76.9, 77.5, 77.0, 77.8, 77.1, 77.6, 77.3, 77.4].map(
@@ -647,7 +657,7 @@ test("weeklyRate: a rate only over two weeks, clear only past its margin (B-6)",
 
 // ------------------------------------------------------ decision edges
 
-test("needed: composition's branches, a loss, a share past 100 %, a pace away (TEST11-5)", () => {
+test("needed: composition's branches, a loss, a share past 100 %, a pace away", () => {
   // Muscle to lose by a date 90 days out: 80 → 78 kg at 38 % muscle,
   // muscle −1.36 kg, fat the rest; a loss costs no synthesis (no × 1.5).
   const n = needed({
@@ -678,7 +688,7 @@ test("needed: composition's branches, a loss, a share past 100 %, a pace away (T
   close(away.protein, 1.6 * 75);
 });
 
-test("withEnergy: never a negative macro; a protein floor adds protein (TEST11-5)", () => {
+test("withEnergy: never a negative macro; a protein floor adds protein", () => {
   // 500 kcal leaves nothing after 150 g of protein: carbs and fat stay.
   const list = withEnergy(
     [
@@ -701,7 +711,7 @@ test("withEnergy: never a negative macro; a protein floor adds protein (TEST11-5
   ]);
 });
 
-test("balance: a water-only day is no food day (TEST11-5)", () => {
+test("balance: a water-only day is no food day", () => {
   const w = weights([
     [20, 80],
     [10, 79],
@@ -721,7 +731,7 @@ test("balance: a water-only day is no food day (TEST11-5)", () => {
   assert.ok(Math.abs(b.maintenance - 2770) < 1e-6);
 });
 
-test("energy.mjs edges, each on both sides (TEST11-13)", () => {
+test("energy.mjs edges, each on both sides", () => {
   // Weigh-ins exactly 10 days apart are enough; 9 aren't.
   const enoughAt = (ago) =>
     balance({

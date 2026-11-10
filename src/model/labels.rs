@@ -193,7 +193,7 @@ fn sub(kind: LabelKind, nutrient: &str, positive: bool) -> &'static Label {
 }
 
 /// The labels of these values per 100 g (per 100 ml for a drink), as far
-/// as `known` (a recipe's or meal's coverage, ADR 0030; empty for a food)
+/// as `known` (a recipe's coverage, ADR 0030; empty for a food)
 /// proves them. A value under [`KNOWN`] of the energy behind it is a
 /// floor: it proves an "at least" (High, Source of, a red, points against),
 /// never a "Low" or a ratio to energy. The verdict is the score's

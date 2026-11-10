@@ -24,8 +24,8 @@ export async function mergeFood(id) {
     const n = await get(`/foods/${b.id}/usage`);
     const ok = await confirmDialog(`Merge ${b.name} into ${a.name}?`, {
       detail:
-        `${plural(n.entries, "diary entry", "diary entries")}, ${plural(n.recipes, "recipe")}, ` +
-        `${plural(n.meals, "meal")} and ${plural(n.favorites, "favourite")} move to ${a.name}. ` +
+        `${plural(n.entries, "diary entry", "diary entries")}, ${plural(n.recipes, "recipe")} ` +
+        `and ${plural(n.favorites, "favourite")} move to ${a.name}. ` +
         `Its diary entries and recipes using it take ${a.name}'s values. ` +
         `${b.name} is deleted. This can't be undone.`,
       confirm: "Merge",

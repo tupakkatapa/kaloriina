@@ -16,6 +16,7 @@ import {
   take,
   write,
 } from "../api.mjs";
+import { backupTrouble } from "../backups.mjs";
 import { bar, nutrientCard } from "../bars.mjs";
 import { coverage } from "../coverage.mjs";
 import { eatenTime, pretty, shift, today } from "../dates.mjs";
@@ -43,6 +44,7 @@ import {
   entryRow,
   favoriteStar,
   foodRow,
+  isText,
   logRow,
   result,
   searchFoods,
@@ -77,6 +79,7 @@ import { sleepCard } from "./day-details.mjs";
 import { logCard, napRows } from "./log.mjs";
 import { waitingSection } from "./outbox.mjs";
 import { runBanner } from "./run.mjs";
+import { textForm } from "../text-entry.mjs";
 
 // Whether an energy total leaves some out: a food logged without an energy
 // value can't be counted (imported rows count in their group's total).
@@ -239,6 +242,32 @@ const queuedEntries = (day, group) =>
       x.body?.group === group,
   );
 
+// Copy entries onto `day` and `group` (`key` the write's createId): the
+// copies, or the write kept on this device (`queued`).
+async function copyEntries(key, ids, day, group) {
+  let entries;
+  const sent = await stored(async () => {
+    ({ entries } = await api(
+      "POST",
+      scoped("/entries"),
+      {
+        uid: key.get(),
+        day,
+        group,
+        entry_ids: ids,
+        time: eatenTime(day, group),
+      },
+      {
+        queue: true,
+        label: `Log again · ${plural(ids.length, "food")}`,
+      },
+    ));
+  });
+  if (sent !== true) return { day, queued: sent.queued };
+  key.done();
+  return { day, entries };
+}
+
 // Copy entries onto a day and group: the day defaults to today (tomorrow
 // when they are today's), the group to Eaten up to today, else Planned.
 // Then that day, with Undo.
@@ -268,26 +297,7 @@ async function logAgain(ids, fromDay) {
   const done = await formDialog("Log again", {
     body: [field("Day", day), holder],
     submit: `Log ${n} again`,
-    run: async () => {
-      let entries;
-      const sent = await stored(async () => {
-        ({ entries } = await api(
-          "POST",
-          scoped("/entries"),
-          {
-            uid: key.get(),
-            day: day.value,
-            group: group.value,
-            entry_ids: ids,
-            time: eatenTime(day.value, group.value),
-          },
-          { queue: true, label: `Log again · ${plural(n, "food")}` },
-        ));
-      });
-      if (sent !== true) return { day: day.value, queued: sent.queued };
-      key.done();
-      return { day: day.value, entries };
-    },
+    run: () => copyEntries(key, ids, day.value, group.value),
   });
   if (!done) return;
   if (done.queued) {
@@ -300,20 +310,45 @@ async function logAgain(ids, fromDay) {
   );
 }
 
-// A meal of the picked foods and their grams.
-async function saveAsMeal(entries) {
+// Copy an entry into today's Eaten at now, staying on its day, with Undo;
+// kept on this device, today shows it.
+function logAgainToday(entry) {
+  const key = createId();
+  return busy(async () => {
+    const done = await copyEntries(key, [entry.id], today(), EATEN);
+    if (done.queued) {
+      keptHere(done.queued, done.day);
+      return;
+    }
+    undoable("Added to today", () => undoLog(done.day, done.entries));
+  });
+}
+
+// A recipe of the picked foods, each in the grams logged (a serving may
+// since have gone). Text entries have no food: left out, and said so.
+async function saveAsRecipe(entries) {
+  const texts = entries.filter((e) => isText(e)).length;
   const items = entries
     .filter((e) => e.food_id && e.grams)
     .map((e) => ({ food_id: e.food_id, grams: e.grams }));
   const name = nameInput({ max: meta.limits.name });
-  const meal = await formDialog("Save as meal", {
+  const key = createId();
+  const recipe = await formDialog("Save as recipe", {
     body: [field("Name", name)],
-    submit: "Save as meal",
-    run: () => api("POST", "/meals", { name: name.value, items }),
+    submit: "Save as recipe",
+    run: () =>
+      api("POST", "/recipes", {
+        name: name.value,
+        cooked_g: null,
+        items,
+        uid: key.get(),
+      }),
   });
-  if (!meal) return;
-  notify(`Saved meal ${meal.name}`, {
-    action: { label: "Open", run: () => go(href.meal(meal.id)) },
+  if (!recipe) return;
+  key.done();
+  const left = texts > 0 ? ` · ${plural(texts, "one-off item")} left out` : "";
+  notify(`Saved recipe ${recipe.name}${left}`, {
+    action: { label: "Open", run: () => go(href.recipe(recipe.id)) },
   });
 }
 
@@ -500,7 +535,7 @@ function dayTotals(day, data) {
     : null;
 }
 
-// A food group. "Select" ticks entries to log again, save as a meal or
+// A food group. "Select" ticks entries to log again, save as a recipe or
 // delete; "Select all" ticks every one that can be (`?select={id}` opens it
 // selecting, that entry ticked). Planned lists the day's due days first
 // (not while selecting: they have no entry to copy yet). `foot`: what goes
@@ -572,10 +607,10 @@ function groupSection(
         "button",
         {
           type: "button",
-          disabled: picked.size === 0,
-          onclick: () => saveAsMeal(chosen()),
+          disabled: chosen().every((e) => isText(e)),
+          onclick: () => saveAsRecipe(chosen()),
         },
-        "Save as meal…",
+        "Save as recipe…",
       ),
       h(
         "button",
@@ -705,6 +740,7 @@ export async function diary(day, params = new URLSearchParams(), ask = false) {
     {},
     periodNav({ kind: "day", day, hrefFor: (_, d) => href.day(d) }),
     run,
+    backupWarning(),
     // One column at every width, in one order: the day's numbers, its food
     // groups, then Sleep, Activity and the Log. A stack, not the section's own
     // children: cards follow each other at the stack's gap.
@@ -735,6 +771,26 @@ export async function diary(day, params = new URLSearchParams(), ask = false) {
   );
 }
 
+// The backup job or its disk needs looking at (Profile says which). Read
+// once a page load, after the day shows, never holding it up: unread
+// (offline), nothing is said.
+let backupsRead = null;
+function backupWarning() {
+  const slot = h("p", { class: "error backup-warning", hidden: true });
+  backupsRead ??= get("/backups");
+  backupsRead.then(
+    (backups) => {
+      if (!backupTrouble(backups)) return;
+      fill(slot, h("a", { href: href.profile() }, "Backups need looking at"));
+      slot.hidden = false;
+    },
+    () => {
+      backupsRead = null;
+    },
+  );
+  return slot;
+}
+
 // No nutrient targets: set them on Targets, which recommends them once the
 // profile has every measurement it needs (else fill those in first).
 const targetsHint = () =>
@@ -752,10 +808,11 @@ const targetsHint = () =>
     ".",
   );
 
-// "2,099 kcal eaten · 2,719 kcal with planned": the second part only with
-// something planned. Wrapping, it moves whole, the "·" (CSS, before it)
-// leading it, never one left dangling at a line's end. A day with nothing
-// in it says so, not "0 kcal".
+// "2,099 kcal eaten · 2,719 kcal with planned · a one-off item without
+// kcal": the second part only with something planned, the third only when
+// the day's food isn't all it ate (incompleteWhy). Wrapping, it moves
+// whole, the "·" (CSS, before it) leading it, never one left dangling at a
+// line's end. A day with nothing in it says so, not "0 kcal".
 function headline(data) {
   if (!data.total.energy && data.groups.every((g) => g.entries.length === 0))
     return h(
@@ -786,7 +843,18 @@ function headline(data) {
           ),
         ]
       : null,
+    incompleteWhy(data),
   );
+}
+
+// Why the day's food isn't all it ate, when it isn't: a text entry eaten
+// without kcal.
+function incompleteWhy(data) {
+  if (!data.incomplete) return null;
+  return [
+    " ",
+    h("span", { class: "muted incomplete" }, "a one-off item without kcal"),
+  ];
 }
 
 // Removing imported history: an imported row has no nutrients of its own
@@ -865,6 +933,7 @@ export async function entryEditor(key) {
 // today (past days stay clean); off stops it, ticked days keep their
 // entries.
 async function entryForm(entry) {
+  if (isText(entry)) return textForm(entry, logAgainToday);
   const due = entry.kind === "due";
   const imported = entry.kind === "imported";
   const [food, matched, targets] = await Promise.all([
@@ -1031,6 +1100,13 @@ async function entryForm(entry) {
               { class: "button", href: href.select(entry.day, entry.id) },
               "Log again",
             ),
+            entry.day === today()
+              ? null
+              : h(
+                  "button",
+                  { type: "button", onclick: logAgainToday(entry) },
+                  "Log again today",
+                ),
           ],
     remove: due
       ? {

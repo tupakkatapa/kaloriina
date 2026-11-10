@@ -341,15 +341,15 @@ test("coverage is over the period's food, a day without the key adding none", ()
   const some = [...logged({ ...none, iron: 2 }, 22), ...without(6, 23)];
   assert.deepEqual(nutrientWarnings(base(none, { days: some })), []);
   // On 23 of them: 82 %. The mean is over every logged day, one without
-  // iron adding 0 (dailyMean): 2 × 23 / 28, a floor ("≥") short of full
-  // coverage.
+  // iron adding 0 (dailyMean): 2 × 23 / 28, a floor read as it is from
+  // KNOWN up, as the Diary's bars.
   const most = [...logged({ ...none, iron: 2 }, 23), ...without(5, 24)];
   assert.deepEqual(words(nutrientWarnings(base(none, { days: most }))), [
     [
       "low:iron",
       "warning",
       "Iron intake low",
-      "≥ 1.6 of 16 mg a day · in January",
+      "1.6 of 16 mg a day · in January",
     ],
   ]);
   // Big days weigh more, by their dry matter: 5 days of 1,200 g without
@@ -395,19 +395,14 @@ test("vitamin D below 70 % outside winter is an adequate-intake warning in µg",
   );
 });
 
-test("known but short of full coverage, a low reads as at least (≥)", () => {
-  // 90 % of each day's food carried iron: judged, but a floor.
+test("a low judged short of full coverage reads as it is, no ≥", () => {
+  // 90 % of each day's food carried iron: judged, a floor read as it is.
   const days = logged({ iron: 9, fiber: 30, vitamin_d: 400 }).map((d) => ({
     ...d,
     known: { iron: 0.9, dry: 400 },
   }));
   assert.deepEqual(words(nutrientWarnings(base({}, { days }))), [
-    [
-      "low:iron",
-      "warning",
-      "Iron intake low",
-      "≥ 9 of 16 mg a day · in January",
-    ],
+    ["low:iron", "warning", "Iron intake low", "9 of 16 mg a day · in January"],
   ]);
   // Each card carries the shape the Highlights rank (ADR 0030).
   const [r] = nutrientWarnings(base({}, { days }));

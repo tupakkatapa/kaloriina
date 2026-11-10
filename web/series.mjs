@@ -40,7 +40,12 @@ import {
 import { isNil, qty, whole } from "./format.mjs";
 import { habitAmountText } from "./habits.mjs";
 import { everyDay, seriesOf, sleepSeries } from "./insights.mjs";
-import { kcal as energyText, foodDay, GOAL_SIGN, KNOWN } from "./nutrients.mjs";
+import {
+  countedDay,
+  kcal as energyText,
+  GOAL_SIGN,
+  KNOWN,
+} from "./nutrients.mjs";
 import { source as metricDays, seriesInfo } from "./series-keys.mjs";
 import { mean } from "./stats.mjs";
 
@@ -246,7 +251,7 @@ export function dayContext(data, profile = currentProfile() ?? {}) {
 // a drink without its value is no sober day, a pizza holds none), alcohol
 // said in drinks as its habit is.
 export const eatenSeries = (days) => {
-  const eaten = days.filter((x) => foodDay(x));
+  const eaten = days.filter((x) => countedDay(x));
   const known = (key) => eaten.filter((d) => coverage([d], key) >= KNOWN);
   const alcohol = meta?.habits?.find((b) => b.key === "alcohol");
   return {
@@ -656,7 +661,7 @@ export const gapOf = (net, partly) => ({
 // a day (a period starting today has none).
 export function periodNumbers({ days, burned: spent, bmr }) {
   const of = new Map(spent.map((b) => [b.day, b]));
-  const both = days.filter((d) => foodDay(d) && of.has(d.day) && bmr(d.day));
+  const both = days.filter((d) => countedDay(d) && of.has(d.day) && bmr(d.day));
   if (both.length === 0) return null;
   const per = (f) => both.reduce((t, d) => t + f(d), 0) / both.length;
   const parts = (d) => {
@@ -706,7 +711,7 @@ export function periodNumbers({ days, burned: spent, bmr }) {
 // unit, `say` writes a stored value. {keys, marks}.
 export function energySeries({ days, burned: spent, target, by, show, say }) {
   const eaten = days
-    .filter((x) => foodDay(x))
+    .filter((x) => countedDay(x))
     .map((d) => ({
       day: d.day,
       value: show(d.total.energy),
@@ -759,7 +764,7 @@ export function energySeries({ days, burned: spent, target, by, show, say }) {
 export function macroSeries({ days, key, label, target, by, say }) {
   // A day whose food didn't all carry it is a floor.
   const daily = days
-    .filter((x) => foodDay(x))
+    .filter((x) => countedDay(x))
     .map((d) => ({
       day: d.day,
       value: d.total[key] ?? 0,

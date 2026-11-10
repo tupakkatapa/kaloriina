@@ -50,7 +50,7 @@ const PROBE = `
     <li><button type="button" class="tile" aria-describedby="tt4"><b class="tile-value">5</b> <span class="tile-caption">days</span></button><span class="tile-long" id="tt4" role="tooltip">Days.</span></li>
     <li id="lone"><button type="button" class="tile" aria-describedby="tt5"><b class="tile-value">8.2 km</b> <span class="tile-caption">run</span></button><span class="tile-long" id="tt5" role="tooltip">A run.</span></li>
   </ul>
-  <div class="actions" id="actions"><a class="button" href="#/probe">New food</a><a class="button" href="#/probe">New recipe</a><a class="button" href="#/probe">New meal</a></div>
+  <div class="actions" id="actions"><a class="button" href="#/probe">New food</a><a class="button" href="#/probe">New recipe</a><a class="button" href="#/probe">Scan barcode</a></div>
   <table class="grid goals" id="goals"><colgroup><col class="label"><col class="sign"><col><col class="share"></colgroup>
     <tbody><tr><th scope="row" id="grid-th">Protein</th><td><select id="sign"><option>≥</option></select></td><td><input id="grid-input" inputmode="decimal" value="120"></td><td>35 %<small id="grid-small">a day</small></td></tr></tbody></table>
   <span class="light l-low" id="light"><span class="dot"></span>Low fat</span>
@@ -350,7 +350,7 @@ test.describe("screens", () => {
   }, testInfo) => {
     const { tag, day } = unique(80, testInfo);
     const pid = await ownProfile(page, request, `Titles ${tag}`);
-    // 40 characters: past the length that used to shrink by a class.
+    // 40 characters: a long title, shrunk by no class.
     const name = `Oat flakes wholegrain with honey ${tag}`;
     expect(name).toHaveLength(40);
     const f = await food(request, { name, per100: { energy: 360 } });

@@ -1,4 +1,4 @@
-// The nutrition panel: what a food, recipe or meal contains, with its
+// The nutrition panel: what a food or recipe contains, with its
 // health cues (traffic lights, health tags, the energy split). Split from
 // ui.mjs, whose DOM builder it uses; no data here either.
 
@@ -38,8 +38,8 @@ import {
   nutrient,
   ordered,
 } from "./nutrients.mjs";
-import { fill, h } from "./ui.mjs";
 import { tiles } from "./tiles.mjs";
+import { fill, h } from "./ui.mjs";
 import { labelStyle } from "./units.mjs";
 
 // One amount of a column ({values, known}) in a nutrition table, in its
@@ -105,7 +105,11 @@ function lightChips(lights, { basis = PER_100G } = {}) {
 }
 
 // A verdict's chip colour: good news, middling or bad.
-const VERDICT_TONE = { healthy: "l-good", ok: "l-medium", unhealthy: "l-bad" };
+export const VERDICT_TONE = {
+  healthy: "l-good",
+  ok: "l-medium",
+  unhealthy: "l-bad",
+};
 
 // A food's verdict (`food.labels.verdict`, the server's) as a chip with a
 // dot, coloured by its tone; `detail` (a food's own view) says why in a
@@ -178,7 +182,7 @@ const splitBar = (split) =>
       : null,
   );
 
-// What a food, recipe or meal contains: the four key nutrients up front, the
+// What a food or recipe contains: the four key nutrients up front, the
 // rest under "Other nutrients", as in the diary and Summary. One column per
 // basis ("Per 100 g", "Whole recipe (540 g)"). `paint` redraws it as inputs
 // change; the folds keep their open state across repaints.

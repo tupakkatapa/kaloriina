@@ -11,6 +11,24 @@ export { unique } from "./slots.mjs";
 export const starts = (text) =>
   new RegExp(`^${text.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")}`, "u");
 
+// One of the food finder's folded lists, by its title ("Recent").
+export const fold = (page, title) =>
+  page.locator(".finder-fold", {
+    has: page.locator("summary", {
+      hasText: new RegExp(`^${title} \\(\\d+\\)$`, "u"),
+    }),
+  });
+
+// That list opened, as a tap opens it (so remembered).
+export async function openFold(page, title) {
+  const list = fold(page, title);
+  await expect(list).toBeVisible();
+  if ((await list.getAttribute("open")) === null)
+    await list.locator("summary").click();
+  await expect(list).toHaveAttribute("open", "");
+  return list;
+}
+
 export async function food(request, body) {
   const res = await request.post("/api/foods", { data: body });
   expect(res.ok()).toBeTruthy();

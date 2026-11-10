@@ -63,7 +63,7 @@ async fn deleting_an_entry_twice_is_404() {
 }
 
 #[tokio::test]
-async fn recipe_and_meal_logging() {
+async fn recipe_logging() {
     let app = app();
     let oats = create_food(
         &app,
@@ -86,27 +86,20 @@ async fn recipe_and_meal_logging() {
     assert_eq!(recipe["per100"]["energy"], 100.0);
     assert_eq!(recipe["items"][1]["name"], "Milk");
 
-    let (_, meal) = call(
-        &app,
-        "POST",
-        "/api/meals",
-        Some(json!({ "name": "Breakfast", "items": [
-            { "food_id": recipe["id"], "grams": 250.0 }, { "food_id": milk, "grams": 100.0 }] })),
-    )
-    .await;
-    let (status, res) = call(
-        &app,
-        "POST",
-        "/api/profiles/1/entries",
-        Some(json!({ "day": DAY, "group": "Eaten", "meal_id": meal["id"] })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED);
-    assert_eq!(res["entries"].as_array().unwrap().len(), 2);
+    for (food, grams) in [(&recipe["id"], 250.0), (&json!(milk), 100.0)] {
+        let (status, res) = call(
+            &app,
+            "POST",
+            "/api/profiles/1/entries",
+            Some(json!({ "day": DAY, "group": "Eaten", "food_id": food, "grams": grams })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{res}");
+    }
 
     let (_, day) = call(&app, "GET", &format!("/api/profiles/1/day/{DAY}"), None).await;
     assert_eq!(day["total"]["energy"], 300.0);
-    // The day knows what the meal's preview (web `recipeKnown`
+    // The day knows what a recipe's preview (web `recipeKnown`
     // over its items, pinned to the server's rule by
     // tests/fixtures/coverage-cases.json) says. The porridge is 22 g dry a
     // 100 g, iron on 18 of it; the milk 10 g dry, no iron. 250 g and
@@ -562,8 +555,8 @@ async fn error_messages_name_the_problem() {
         (
             "POST",
             "/api/profiles/1/entries",
-            json!({ "day": DAY, "group": "Eaten", "meal_id": 999 }),
-            "Unknown meal 999",
+            json!({ "day": DAY, "group": "Eaten", "entry_ids": [999] }),
+            "Unknown entry 999",
         ),
         (
             "PUT",
@@ -579,14 +572,14 @@ async fn error_messages_name_the_problem() {
         ),
         (
             "POST",
-            "/api/meals",
-            json!({ "name": "M", "items": [{ "food_id": oats, "grams": 1.0 }, { "food_id": oats, "grams": -1.0 }] }),
+            "/api/recipes",
+            json!({ "name": "R", "cooked_g": null, "items": [{ "food_id": oats, "grams": 1.0 }, { "food_id": oats, "grams": -1.0 }] }),
             "Item 2: grams must be more than 0",
         ),
         (
             "POST",
-            "/api/meals",
-            json!({ "name": "M", "items": [{ "food_id": 999, "grams": 1.0 }] }),
+            "/api/recipes",
+            json!({ "name": "R", "cooked_g": null, "items": [{ "food_id": 999, "grams": 1.0 }] }),
             "Unknown food 999",
         ),
         (
@@ -734,35 +727,37 @@ async fn food_edit_updates_recipes_and_logged_history() {
 }
 
 #[tokio::test]
-async fn meal_crud() {
+async fn recipe_crud() {
     let app = app();
     let egg = create_food(&app, "Egg", json!({})).await;
-    let (status, meal) = call(
+    let (status, recipe) = call(
         &app,
         "POST",
-        "/api/meals",
-        Some(json!({ "name": "Breakfast", "items": [{ "food_id": egg, "grams": 60.0 }] })),
+        "/api/recipes",
+        Some(json!({ "name": "Breakfast", "cooked_g": null,
+                     "items": [{ "food_id": egg, "grams": 60.0 }] })),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
-    let uri = format!("/api/meals/{}", meal["id"]);
-    let (status, meal) = put_with_rev(
+    let uri = format!("/api/recipes/{}", recipe["id"]);
+    let (status, recipe) = put_with_rev(
         &app,
         &uri,
         json!({ "name": "Big breakfast", "items": [{ "food_id": egg, "grams": 120.0 }] }),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(meal["items"][0]["grams"], 120.0);
-    assert_eq!(meal["items"][0]["name"], "Egg");
-    let (_, list) = call(&app, "GET", "/api/meals", None).await;
-    assert_eq!(list[0]["name"], "Big breakfast");
+    assert_eq!(recipe["items"][0]["grams"], 120.0);
+    assert_eq!(recipe["items"][0]["name"], "Egg");
+    let (_, found) = search(&app, "q=big").await;
+    assert_eq!(found[0]["name"], "Big breakfast");
+    let food = format!("/api/foods/{}", recipe["id"]);
     assert_eq!(
-        call(&app, "DELETE", &uri, None).await.0,
+        call(&app, "DELETE", &food, None).await.0,
         StatusCode::NO_CONTENT
     );
     assert_eq!(
-        call(&app, "DELETE", &uri, None).await.0,
+        call(&app, "DELETE", &food, None).await.0,
         StatusCode::NOT_FOUND
     );
     assert_eq!(call(&app, "GET", &uri, None).await.0, StatusCode::NOT_FOUND);
@@ -825,11 +820,6 @@ async fn unknown_ids_are_404() {
                     "archived": false, "notes": null, "category": null, "rev": 1 }),
         ),
         (
-            "PUT",
-            "/api/meals/999",
-            json!({ "name": "X", "items": item, "rev": 1 }),
-        ),
-        (
             "PATCH",
             "/api/profiles/1/entries/999",
             json!({ "group": "Eaten" }),
@@ -842,7 +832,7 @@ async fn unknown_ids_are_404() {
             "{uri}"
         );
     }
-    for uri in ["/api/foods/999", "/api/recipes/999", "/api/meals/999"] {
+    for uri in ["/api/foods/999", "/api/recipes/999"] {
         assert_eq!(
             call(&app, "GET", uri, None).await.0,
             StatusCode::NOT_FOUND,
@@ -1424,7 +1414,8 @@ async fn summary_counts_eaten_food_only() {
     .await;
     assert_eq!(
         s["days"],
-        json!([{ "day": "2026-03-03", "total": { "energy": 300.0 }, "known": { "dry": 300.0 } }]),
+        json!([{ "day": "2026-03-03", "total": { "energy": 300.0 }, "known": { "dry": 300.0 },
+                  "ratings": { "healthy": 0.0, "ok": 0.0, "unhealthy": 0.0, "unrated": 300.0 } }]),
         "a day with only planned food isn't logged; planned food isn't eaten"
     );
 }
@@ -1815,7 +1806,10 @@ async fn meta_serves_the_reference_data() {
     assert_eq!(limits["height_cm"], json!([100.0, 250.0]));
     assert_eq!(limits["activity"], json!([1.2, 2.5]));
     assert_eq!(limits["goal_kg_per_week"], json!([-1.0, 1.0]));
-    assert_eq!(limits["portions"], 100.0);
+    assert!(
+        limits.get("portions").is_none(),
+        "meals are recipes: {limits}"
+    );
     assert_eq!(limits["barcode_digits"], json!([4, 32]));
     assert_eq!(limits["uid"], json!([8, 64]));
     assert_eq!(limits["note"], 500);
@@ -2632,13 +2626,6 @@ async fn stale_revs_are_refused_and_change_nothing() {
     let app = app();
     let oats = create_food(&app, "Oats", json!({})).await;
     let items = json!([{ "food_id": oats, "grams": 50.0 }]);
-    let (_, meal) = call(
-        &app,
-        "POST",
-        "/api/meals",
-        Some(json!({ "name": "Breakfast", "items": items })),
-    )
-    .await;
     let steps =
         json!([{ "kind": "exercise", "exercise_id": base(&app, "Pull-up").await, "reps": 3 }]);
     let (_, workout) = call(
@@ -2660,10 +2647,6 @@ async fn stale_revs_are_refused_and_change_nothing() {
     let (_, session) = call(&app, "POST", "/api/profiles/1/activities", Some(session)).await;
     let cases = [
         (format!("/api/foods/{oats}"), json!({ "name": "Renamed" })),
-        (
-            format!("/api/meals/{}", meal["id"]),
-            json!({ "name": "Renamed", "items": items }),
-        ),
         (
             format!("/api/workouts/{}", workout["id"]),
             json!({ "name": "Renamed", "steps": steps }),
@@ -2743,16 +2726,10 @@ async fn retried_creates_with_a_uid_save_once() {
     assert_eq!(first["entries"][0]["id"], again["entries"][0]["id"]);
     assert_eq!(first["entries"][0]["uid"], "entry-0001");
 
-    let (_, meal) = call(
-        &app,
-        "POST",
-        "/api/meals",
-        Some(json!({ "name": "Breakfast", "items": [
-            { "food_id": oats, "grams": 50.0 }, { "food_id": milk, "grams": 200.0 }] })),
-    )
-    .await;
-    let logged = json!({ "day": DAY, "group": "Eaten", "meal_id": meal["id"],
-                         "uid": "meal-0001" });
+    let with_milk = log_entry(&app, "Eaten", milk, 200.0).await;
+    let logged = json!({ "day": DAY, "group": "Eaten",
+                         "entry_ids": [first["entries"][0]["id"], with_milk["id"]],
+                         "uid": "copy-0001" });
     let (first, again) = post_twice("/api/profiles/1/entries", logged).await;
     assert_eq!(first, again);
     let uids: Vec<_> = first["entries"]
@@ -2761,11 +2738,11 @@ async fn retried_creates_with_a_uid_save_once() {
         .iter()
         .map(|e| e["uid"].as_str().unwrap())
         .collect();
-    assert_eq!(uids, ["meal-0001:1", "meal-0001:2"]);
+    assert_eq!(uids, ["copy-0001:1", "copy-0001:2"]);
 
     let (_, day) = call(&app, "GET", &format!("/api/profiles/1/day/{DAY}"), None).await;
     let count = group(&day, "Eaten")["entries"].as_array().unwrap().len();
-    assert_eq!(count, 3, "one food and two meal items, each once");
+    assert_eq!(count, 4, "two foods and two copies, each once");
 
     let session = json!({ "day": DAY, "name": "Run", "minutes": 30, "uid": "session-0001" });
     let (first, again) = post_twice("/api/profiles/1/activities", session).await;
@@ -2922,13 +2899,11 @@ async fn deleting_the_last_weight_leaves_none() {
 async fn weights_after_tomorrow_are_refused() {
     let app = app();
     let day = |ahead: i64| {
-        let secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let (y, m, d) =
-            kaloriina::model::civil_from_days(i64::try_from(secs / 86_400).unwrap() + ahead);
-        format!("{y:04}-{m:02}-{d:02}")
+        jiff::Timestamp::now()
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .date()
+            .saturating_add(jiff::Span::new().days(ahead))
+            .to_string()
     };
     let (status, res) = call(
         &app,
@@ -3212,7 +3187,7 @@ async fn a_uid_is_one_profiles_own() {
 }
 
 #[tokio::test]
-async fn a_meal_replay_matches_only_its_own_uid() {
+async fn a_copy_replay_matches_only_its_own_uid() {
     let app = app();
     let (_, f) = call(
         &app,
@@ -3221,20 +3196,14 @@ async fn a_meal_replay_matches_only_its_own_uid() {
         Some(json!({ "name": "Replay oats", "per100": { "energy": 380.0 } })),
     )
     .await;
-    let (_, meal) = call(
-        &app,
-        "POST",
-        "/api/meals",
-        Some(json!({ "name": "Replay", "items": [{ "food_id": f["id"], "grams": 50.0 }] })),
-    )
-    .await;
+    let from = log_entry(&app, "Eaten", f["id"].as_i64().unwrap(), 50.0).await;
     let log =
-        |uid: &str| json!({ "day": DAY, "group": "Eaten", "meal_id": meal["id"], "uid": uid });
+        |uid: &str| json!({ "day": DAY, "group": "Eaten", "entry_ids": [from["id"]], "uid": uid });
     call(
         &app,
         "POST",
         "/api/profiles/1/entries",
-        Some(log("MEALUID01")),
+        Some(log("COPYUID01")),
     )
     .await;
     // Another uid differing only in case is another write.
@@ -3242,12 +3211,12 @@ async fn a_meal_replay_matches_only_its_own_uid() {
         &app,
         "POST",
         "/api/profiles/1/entries",
-        Some(log("mealuid01")),
+        Some(log("copyuid01")),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{res}");
-    assert_eq!(res["entries"][0]["uid"], "mealuid01:1");
-    // ":" is the server's, for meal items.
+    assert_eq!(res["entries"][0]["uid"], "copyuid01:1");
+    // ":" is the server's, for the items of a write logging several.
     let (status, err) = call(
         &app,
         "POST",
@@ -3365,6 +3334,23 @@ async fn distance_needs_a_whole_session_type() {
         .await;
         assert_eq!(status, StatusCode::CREATED, "{kind}: {s}");
         assert_eq!(s["distance_m"], 8234);
+    }
+    // Errors name the fields as the editor labels them.
+    for (body, said) in [
+        (
+            json!({ "day": DAY, "name": "S", "minutes": 30, "type": "run", "distance_m": 1_000_001 }),
+            "Distance must be 0–1000000 m",
+        ),
+        (
+            json!({ "day": DAY, "name": "S", "minutes": 30, "type": "run", "start_at": "2020-01-01T08:00:00Z" }),
+            "The start time must be on the activity's day",
+        ),
+    ] {
+        let (status, err) = call(&app, "POST", "/api/profiles/1/activities", Some(body)).await;
+        assert_eq!(
+            (status, &err["error"]),
+            (StatusCode::BAD_REQUEST, &json!(said))
+        );
     }
     let (_, meta) = call(&app, "GET", "/api/meta", None).await;
     let distance = |key: &str| {
@@ -3591,7 +3577,7 @@ async fn an_unknown_device_workout_names_its_resource() {
 }
 
 #[tokio::test]
-async fn serving_and_meal_amounts_are_bounded() {
+async fn serving_amounts_are_bounded() {
     let app = app();
     let bread = call(
         &app,
@@ -3603,13 +3589,6 @@ async fn serving_and_meal_amounts_are_bounded() {
     .await
     .1["id"]
         .clone();
-    let (_, meal) = call(
-        &app,
-        "POST",
-        "/api/meals",
-        Some(json!({ "name": "Toast", "items": [{ "food_id": bread, "grams": 60.0 }] })),
-    )
-    .await;
     let entry = |extra: Value| {
         let mut body = json!({ "day": DAY, "group": "Eaten" });
         body.as_object_mut()
@@ -3625,11 +3604,6 @@ async fn serving_and_meal_amounts_are_bounded() {
         (
             json!({ "food_id": bread, "serving": "Slice", "quantity": -1 }),
             "quantity",
-        ),
-        (json!({ "meal_id": meal["id"], "portions": 0 }), "portions"),
-        (
-            json!({ "meal_id": meal["id"], "portions": 100.5 }),
-            "portions",
         ),
         (json!({ "food_id": 9999, "grams": 100 }), "food_id"),
     ] {
@@ -3697,7 +3671,16 @@ async fn latitude_is_one_decimal_within_90_or_null() {
         let mut b = p.clone();
         b["latitude"] = bad.clone();
         let (status, e) = call(&app, "PUT", "/api/profiles/1", Some(b)).await;
-        assert!(status.is_client_error(), "{bad}: {e}");
+        let field = if bad.is_string() {
+            Value::Null
+        } else {
+            json!("latitude")
+        };
+        assert_eq!(
+            (status, &e["field"]),
+            (StatusCode::BAD_REQUEST, &field),
+            "{bad}: {e}"
+        );
     }
     let mut b = p.clone();
     b["latitude"] = json!(60.25);
@@ -3773,10 +3756,6 @@ async fn a_create_with_a_uid_answers_the_first() {
             "/api/recipes",
             json!({ "name": "Dup recipe", "cooked_g": null,
                     "items": [{ "food_id": oats, "grams": 50.0 }] }),
-        ),
-        (
-            "/api/meals",
-            json!({ "name": "Dup meal", "items": [{ "food_id": oats, "grams": 50.0 }] }),
         ),
         (
             "/api/workouts",

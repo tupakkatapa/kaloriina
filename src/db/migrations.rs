@@ -1727,4 +1727,70 @@ DROP TABLE health_record;
 ALTER TABLE health_record_new RENAME TO health_record;
 CREATE INDEX health_record_day ON health_record (profile_id, source, kind, day);
 ",
+    // 71: meals are recipes. Each meal with items becomes a recipe of your
+    // own with them, in order, measured as they were (`meal:{id}` maps one
+    // to the other while its items move; no client uid has a `:`), unless
+    // a recipe of its name, not archived, already holds the same items:
+    // "Recipe from this meal" made it. A meal without items is no recipe
+    // and goes. Labels are made again, the new recipes' with them; the
+    // Rust step writes their values and "Whole recipe".
+    r"
+INSERT INTO food (kind, source, name, uid, drink)
+    SELECT 'recipe', 'custom', m.name, 'meal:' || m.id, 0 FROM meal m
+    WHERE EXISTS (SELECT 1 FROM meal_item i WHERE i.meal_id = m.id)
+      AND NOT EXISTS (
+          SELECT 1 FROM food r
+          WHERE r.kind = 'recipe' AND NOT r.archived AND r.name = m.name
+            AND (SELECT count(*) FROM recipe_item WHERE recipe_id = r.id)
+                = (SELECT count(*) FROM meal_item WHERE meal_id = m.id)
+            AND NOT EXISTS (
+                SELECT 1 FROM meal_item i
+                WHERE i.meal_id = m.id
+                  AND (SELECT count(*) FROM meal_item t
+                       WHERE t.meal_id = m.id AND t.food_id = i.food_id AND t.grams = i.grams)
+                   <> (SELECT count(*) FROM recipe_item t
+                       WHERE t.recipe_id = r.id AND t.food_id = i.food_id AND t.grams = i.grams)))
+    ORDER BY m.id;
+INSERT INTO recipe_item (recipe_id, food_id, grams, serving, quantity)
+    SELECT f.id, i.food_id, i.grams, i.serving, i.quantity
+    FROM meal_item i JOIN food f ON f.uid = 'meal:' || i.meal_id
+    ORDER BY i.meal_id, i.rowid;
+UPDATE food SET uid = NULL WHERE uid LIKE 'meal:%';
+DROP TABLE meal_item;
+DROP TABLE meal;
+DELETE FROM meta WHERE key = 'label_rules_version';
+",
+    // 72: the days ticked "not fully logged": their food isn't the whole
+    // day's.
+    r"
+CREATE TABLE day_incomplete (
+    profile_id INTEGER NOT NULL REFERENCES profile (id) ON DELETE CASCADE,
+    day TEXT NOT NULL,
+    PRIMARY KEY (profile_id, day)
+);
+",
+    // 73: foods left out of a profile's suggestions: through a diary day
+    // ("Not today"), or with no `until` for good ("Never suggest").
+    r"
+CREATE TABLE suggestion_hidden (
+    profile_id INTEGER NOT NULL REFERENCES profile (id) ON DELETE CASCADE,
+    food_id INTEGER NOT NULL REFERENCES food (id) ON DELETE CASCADE,
+    until TEXT,
+    PRIMARY KEY (profile_id, food_id)
+);
+",
+    // 74: a day ticked "not fully logged" holds a one-off item of that
+    // name, without kcal, which leaves the day out as the tick did.
+    r"
+INSERT INTO entry (profile_id, day, grp, name, amount, uid)
+    SELECT profile_id, day, 'Eaten', 'Not fully logged', '', 'incomplete-' || day
+    FROM day_incomplete ORDER BY profile_id, day;
+DROP TABLE day_incomplete;
+",
+    // 75: a profile import matches each food by source, kind and name; the
+    // index serves a lookup by source alone too.
+    r"
+DROP INDEX food_source;
+CREATE INDEX food_match ON food (source, kind, name);
+",
 ];

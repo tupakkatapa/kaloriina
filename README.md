@@ -7,7 +7,7 @@ One Rust binary, one SQLite file, built for a phone browser.
 ## Features
 
 - **Diary**: Planned and Eaten food against your targets, the night's sleep, the day's distance, steps and activities, and a log for weight, habits and check-ins
-- **Foods**: your own foods, recipes and meals, ~4,200 Finnish foods from [Fineli](https://fineli.fi) and barcodes from [Open Food Facts](https://world.openfoodfacts.org), each rated Healthy, OK or Unhealthy
+- **Foods**: your own foods and recipes, ~4,200 Finnish foods from [Fineli](https://fineli.fi) and barcodes from [Open Food Facts](https://world.openfoodfacts.org), each rated Healthy, OK or Unhealthy
 - **Targets**: energy, macros, nutrients, body, steps, sleep and habits, recommended from your body
 - **Summary**: a week, month or year of Food, Body, Activity and Habits, with highlights, All time and Records
 - **Activity**: every type with its own view and cardio load, workouts with a run screen, 273 exercises with history and bests
@@ -44,17 +44,6 @@ On NixOS, add this repository as a flake input and enable the module:
             enable = true;
             allowedHosts = [ "kaloriina.example.ts.net" ]; # the host your HTTPS proxy forwards
             timeZone = "Europe/Helsinki";
-            # Optional: import a pinned Fineli package, again only when it changes
-            fineli = {
-              enable = true;
-              source = "${./fineli}";
-            };
-            # Optional: a profile's Home Assistant hook, the id read at runtime
-            hooks.Anna = {
-              url = "http://homeassistant.lan:8123";
-              webhookIdFile = "/run/agenix/kaloriina-ha-anna";
-              events = [ "workout_started" "workout_finished" ];
-            };
           };
         }
       ];
@@ -63,11 +52,13 @@ On NixOS, add this repository as a flake input and enable the module:
 }
 ```
 
+Then put HTTPS and a login in front of it ([Security](#security)), e.g. on the tailnet host: `sudo tailscale serve --bg 8080`.
+
 Nightly backups are on by default. See [`module.nix`](module.nix) for every option. A new database has one profile: fill it in under the last tab, then Targets → Recalculate targets.
 
 ## Security
 
-There is no login. Keep it on `127.0.0.1` behind an HTTPS proxy that does the login, e.g. `tailscale serve` with a tailnet ACL or Caddy with `basic_auth`, name the proxy's host in `allowedHosts` and pass the `Host` header through. Profiles have no passwords and the Android app sends none, so serve it where the network is the login. Anyone who can open the app sees every profile, and can make the server call an address on your network through a Home Assistant hook.
+There is no login. Keep it on `127.0.0.1` behind an HTTPS proxy that does the login, name the proxy's host in `allowedHosts` and pass the `Host` header through. Profiles have no passwords. The Android app answers no password prompt and its sync sends none, so with the app the network must be the login: `tailscale serve` with a tailnet ACL, say. A password at the proxy (Caddy's `basic_auth`) suits browsers only. Anyone who can open the app sees every profile, and can make the server call an address on your network through a Home Assistant hook.
 
 ## Imports
 
@@ -75,15 +66,25 @@ Every command has `--help`. `--db` defaults to `KALORIINA_DB`, else `kaloriina.d
 
 ### Fineli
 
-Download the open-data package from [fineli.fi](https://fineli.fi), unzip it and run `kaloriina fineli --db kaloriina.db ./fineli`, or pin it with `services.kaloriina.fineli`.
+Download the open-data package from [fineli.fi](https://fineli.fi), unzip it and run `kaloriina fineli --db kaloriina.db ./fineli`, or pin it in the module, imported again only when it changes:
+
+```nix
+services.kaloriina.fineli = {
+  enable = true;
+  source = "${./fineli}"; # the unzipped package, beside your configuration
+};
+```
 
 ### Cronometer
 
-Profile → Import from Cronometer, or `kaloriina import --db kaloriina.db --servings servings.csv --summary dailysummary.csv`.
+Profile → Import from Cronometer, or `kaloriina import-cronometer --db kaloriina.db --servings servings.csv --summary dailysummary.csv`.
 
 ### Google Health
 
-Export Google Health from [Google Takeout](https://takeout.google.com), then Profile → Connections → Google Health, or `kaloriina import-google-health --db kaloriina.db --time-zone Europe/Helsinki ./Takeout`.
+1. In [Google Takeout](https://takeout.google.com), export Google Health as a zip
+2. Profile → Connections → Google Health → Import from Google Health…, and choose every part of the export
+
+Too big for the browser, unzip it on the server and run `kaloriina import-google-health --db kaloriina.db ./Takeout` (days follow the server's time zone; before the server has run, add `--time-zone Europe/Helsinki`).
 
 ### Loop Habit Tracker
 
@@ -91,7 +92,7 @@ In Loop, Settings → Export full backup, copy the `.db` file off the phone, the
 
 ## Android
 
-A WebView shell around the app that syncs Health Connect every two hours on Wi-Fi. It needs Android 15 or newer.
+A WebView shell around the app that syncs Health Connect every two hours on Wi-Fi. It needs Android 15 or newer, and to install it, a computer with Nix and `adb` and the phone's USB debugging on (Settings → Developer options).
 
 ```bash
 # Once: a signing key with the alias kaloriina; keep it, an update needs the same key
@@ -103,37 +104,84 @@ nix run .#sign-apk -- ~/.android/kaloriina.jks kaloriina.apk
 adb install -r kaloriina.apk
 ```
 
-Empty Chrome's outbox (`#/outbox`) first. Open the app, save your server's `https://` address, then Profile → Connections → App settings → Sync this profile → Grant.
+If you used the app in the phone's browser, first send what it logged offline: open `#/outbox` there and send what waits. Open the app, save your server's `https://` address, then Profile → Connections → App settings → Sync this profile → Grant. When the page won't load, the app offers Retry and Settings; long-pressing its icon opens Settings too.
 
 ## openScale
 
-1. Install openScale sync next to [openScale](https://github.com/oliexdev/openScale)
-2. Copy the webhook URL from Profile → Connections into openScale sync's Webhook
-3. Weigh yourself, press Use beside your openScale user, then run a full sync
+1. Install openScale sync next to [openScale](https://github.com/oliexdev/openScale) (F-Droid or Google Play)
+2. In openScale sync, open Webhook, turn it on and paste the URL from Profile → Connections → openScale
+3. Authorization header: what your HTTPS proxy's login needs (e.g. `Basic …`), or empty; the phone must trust the proxy's certificate
+4. Press Test, weigh yourself, then press Use beside your openScale user in Connections
+5. Run a full sync in openScale sync to bring in your history
 
 Each day's weight is its first reading after you woke.
 
 ## Home Assistant
 
 1. Create an automation with a Webhook trigger
-2. Enter Home Assistant's address and the webhook id in Profile → Connections → Home Assistant, or set `services.kaloriina.hooks`
+2. Enter Home Assistant's address and the webhook id in Profile → Connections → Home Assistant, or set it in the module, the id read at runtime:
+
+   ```nix
+   services.kaloriina.hooks.Anna = { # the profile's name
+     url = "http://homeassistant.lan:8123";
+     webhookIdFile = "/run/agenix/kaloriina-ha-anna";
+     events = [ "workout_started" "workout_finished" ];
+   };
+   ```
+
 3. Press Send test
 
 It gets a `POST` to `{address}/api/webhook/{id}` with `{event, profile, workout, at}` when a workout starts or finishes.
 
+## Upgrading
+
+1. Read the Unreleased (or the new version's) section of [CHANGELOG.md](CHANGELOG.md): a `Breaking:` line says what to do first.
+2. On every phone and browser that logged offline, open `#/outbox` and send what is waiting.
+3. Deploy the server (`nix flake update kaloriina`, then `nixos-rebuild switch`), then the APK.
+
+The first start after an upgrade migrates the database, saving a copy first ([Undo an upgrade](#undo-an-upgrade)).
+
 ## Backups
 
-The module copies the database to `/var/lib/kaloriina/backups` every night, compressed with zstd, and keeps the newest 14. To restore one:
+The module copies the database to `/var/lib/kaloriina/backups` every night, compressed with zstd, and keeps the newest 14. The copies sit on the database's disk: copy them off the host for a disk failure. A copy over 48 hours old shows on the Diary.
+
+### Restore the database
+
+Every profile goes back to the copy's time. The live file is set aside first, so a wrong pick can be undone:
 
 ```bash
 sudo systemctl stop kaloriina
-sudo zstd -d /var/lib/kaloriina/backups/kaloriina-<time>.db.zst -o /tmp/kaloriina.db
-sudo install -o kaloriina -g kaloriina -m 0600 /tmp/kaloriina.db /var/lib/kaloriina/kaloriina.db
-sudo rm -f /var/lib/kaloriina/kaloriina.db-wal /var/lib/kaloriina/kaloriina.db-shm
+cd /var/lib/kaloriina
+sudo mv kaloriina.db kaloriina.db.before-restore
+sudo rm -f kaloriina.db-wal kaloriina.db-shm
+sudo zstd -dc backups/kaloriina-<time>.db.zst | sudo install -o kaloriina -g kaloriina -m 0600 /dev/stdin kaloriina.db
 sudo systemctl start kaloriina
 ```
 
-An upgrade saves `kaloriina.db.pre-v<N>` before migrating. To undo one, put that copy in place the same way (it isn't compressed: skip `zstd`), but run `sudo nixos-rebuild switch --rollback` instead of the last line.
+### Restore one profile
+
+A deleted profile comes back from a copy, and the other profiles keep everything since. Serve the copy on a spare port, export the profile, import it with `?restore=true` (its id and openScale binding are kept):
+
+```bash
+cd /var/lib/kaloriina
+sudo zstd -dc backups/kaloriina-<time>.db.zst | sudo install -o kaloriina -g kaloriina -m 0600 /dev/stdin restore.db
+sudo systemd-run --unit kaloriina-restore -p User=kaloriina kaloriina serve --db /var/lib/kaloriina/restore.db --port 8099
+curl -o profile.json http://127.0.0.1:8099/api/profiles/<id>/export
+sudo systemctl stop kaloriina-restore && sudo rm -f restore.db*
+curl -H 'content-type: application/json' --data-binary @profile.json 'http://127.0.0.1:8080/api/profiles/import?restore=true'
+```
+
+Photos, the Home Assistant hook and the raw Health Connect records don't come back this way: only with the whole database. Neither does a profile whose export is over 64 MiB, the import limit.
+
+### Undo an upgrade
+
+An upgrade that migrates the database saves `kaloriina.db.pre-v<N>` first, N being the database version upgraded from (the CHANGELOG's `database N → M`). The newest two are kept; where a `kaloriina.db.pre-v<N>.<time>` is beside it, take the newest. Restore it as above, without `zstd` (`sudo install … kaloriina.db.pre-v<N> kaloriina.db`), and run `sudo nixos-rebuild switch --rollback` instead of starting the service. Everything written since the upgrade is lost.
+
+If the service fails to start after an upgrade, the migration changed nothing: `sudo nixos-rebuild switch --rollback` alone is enough.
+
+## API
+
+The JSON API under `/api` is the web app's own and changes with it; the CHANGELOG lists each change. Scripts against it may break on any release.
 
 ## Contributing
 

@@ -1,4 +1,4 @@
-// Logging again: select mode (Log again, Save as meal), Same as yesterday,
+// Logging again: select mode (Log again, Save as recipe), Log again today,
 // entry times, and the Log card's measurements and note.
 
 import { expect, test } from "@playwright/test";
@@ -76,26 +76,89 @@ test("select two, log them again on another day, and undo", async ({
   await expect(there.locator(".entry")).toHaveCount(0);
 });
 
-test("save selected foods as a meal", async ({ page, request }, testInfo) => {
-  const { day, tag } = unique(301, testInfo);
+test("save selected foods as a recipe, each in the grams logged", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { day, tag } = unique(1169, testInfo);
   const { oats } = await twoEaten(request, day, tag);
+  const bread = await food(request, {
+    name: `Bread ${tag}`,
+    per100: { energy: 250 },
+    servings: [{ label: "Slice", grams: 40 }],
+  });
+  await entry(request, {
+    day,
+    group: "Eaten",
+    food_id: bread.id,
+    serving: "Slice",
+    quantity: 2,
+  });
 
   await page.goto(`/#/day/${day}`);
   const eaten = section(page, "Eaten");
   await eaten.getByRole("button", { name: "Select from Eaten" }).click();
   await eaten.getByRole("checkbox", { name: `Oats ${tag}` }).check();
-  await eaten.getByRole("button", { name: "Save as meal…" }).click();
+  await eaten.getByRole("checkbox", { name: `Bread ${tag}` }).check();
+  await eaten.getByRole("button", { name: "Save as recipe…" }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("Name").fill(`Breakfast ${tag}`);
-  await dialog.getByRole("button", { name: "Save as meal" }).click();
+  await dialog.getByRole("button", { name: "Save as recipe" }).click();
   await expect(page.locator("#toast")).toContainText(
-    `Saved meal Breakfast ${tag}`,
+    `Saved recipe Breakfast ${tag}`,
   );
   await page.getByRole("button", { name: "Open", exact: true }).click();
-  await expect(page).toHaveURL(/#\/meal\/\d+$/u);
-  const id = page.url().match(/meal\/(\d+)/u)[1];
-  const meal = await (await request.get(`/api/meals/${id}`)).json();
-  expect(meal.items.map((i) => [i.food_id, i.grams])).toEqual([[oats.id, 50]]);
+  await expect(page).toHaveURL(/#\/recipe\/\d+$/u);
+  const id = page.url().match(/recipe\/(\d+)/u)[1];
+  const recipe = await (await request.get(`/api/recipes/${id}`)).json();
+  expect(
+    recipe.items.map((i) => [i.food_id, i.grams, i.serving, i.quantity]),
+  ).toEqual([
+    [oats.id, 50, null, null],
+    [bread.id, 80, null, null],
+  ]);
+});
+
+test("save as recipe after the logged serving was renamed", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { day, tag } = unique(1217, testInfo);
+  const bread = await food(request, {
+    name: `Bread ${tag}`,
+    per100: { energy: 250 },
+    servings: [{ label: "Slice", grams: 40 }],
+  });
+  await entry(request, {
+    day,
+    group: "Eaten",
+    food_id: bread.id,
+    serving: "Slice",
+    quantity: 2,
+  });
+  const put = await request.put(`/api/foods/${bread.id}`, {
+    data: { ...bread, servings: [{ label: "Slab", grams: 100 }] },
+  });
+  expect(put.ok()).toBeTruthy();
+
+  await page.goto(`/#/day/${day}`);
+  const eaten = section(page, "Eaten");
+  await eaten.getByRole("button", { name: "Select from Eaten" }).click();
+  await eaten.getByRole("checkbox", { name: `Bread ${tag}` }).check();
+  await eaten.getByRole("button", { name: "Save as recipe…" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Name").fill(`Toast ${tag}`);
+  await dialog.getByRole("button", { name: "Save as recipe" }).click();
+  await expect(page.locator("#toast")).toContainText(
+    `Saved recipe Toast ${tag}`,
+  );
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  await expect(page).toHaveURL(/#\/recipe\/\d+$/u);
+  const id = page.url().match(/recipe\/(\d+)/u)[1];
+  const recipe = await (await request.get(`/api/recipes/${id}`)).json();
+  expect(recipe.items.map((i) => [i.food_id, i.grams])).toEqual([
+    [bread.id, 80],
+  ]);
 });
 
 test("imported rows can't be ticked; Done leaves select mode", async ({
@@ -198,46 +261,66 @@ test("the entry editor's Log again opens select mode with it ticked", async ({
   await expect(planned.locator(".select-bar")).toContainText("1 selected");
 });
 
-test("Planned's Add repeats what was eaten yesterday in one tap", async ({
+test("the Planned Add screen has no Same as yesterday", async ({
   page,
   request,
 }, testInfo) => {
-  const { day, tag } = unique(366, testInfo);
-  const yesterday = dayAfter(day, -1);
-  const { oats } = await twoEaten(request, yesterday, tag);
-  // Still planned yesterday: not eaten, so not repeated.
-  await entry(request, {
-    day: yesterday,
-    group: "Planned",
-    food_id: oats.id,
-    grams: 10,
-  });
-
-  const same = page.getByRole("button", { name: /^Same as yesterday/u });
-  // Eating today isn't planning: Eaten's Add has no such row.
-  await page.goto(`/#/add/${day}/Eaten`);
+  const { day, tag } = unique(1189, testInfo);
+  await twoEaten(request, dayAfter(day, -1), tag);
+  await page.goto(`/#/add/${day}/Planned`);
   await expect(
     page.getByRole("searchbox", { name: "Search foods" }),
   ).toBeVisible();
-  await expect(same).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: /^Same as yesterday/u }),
+  ).toHaveCount(0);
+});
 
-  await page.goto(`/#/add/${day}/Planned`);
-  // 50 g of 400 kcal/100 g and 200 g of 50 kcal/100 g.
-  await expect(same).toContainText("2 foods · 300 kcal");
-  await same.click();
-  await expect(page).toHaveURL(new RegExp(`#/day/${day}$`, "u"));
-  await expect(page.locator("#toast")).toContainText(
-    "Added 2 foods to Planned",
+test("Log again today copies an entry into today's Eaten, with Undo", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { day, tag } = unique(1190, testInfo);
+  const pid = await ownProfile(page, request, `Again ${tag}`);
+  const today = todayInApp();
+  const { oats } = await twoEaten(request, day, tag, pid);
+  const todays = async () => {
+    const view = await (
+      await request.get(`/api/profiles/${pid}/day/${today}`)
+    ).json();
+    return view.groups.find((g) => g.name === "Eaten").entries;
+  };
+  const [e] = (
+    await (await request.get(`/api/profiles/${pid}/day/${day}`)).json()
+  ).groups
+    .find((g) => g.name === "Eaten")
+    .entries.filter((x) => x.food_id === oats.id);
+
+  // Today's own entry has none: it is today already.
+  const {
+    entries: [mine],
+  } = await entry(
+    request,
+    { day: today, group: "Planned", food_id: oats.id, grams: 10 },
+    pid,
   );
-  await expect(section(page, "Planned").locator(".entry")).toHaveCount(2);
-  // Planned isn't eaten: the copies carry no time.
-  const view = await (await request.get(`/api/profiles/1/day/${day}`)).json();
-  const planned = view.groups.find((g) => g.name === "Planned").entries;
-  expect(planned.map((e) => e.time)).toEqual([null, null]);
+  await page.goto(`/#/entry/${mine.id}`);
+  await expect(page.getByRole("link", { name: "Log again" })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Log again today" }),
+  ).toHaveCount(0);
 
-  // Undo takes both back.
+  await page.goto(`/#/entry/${e.id}`);
+  await page.getByRole("button", { name: "Log again today" }).click();
+  await expect(page.locator("#toast")).toContainText("Added to today");
+  // It stays on the past day's entry.
+  await expect(page).toHaveURL(new RegExp(`#/entry/${e.id}$`, "u"));
+  const [copy] = await todays();
+  expect(copy.name).toBe(`Oats ${tag}`);
+  expect(copy.time).toMatch(/^\d{2}:\d{2}$/u);
+
   await page.locator("#toast").getByRole("button", { name: "Undo" }).click();
-  await expect(section(page, "Planned").locator(".entry")).toHaveCount(0);
+  await expect.poll(todays).toEqual([]);
 });
 
 test("an entry's time prefixes its row and clears", async ({

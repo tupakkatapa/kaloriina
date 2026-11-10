@@ -96,11 +96,6 @@ async function fixtures(request) {
       },
     })
   ).json();
-  const meal = await (
-    await request.post("/api/meals", {
-      data: { name: "Layout breakfast", items },
-    })
-  ).json();
   await request.put("/api/profiles/1/weights/2045-06-15", {
     data: { kg: 72.4 },
   });
@@ -343,7 +338,6 @@ async function fixtures(request) {
     food,
     entry,
     recipe,
-    meal,
     workout,
     session,
     exercise: id("Push-up"),
@@ -354,7 +348,6 @@ const routes = ({
   food,
   entry,
   recipe,
-  meal,
   workout,
   session,
   exercise,
@@ -369,7 +362,6 @@ const routes = ({
   `/#/log/2045-06-15/Eaten/${food.id}`,
   // A recipe with notes (one long unbroken line).
   `/#/log/2045-06-15/Eaten/${recipe.id}`,
-  `/#/log-meal/2045-06-15/Eaten/${meal.id}`,
   "/#/scan/2045-06-15/Eaten",
   `/#/entry/${entry.id}`,
   `/#/activity/${session.id}`,
@@ -382,9 +374,6 @@ const routes = ({
   `/#/food/${food.id}`,
   "/#/recipe/new",
   `/#/recipe/${recipe.id}`,
-  `/#/log-meal/${meal.id}`,
-  "/#/meal/new",
-  `/#/meal/${meal.id}`,
   "/#/targets",
   "/#/activity",
   "/#/workout/new",
@@ -453,10 +442,8 @@ const routes = ({
     "/#/feedback",
     // Health cues with nutrient density against its targets.
     `/#/log/2045-06-15/Eaten/${food.id}`,
-    `/#/log-meal/2045-06-15/Eaten/${meal.id}`,
     `/#/food/${food.id}`,
     `/#/recipe/${recipe.id}`,
-    `/#/meal/${meal.id}`,
     // A daily item due in Planned, and its editor.
     "/#/day/2045-06-16",
     `/#/entry/daily-${daily.id}-2045-06-16`,

@@ -369,15 +369,19 @@ fn a_stalled_upload_does_not_hold_a_stop() {
         )
         .unwrap();
     std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        server.try_wait().unwrap().is_none(),
+        "exited before the stop"
+    );
     let term = std::process::Command::new("kill")
         .args(["-TERM", &server.id().to_string()])
         .status()
         .unwrap();
     assert!(term.success());
     let stopping = Instant::now();
-    let exited = loop {
-        if server.try_wait().unwrap().is_some() {
-            break stopping.elapsed();
+    let (exited, status) = loop {
+        if let Some(status) = server.try_wait().unwrap() {
+            break (stopping.elapsed(), status);
         }
         if stopping.elapsed() > Duration::from_secs(15) {
             server.kill().unwrap();
@@ -389,4 +393,5 @@ fn a_stalled_upload_does_not_hold_a_stop() {
     drop(stalled);
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(exited < Duration::from_secs(11), "stopped after {exited:?}");
+    assert!(status.success(), "a graceful stop exits 0: {status}");
 }

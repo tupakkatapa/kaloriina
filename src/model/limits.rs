@@ -3,7 +3,7 @@
 
 use serde::Serialize;
 
-/// Longest accepted food, recipe, meal, exercise, workout or activity name
+/// Longest accepted food, recipe, exercise, workout or activity name
 /// (and brand), in characters.
 pub const NAME_MAX: usize = 200;
 /// Longest serving label, profile or habit name, group or amount text, in
@@ -11,7 +11,11 @@ pub const NAME_MAX: usize = 200;
 pub const LABEL_MAX: usize = 50;
 /// Largest amount of one entry, serving or ingredient: 100 kg.
 pub const GRAMS_MAX: f64 = 100_000.0;
-/// Most ingredients in a recipe or items in a meal.
+/// Largest kcal estimate of a text entry.
+pub const ENTRY_ENERGY_MAX: f64 = 10_000.0;
+/// Largest grams of protein, carbs or fat a text entry gives.
+pub const ENTRY_MACRO_MAX: f64 = 1_000.0;
+/// Most ingredients in a recipe, or entries copied at once.
 pub const ITEMS_MAX: usize = 200;
 /// Most servings a food has.
 pub const SERVINGS_MAX: usize = 50;
@@ -50,8 +54,6 @@ pub const GOAL_KG_PER_WEEK_MAX: f64 = 1.0;
 /// A profile's latitude, in degrees (south negative), to one decimal.
 pub const LATITUDE_MIN: f64 = -90.0;
 pub const LATITUDE_MAX: f64 = 90.0;
-/// Most portions of a meal logged at once.
-pub const PORTIONS_MAX: f64 = 100.0;
 /// Digits in a barcode (EAN, UPC and shop-internal codes).
 pub const BARCODE_DIGITS_MIN: usize = 4;
 pub const BARCODE_DIGITS_MAX: usize = 32;
@@ -83,7 +85,8 @@ pub const WATER_ML_MIN: f64 = 1.0;
 pub const WATER_ML_MAX: f64 = 5000.0;
 /// Largest profile, Cronometer or Google Health import body: 64 MiB, years
 /// of diary or about four years of Google Health activity files. Served:
-/// the browser's Takeout reader stops before it.
+/// the browser's Takeout reader stops before it. Export has no ceiling: a
+/// larger profile export comes back only with the whole database.
 pub const IMPORT_BYTES_MAX: usize = 64 * 1024 * 1024;
 /// Most readings in one openScale sync batch: decades of daily weigh-ins
 /// (about 8 MiB). Not served.
@@ -136,27 +139,25 @@ pub const RECORD_KIND_MAX: usize = 64;
 pub const HEART_RATE_MIN: i64 = 20;
 pub const HEART_RATE_MAX: i64 = 250;
 /// Sleep sessions at most this many seconds apart are one block (ADR 0032).
-pub const SLEEP_JOIN_S: i64 = 2 * 60 * 60;
+pub const SLEEP_JOIN_SECONDS: i64 = 2 * 60 * 60;
 /// A session starting at least this many seconds after a block that is
 /// already a night, and itself shorter than a night, starts a block of its
 /// own: a nap after waking, not the night's end.
-pub const SLEEP_SPLIT_S: i64 = 60 * 60;
+pub const SLEEP_SPLIT_SECONDS: i64 = 60 * 60;
 /// A block with at least this many minutes in bed is a night; a shorter one
 /// is naps, one a session.
-pub const NIGHT_MIN_MIN: i64 = 180;
+pub const NIGHT_MINUTES_MIN: i64 = 180;
 /// A block too short for a night that ends before this (minutes after local
 /// midnight) on the wake day of the night block after it is that night's
 /// start, not a nap: a sleep broken by hours awake in the small hours.
-pub const NIGHT_PART_END_MIN: i64 = 6 * 60;
+pub const NIGHT_PART_END_MINUTES: i64 = 6 * 60;
 /// A block with more minutes in bed than a day is no sleep: skipped, and
 /// counted so.
-pub const IN_BED_MAX_MIN: i64 = 1440;
+pub const IN_BED_MINUTES_MAX: i64 = 1440;
 /// Longest nap, in minutes: three hours in bed is a night.
-pub const NAP_MINUTES_MAX: i64 = NIGHT_MIN_MIN - 1;
+pub const NAP_MINUTES_MAX: i64 = NIGHT_MINUTES_MIN - 1;
 /// Naps on one synced day; Health Connect weigh-ins in one sync.
 pub const NAPS_MAX: usize = 24;
-/// Sleep stage spans on one synced day (a night's hypnogram).
-pub const SLEEP_STAGES_MAX: usize = 300;
 pub const BODY_READINGS_MAX: usize = 5000;
 /// A reading's bone mass (kg) and basal metabolic rate (kcal a day).
 pub const BONE_KG_MAX: f64 = 10.0;
@@ -192,6 +193,8 @@ pub struct Limits {
     pub name: usize,
     pub label: usize,
     pub grams: f64,
+    pub entry_energy: f64,
+    pub entry_macro: f64,
     pub items: usize,
     pub servings: usize,
     pub step_seconds: u32,
@@ -211,7 +214,6 @@ pub struct Limits {
     pub activity: (f64, f64),
     pub goal_kg_per_week: (f64, f64),
     pub latitude: (f64, f64),
-    pub portions: f64,
     pub barcode_digits: (usize, usize),
     pub uid: (usize, usize),
     pub note: usize,
@@ -263,6 +265,8 @@ pub const LIMITS: Limits = Limits {
     name: NAME_MAX,
     label: LABEL_MAX,
     grams: GRAMS_MAX,
+    entry_energy: ENTRY_ENERGY_MAX,
+    entry_macro: ENTRY_MACRO_MAX,
     items: ITEMS_MAX,
     servings: SERVINGS_MAX,
     step_seconds: STEP_SECONDS_MAX,
@@ -282,7 +286,6 @@ pub const LIMITS: Limits = Limits {
     activity: (ACTIVITY_MIN, ACTIVITY_MAX),
     goal_kg_per_week: (GOAL_KG_PER_WEEK_MIN, GOAL_KG_PER_WEEK_MAX),
     latitude: (LATITUDE_MIN, LATITUDE_MAX),
-    portions: PORTIONS_MAX,
     barcode_digits: (BARCODE_DIGITS_MIN, BARCODE_DIGITS_MAX),
     uid: (UID_MIN, UID_MAX),
     note: NOTE_MAX,

@@ -6,6 +6,7 @@ import {
   answer,
   entry,
   exerciseIds,
+  fold,
   food,
   headline,
   mockJson,
@@ -130,7 +131,7 @@ test("merge a duplicate food into the one kept", async ({
   await page.getByRole("button", { name: starts(`Skyr dup ${tag}`) }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toContainText(
-    `1 diary entry, 0 recipes, 0 meals and 0 favourites move to Skyr ${tag}.`,
+    `1 diary entry, 0 recipes and 0 favourites move to Skyr ${tag}.`,
   );
   await expect(dialog).toContainText("This can't be undone.");
   expect(await answer(page, "Merge")).toBe(
@@ -238,14 +239,14 @@ test("best fit ranks by what's left, for this visit only", async ({
     ),
   ).toBeVisible();
   await page.getByLabel("Search foods", { exact: true }).fill(tag);
-  const results = page.locator(".finder-results .result .name");
+  const results = page.locator(".finder-results .result:not(.as-text) .name");
   await expect(results).toHaveText([`Tuna ${tag}`, `Fudge ${tag}`]);
 
   // Never remembered: the finder opens on Favourites again.
   const saved = await page.evaluate(() => localStorage.getItem("food-filters"));
   expect(saved ?? "").not.toContain("fit");
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Favourites" })).toBeVisible();
+  await expect(fold(page, "Favourites")).toBeVisible();
   await page.getByRole("button", { name: "Filters" }).click();
   await expect(page.getByLabel("Sort")).toHaveValue("relevance");
 });

@@ -6,7 +6,7 @@
 import { meta, scoped } from "./api.mjs";
 import { coverage } from "./coverage.mjs";
 import { fmt, NBSP, noun, plural, qty, whole } from "./format.mjs";
-import { nutrient } from "./nutrients.mjs";
+import { atLeastShown, nutrient } from "./nutrients.mjs";
 import { latest } from "./outbox.mjs";
 import { localDisplay } from "./units.mjs";
 
@@ -339,8 +339,7 @@ export function counted(id, day, saved) {
 // "Water 1.2 L · Alcohol 2 drinks · Fruit and vegetables 320 g": the
 // built-ins the day's food held (the Day view's `builtins`, stored units),
 // in the registry's order; null when none. `day` ({eaten, known}, the Day
-// view's) reads a nutrient's "≥" as the Diary's card does: whenever its
-// food didn't all carry it, not only under KNOWN.
+// view's) reads a nutrient's "≥" as the Diary's card does: under KNOWN.
 export function builtinText(builtins, day = null) {
   const parts = meta.habits.map(localBuiltin).flatMap((b) => {
     const x = builtins.find((y) => y.habit === b.key);
@@ -349,7 +348,9 @@ export function builtinText(builtins, day = null) {
     // Not known (ADR 0030): what's counted is a floor.
     const partly =
       key && day
-        ? coverage([{ total: day.eaten ?? {}, known: day.known }], key) < 1
+        ? atLeastShown(
+            coverage([{ total: day.eaten ?? {}, known: day.known }], key),
+          )
         : x?.known === false;
     const floor = partly ? "≥ " : "";
     // Each part moves whole: the line wraps between parts only.

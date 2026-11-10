@@ -1,4 +1,4 @@
-// Health cues on a food, recipe or meal, from its per-100 g values: traffic
+// Health cues on a food or recipe, from its per-100 g values: traffic
 // lights, where its energy comes from, what 100 kcal (or 500 kJ) of it
 // gives of the profile's targets, and how its labels (the server's) are
 // shown. Pure, no DOM, so `node --test` covers it. Why these rules: ADR 0017.
@@ -11,7 +11,7 @@ import { guessed, nutrient, usLabel } from "./nutrients.mjs";
 // 100 g) and 3 (drinks, per 100 ml): [low ≤, high >, red per portion >].
 // The portion reds are 30 % (food) and 15 % (drinks) of the reference
 // intake; energy is never colour coded. Salt in grams.
-const THRESHOLDS = {
+export const THRESHOLDS = {
   food: {
     fat: [3, 17.5, 21],
     saturated: [1.5, 5, 6],
@@ -29,7 +29,7 @@ const THRESHOLDS = {
 const PORTION_OVER = { food: 100, drink: 150 };
 // Over 1.2 % ABV (× 0.789 g/ml): no nutrition declaration, so no lights
 // (Reg. (EU) 1169/2011 Art. 16(4)).
-const ALCOHOL_MAX = 0.95;
+export const MAX_ALCOHOL = 0.95;
 // kcal per 100 g at or under which "per 100 kcal" means nothing: the EU
 // "energy-free" claim (Reg. (EC) 1924/2006 Annex).
 const ENERGY_FREE = 4;
@@ -48,11 +48,11 @@ const LIGHTS = [
   ["sodium", "Salt", "salt"],
 ];
 
-export const alcoholic = (per100) => (per100?.alcohol ?? 0) > ALCOHOL_MAX;
+export const alcoholic = (per100) => (per100?.alcohol ?? 0) > MAX_ALCOHOL;
 
 // Lights read a per-100 g fact a guessed weight doesn't give (a food known
-// only per item, `basis.estimated`): none for one, nor for a recipe or meal
-// holding one. Split and density are per kcal, so they still show.
+// only per item, `basis.estimated`): none for one, nor for a recipe holding
+// one. Split and density are per kcal, so they still show.
 export const NO_KNOWN_WEIGHT = "Lights need a known weight";
 export const weightGuessed = (food) =>
   guessed(food) || (food?.items ?? []).some((x) => guessed(x));

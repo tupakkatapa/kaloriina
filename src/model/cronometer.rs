@@ -1,4 +1,4 @@
-//! A Cronometer export read (`crate::import`), before and after it is
+//! A Cronometer export read (`crate::cronometer`), before and after it is
 //! written (`db::cronometer_apply`): what both sides share.
 
 use std::collections::BTreeSet;
@@ -71,7 +71,7 @@ pub struct Skipped {
 /// Why a row isn't matched: its amount says no grams of the food.
 pub const NOT_GRAMS: &str = "amount not in grams";
 
-/// The grams an imported row's `amount` (as `crate::import` tidies it) is
+/// The grams an imported row's `amount` (as `crate::cronometer` tidies it) is
 /// of `food`: `5 g`, `2 x 35 g`, or `1.5 scoop` of one of its servings,
 /// any case. `None` for anything else (`1 x 330 ml`).
 #[must_use]

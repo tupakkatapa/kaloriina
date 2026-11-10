@@ -7,10 +7,16 @@
 // with it; moved in the DOM, not with CSS `order`, so focus and screen
 // readers go in the order shown. The keys "layout" and "theme" are
 // prefs.mjs's LAYOUT_KEY and THEME_KEY (a classic script can't import).
+// The system bars take the theme's background: `theme-color` for a browser,
+// and in the Android app a `kaloriina-app://theme` address on each change
+// (the app reads the first one itself, once the page has loaded).
 (() => {
   const root = document.documentElement;
   const wide = matchMedia("(min-width: 64rem)");
   const dark = matchMedia("(prefers-color-scheme: dark)");
+  const bars = document.querySelector('meta[name="theme-color"]');
+  const inApp = navigator.userAgent.includes("KaloriinaAndroid/");
+  let told = null;
   const order = () => {
     const diary = document.querySelector('.tabs a[data-tab="diary"]');
     const foods = document.querySelector('.tabs a[data-tab="foods"]');
@@ -33,6 +39,11 @@
         (theme === "system" && dark.matches),
     );
     root.classList.toggle("amoled", theme === "amoled");
+    const bg = getComputedStyle(root).getPropertyValue("--bg").trim();
+    bars.content = bg;
+    const tell = `kaloriina-app://theme?bg=${bg.slice(1)}&dark=${root.classList.contains("dark") ? 1 : 0}`;
+    if (inApp && told !== null && tell !== told) location.assign(tell);
+    told = tell;
   };
   wide.addEventListener("change", apply);
   dark.addEventListener("change", apply);

@@ -1,6 +1,8 @@
 //! The diary: a day (food by group, what was eaten, targets, workouts and
 //! weight), its entries, and the summary over a range of days.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use super::prelude::*;
 use crate::model::{
     BodyPart, CheckInInput, EntryKey, InsightPref, InsightPrefInput, Logs, MeasurementInput,
@@ -9,7 +11,7 @@ use crate::model::{
 
 pub(super) fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/profiles/{pid}/day/{date}", get(day))
+        .route("/api/profiles/{pid}/day/{day}", get(day))
         .route("/api/profiles/{pid}/entries", post(entry_create))
         .route(
             "/api/profiles/{pid}/entries/{key}",
@@ -61,8 +63,8 @@ struct Logged {
     entries: Vec<model::Entry>,
 }
 
-/// Log on a day: a food (an amount of it), a meal (all its items), copies
-/// of earlier entries, a series' tick.
+/// Log on a day: a food (an amount of it), copies of earlier entries, a
+/// series' tick, a text entry.
 async fn entry_create(
     State(s): State<AppState>,
     Path(pid): Path<ProfileId>,
@@ -89,9 +91,11 @@ async fn entry_create(
                 let m = amount.of(&food)?;
                 Ok(vec![db::entry_log(conn, &at, &food, &m, repeat.as_ref())?])
             }
-            Logs::Meal { meal_id, portions } => db::entry_log_meal(conn, &at, *meal_id, *portions),
             Logs::Copy { entry_ids } => db::entry_copy(conn, &at, entry_ids),
             Logs::Daily { item } => Ok(vec![db::entry_log_daily(conn, &at, *item)?]),
+            Logs::Text { name, nutrients } => {
+                Ok(vec![db::entry_text(conn, &at, name, nutrients.as_ref())?])
+            }
         }
     })
     .await?;
@@ -347,6 +351,31 @@ struct DaySummary {
     /// An eaten entry carries no energy: `total.energy` is a lower bound.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     energy_unknown: bool,
+    /// Its food isn't the whole day's ([`model::DayView::incomplete`]).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    incomplete: bool,
+    /// Its eaten energy by rating; none without energy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ratings: Option<model::Ratings>,
+}
+
+/// `[from, to]` (days, `from` first) by calendar month.
+fn months(from: &str, to: &str) -> Result<Vec<(String, String)>, Error> {
+    let day = |d: &str| {
+        d.parse::<jiff::civil::Date>()
+            .map_err(|e| Error::Internal(format!("{d}: {e}")))
+    };
+    let (mut at, to) = (day(from)?, day(to)?);
+    let mut parts = Vec::new();
+    while at <= to {
+        let end = at.last_of_month().min(to);
+        parts.push((at.to_string(), end.to_string()));
+        match end.tomorrow() {
+            Ok(next) => at = next,
+            Err(_) => break,
+        }
+    }
+    Ok(parts)
 }
 
 /// The days with food logged; their mean is the client's (it knows which
@@ -405,14 +434,25 @@ async fn summary(
         }
     };
     let (from, to) = (from.to_owned(), to.to_owned());
-    let (f, t) = (from.clone(), to.clone());
-    let (rows, unknown) = on_profile(&s, pid, move |conn| {
-        Ok((
-            db::eaten_rows(conn, pid, &f, &t)?,
-            db::energy_unknown_days(conn, pid, &f, &t)?,
-        ))
-    })
-    .await?;
+    let mut rows = Vec::new();
+    let (mut unknown, mut sizeless_days) = (BTreeSet::new(), BTreeSet::new());
+    let mut ratings = BTreeMap::new();
+    // A month under the lock at a time: All time's years never hold it long.
+    for (f, t) in months(&from, &to)? {
+        let (eaten, energy_unknown, sizeless, rated) = on_profile(&s, pid, move |conn| {
+            Ok((
+                db::eaten_rows(conn, pid, &f, &t)?,
+                db::energy_unknown_days(conn, pid, &f, &t)?,
+                db::unsized_days(conn, pid, &f, &t)?,
+                db::day_ratings(conn, pid, &f, &t)?,
+            ))
+        })
+        .await?;
+        rows.extend(eaten);
+        unknown.extend(energy_unknown);
+        sizeless_days.extend(sizeless);
+        ratings.extend(rated);
+    }
     let days = tokio::task::spawn_blocking(move || db::eaten_days(&rows))
         .await
         .map_err(|e| Error::Internal(format!("summary task failed: {e}")))??;
@@ -422,10 +462,16 @@ async fn summary(
         days: days
             .into_iter()
             .map(|(day, (total, mut known))| {
+                let sizeless = sizeless_days.contains(&day);
+                if sizeless {
+                    db::unvouched(&mut known, &total);
+                }
                 // The dry matter weighs a day among others: always kept.
                 known.retain(|k, _| k == model::DRY || wanted(k));
                 DaySummary {
                     energy_unknown: unknown.contains(&day),
+                    incomplete: sizeless,
+                    ratings: ratings.remove(&day),
                     day,
                     total: only(total),
                     known,
@@ -433,4 +479,26 @@ async fn summary(
             })
             .collect(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::months;
+
+    #[test]
+    fn a_range_splits_by_calendar_month() {
+        let parts = |from, to| months(from, to).unwrap();
+        assert_eq!(
+            parts("2024-01-30", "2024-03-02"),
+            [
+                ("2024-01-30".into(), "2024-01-31".into()),
+                ("2024-02-01".into(), "2024-02-29".into()),
+                ("2024-03-01".into(), "2024-03-02".into()),
+            ]
+        );
+        assert_eq!(
+            parts("2026-10-07", "2026-10-07"),
+            [("2026-10-07".into(), "2026-10-07".into())]
+        );
+    }
 }

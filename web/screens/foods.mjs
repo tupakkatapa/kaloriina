@@ -1,6 +1,6 @@
-// The Foods tab, and the editors of foods, recipes and meals.
+// The Foods tab, and the editors of foods and recipes.
 
-import { copyButton, copyForm, saveOnce } from "../actions.mjs";
+import { copyForm, saveOnce } from "../actions.mjs";
 import { amountControl, byVolume, PORTION, weightText } from "../amount.mjs";
 import { api, get, meta, scoped } from "../api.mjs";
 import { recipeKnown, recipePer100, wholeOf } from "../coverage.mjs";
@@ -56,7 +56,6 @@ export async function foods() {
       { class: "actions" },
       h("a", { class: "button", href: href.newFood() }, "New food"),
       h("a", { class: "button", href: href.recipe("new") }, "New recipe"),
-      h("a", { class: "button", href: href.meal("new") }, "New meal"),
     ),
     await finder({ day: today(), group: null }),
   );
@@ -67,14 +66,8 @@ export async function foods() {
 // diary entries it changed), so then none is asked.
 const usageOf = (id) => get(`/foods/${id}/usage`).catch(() => null);
 
-// "2 recipes and 1 meal": what holds it, or "" for nothing.
-const holders = (n) =>
-  [
-    n.recipes ? plural(n.recipes, "recipe") : null,
-    n.meals ? plural(n.meals, "meal") : null,
-  ]
-    .filter(Boolean)
-    .join(" and ");
+// "2 recipes": what holds it, or "" for nothing.
+const holders = (n) => (n.recipes ? plural(n.recipes, "recipe") : "");
 
 // "Logged 12 times and used in 2 recipes.", or "" when nothing uses it.
 const usedText = (n) => {
@@ -90,15 +83,15 @@ const usedText = (n) => {
 // Before saving food or recipe `id` (`name`) with its values changed
 // (`changed`) or servings removed (`gone`, their labels): say what that does
 // to what uses it, and ask. Diary entries keep their amounts but follow the
-// food's values, so only changed values matter to them; recipes and meals
-// follow the food too, and an item measured in a removed serving keeps its
+// food's values, so only changed values matter to them; recipes follow the
+// food too, and an item measured in a removed serving keeps its
 // grams. True to save.
 async function confirmChange(id, name, { changed, gone, recipe }) {
   if (!changed && gone.length === 0) return true;
   const n = await usageOf(id);
   const held = n ? holders(n) : "";
   if (!n || !(held || (changed && n.entries))) return true;
-  const one = n.recipes + n.meals === 1;
+  const one = n.recipes === 1;
   return confirmDialog(`Save changes to ${name}?`, {
     detail: [
       usedText(n),
@@ -127,20 +120,22 @@ const goneServings = (before, after) =>
     .filter((label) => !after.some((s) => s.label === label));
 
 // Archiving instead of deleting: a food in use stays behind what uses it,
-// so it's hidden from search, not removed. `put(change)` saves the change;
-// the editor is then shown afresh. Archiving one in use asks first.
+// so it's hidden from search, not removed. `put(change)` saves the form with
+// the change, so a value it can't read stops it as Save would; the editor is
+// then shown afresh. Archiving one in use asks first.
 function archiveButton(food, put, shell) {
   return h(
     "button",
     {
       type: "button",
       onclick: busy(async () => {
+        if (!shell().form.reportValidity()) return;
         const n = food.archived ? null : await usageOf(food.id);
         if (
           n &&
           usedText(n) &&
           !(await confirmDialog(`Archive ${food.name}?`, {
-            detail: `${usedText(n)} Archiving hides it from search; your diary, recipes and meals keep it.`,
+            detail: `${usedText(n)} Archiving hides it from search; your diary and recipes keep it.`,
             confirm: "Archive",
             danger: false,
           }))
@@ -212,7 +207,10 @@ function returnTo(params, saved, self) {
   const back = safeBack(params.get("back"));
   if (back) return back;
   const day = params.get("day");
-  if (day) return href.log(day, params.get("group"), saved.id);
+  if (day)
+    return href.log(day, params.get("group"), saved.id, {
+      replace: params.get("replace"),
+    });
   return self(saved);
 }
 
@@ -511,7 +509,9 @@ export async function foodEditor(id, params) {
     back:
       safeBack(params.get("back")) ??
       (params.get("day")
-        ? href.add(params.get("day"), params.get("group"))
+        ? href.add(params.get("day"), params.get("group"), {
+            replace: params.get("replace"),
+          })
         : isNew
           ? href.foods()
           : href.log(today(), null, food.id)),
@@ -656,7 +656,7 @@ export async function foodEditor(id, params) {
   return shell.node;
 }
 
-// A food as a recipe's or meal's item holds it: what the amount and the
+// A food as a recipe's item holds it: what the amount and the
 // live panel read, coverage (`known`, `borne`, `drink`) included, as the
 // server's items carry it. One shape for an item picked and one restored.
 const itemOf = (f) => ({
@@ -673,7 +673,7 @@ const itemOf = (f) => ({
   weight_estimated: guessed(f),
 });
 
-// Items of a recipe or meal: food, amount (a quantity of one of its servings,
+// Items of a recipe: food, amount (a quantity of one of its servings,
 // or grams) and, for a serving, its weight per row. `onChange` runs after every
 // add, remove or amount edit; `parts` gives what the nutrition panel needs; a
 // food's name opens its editor through `onEdit`. A new item (`start` null)
@@ -751,7 +751,7 @@ function itemsEditor(initial, onChange = () => {}, onEdit = null) {
   return { node, value, parts: rows, named: rows };
 }
 
-// An unsaved recipe or meal, kept while you edit one of its foods: taken
+// An unsaved recipe, kept while you edit one of its foods: taken
 // back only when you return from there (`?draft=1`), so an abandoned one
 // never fills a later visit. Keyed by the editor's address.
 const draft = {
@@ -789,25 +789,16 @@ const current = (items) =>
   );
 
 // Leave for an ingredient's food, keeping the unsaved editor as a draft that
-// its Save or Back returns to. Nothing lost, the editor (`shell()`) won't ask.
-const editIngredient = (path, value, shell) => (item) => {
-  const back = `${path}?draft=1`;
+// its Save or Back returns to, with where the editor itself goes back to
+// (`params`). Nothing lost, the editor (`shell()`) won't ask.
+const editIngredient = (path, params, value, shell) => (item) => {
+  const kept = [...params].filter(([k]) => k !== "draft");
+  const back = `${path}?${new URLSearchParams([...kept, ["draft", "1"]])}`;
   draft.keep(path, value());
   shell().markClean();
   history.replaceState(history.state, "", back);
   location.hash = href.food({ id: item.food_id, kind: item.kind }, back);
 };
-
-// A meal saved as a recipe, or a recipe as a meal (`path`): a new one of
-// the editor's name and items as they are, the one edited kept.
-const saveAs = (path, label, name, items, shell, to) =>
-  copyButton(
-    (key) =>
-      api("POST", path, { name: name.value, items: items.value(), uid: key }),
-    shell,
-    to,
-    label,
-  );
 
 export async function recipeEditor(id, params) {
   const isNew = id === "new";
@@ -904,7 +895,7 @@ export async function recipeEditor(id, params) {
   items = itemsEditor(
     recipe.items,
     repaint,
-    editIngredient(path, state, () => shell),
+    editIngredient(path, params, state, () => shell),
   );
   servings = servingsEditor(recipe.servings, weight, portion);
   repaint();
@@ -988,14 +979,6 @@ export async function recipeEditor(id, params) {
       : [
           ...removing.secondary,
           copyForm("/recipes", body, () => shell, href.food),
-          saveAs(
-            "/meals",
-            "Meal from this recipe",
-            name,
-            items,
-            () => shell,
-            (copy) => href.meal(copy.id),
-          ),
           mergeLink(id),
         ],
     save: async () => {
@@ -1016,115 +999,6 @@ export async function recipeEditor(id, params) {
   });
   shell.form.addEventListener("input", repaint);
   // A draft is taken once: a later visit starts from what's saved.
-  draft.drop(path);
-  return shell.node;
-}
-
-export async function mealEditor(id, params) {
-  const isNew = id === "new";
-  const { path, kept } = draftOf(params);
-  const loaded = isNew ? { name: "", items: [] } : await get(`/meals/${id}`);
-  // Opened from a copy on the log screen (`?back=`), saving returns there.
-  const back = safeBack(params.get("back"));
-  const meal = kept
-    ? { ...loaded, ...kept, items: await current(kept.items) }
-    : loaded;
-  const name = nameInput({ max: meta.limits.name, value: meal.name });
-  // Live: what one logging of the meal adds up to.
-  const panel = nutritionPanel();
-  let targets = null;
-  let items = null;
-  const repaint = () => {
-    if (!items) return;
-    const parts = items.parts();
-    const total = parts.reduce((t, p) => t + p.grams, 0);
-    // A meal is graded as food, never as a drink (ADR 0017).
-    const known = recipeKnown(parts, null);
-    panel.paint(
-      [
-        {
-          label: `Total (${qty(total, "g")})`,
-          ...wholeOf(parts, known, total),
-        },
-      ],
-      {
-        per100: recipePer100(parts, null),
-        known,
-        drink: false,
-        grams: total,
-        targets,
-        estimated: weightGuessed({ items: parts }),
-      },
-    );
-  };
-  items = itemsEditor(
-    meal.items,
-    repaint,
-    editIngredient(
-      path,
-      () => ({ name: name.value, items: items.named() }),
-      () => shell,
-    ),
-  );
-  repaint();
-  withTargets((t) => {
-    targets = t;
-    repaint();
-  });
-  const body = (change = {}) => ({
-    name: name.value,
-    items: items.value(),
-    ...(isNew ? {} : { rev: loaded.rev }),
-    ...change,
-  });
-  const send = saveOnce("/meals");
-  const shell = editor({
-    title: isNew ? "New meal" : loaded.name,
-    back: back ?? href.foods(),
-    body: [
-      kept
-        ? h(
-            "p",
-            { class: "note" },
-            "Your unsaved changes are back: save to keep them.",
-          )
-        : null,
-      field("Name", name),
-      items.node,
-    ],
-    state: () => items.value(),
-    secondary: isNew
-      ? []
-      : [
-          copyForm(
-            "/meals",
-            body,
-            () => shell,
-            (copy) => href.meal(copy.id),
-          ),
-          saveAs(
-            "/recipes",
-            "Recipe from this meal",
-            name,
-            items,
-            () => shell,
-            href.food,
-          ),
-        ],
-    save: () => send(body(), isNew ? null : loaded.id),
-    after: (saved) => back ?? href.meal(saved.id),
-    remove: isNew
-      ? null
-      : {
-          ask: `Delete ${loaded.name}?`,
-          detail: "Foods already logged from it stay in the Diary.",
-          run: () => api("DELETE", `/meals/${id}`),
-          after: href.foods(),
-          done: `Deleted ${loaded.name}`,
-        },
-    aside: panel.node,
-    unsaved: Boolean(kept),
-  });
   draft.drop(path);
   return shell.node;
 }

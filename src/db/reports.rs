@@ -12,7 +12,7 @@ pub const SOURCES_MAX: usize = 20;
 /// food's current name.
 pub fn nutrient_sources(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     from: &str,
     to: &str,
     nutrient: &str,
@@ -24,7 +24,7 @@ pub fn nutrient_sources(
             "SELECT coalesce(sum(json_extract(nutrients, '$.' || ?4)), 0)
              FROM ({GROUP_ROWS}) WHERE grp != ?5"
         ))?
-        .query_row(params![from, to, profile, nutrient, PLANNED], |r| r.get(0))?;
+        .query_row(params![from, to, pid, nutrient, PLANNED], |r| r.get(0))?;
     let mut stmt = conn.prepare_cached(
         "SELECT e.food_id, f.name,
              sum(json_extract(e.nutrients, '$.' || ?5)) AS part
@@ -36,7 +36,7 @@ pub fn nutrient_sources(
          ORDER BY part DESC, fold(f.name)",
     )?;
     let all = stmt
-        .query_map(params![profile, from, to, PLANNED, nutrient], |r| {
+        .query_map(params![pid, from, to, PLANNED, nutrient], |r| {
             Ok(Contributor {
                 food_id: r.get(0)?,
                 name: r.get(1)?,
@@ -75,11 +75,11 @@ pub const RICH_MAX: usize = 5;
 const RICH_MIN_KCAL: f64 = 20.0;
 
 /// Foods with at least `min` of `nutrient` (a registry key) per 100 kcal,
-/// the ones `profile` has eaten first, then the library's (archived
+/// the ones `pid` has eaten first, then the library's (archived
 /// aside), each richest first: at most [`RICH_MAX`].
 pub fn rich_foods(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     nutrient: &str,
     min: f64,
 ) -> Result<Vec<RichFood>, Error> {
@@ -97,17 +97,14 @@ pub fn rich_foods(
          LIMIT {RICH_MAX}"
     ))?;
     Ok(stmt
-        .query_map(
-            params![profile, PLANNED, nutrient, RICH_MIN_KCAL, min],
-            |r| {
-                Ok(RichFood {
-                    food_id: r.get(0)?,
-                    name: r.get(1)?,
-                    per_100kcal: r.get(2)?,
-                    eaten: r.get(3)?,
-                })
-            },
-        )?
+        .query_map(params![pid, PLANNED, nutrient, RICH_MIN_KCAL, min], |r| {
+            Ok(RichFood {
+                food_id: r.get(0)?,
+                name: r.get(1)?,
+                per_100kcal: r.get(2)?,
+                eaten: r.get(3)?,
+            })
+        })?
         .collect::<rusqlite::Result<_>>()?)
 }
 
@@ -225,7 +222,6 @@ pub fn stats_read(
         s.weigh_ins_from,
         s.custom_foods,
         s.recipes,
-        s.meals,
     ) = conn.query_row(
         &format!(
             "SELECT (SELECT count(*) FROM entry WHERE profile_id = ?1 AND grp <> ?2),
@@ -234,8 +230,7 @@ pub fn stats_read(
                     (SELECT min(day) FROM weight WHERE profile_id = ?1),
                     (SELECT count(*) FROM food WHERE source = 'custom' AND kind = 'food' AND NOT archived
                          AND name NOT IN ({})),
-                    (SELECT count(*) FROM food WHERE kind = 'recipe'),
-                    (SELECT count(*) FROM meal)",
+                    (SELECT count(*) FROM food WHERE kind = 'recipe')",
             SEEDED.map(|n| format!("'{n}'")).join(", ")
         ),
         params![pid, PLANNED],
@@ -247,7 +242,6 @@ pub fn stats_read(
                 r.get(3)?,
                 r.get(4)?,
                 r.get(5)?,
-                r.get(6)?,
             ))
         },
     )?;

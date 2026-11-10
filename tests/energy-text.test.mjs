@@ -8,6 +8,7 @@ import {
   activeEnergyText,
   activeKcalText,
   activeMark,
+  goalPaceText,
 } from "../web/energy-text.mjs";
 import { setRegistry } from "../web/nutrients.mjs";
 
@@ -42,4 +43,45 @@ test("activity energy phrases are held together by NBSPs, parts split by ' · '"
   );
   assert.equal(shown(activeKcalText(1234)), "active_1,234_kcal");
   setRegistry([], "kcal");
+});
+
+// A plan (web/energy.mjs) needing `target` a day against 2,400.
+const plan = (target, { weight = 80, limited = false } = {}) => ({
+  weight,
+  maintenance: { kcal: 2400, source: "balance" },
+  needed: { target, recomp: false, muscle: null, limited, clamps: [] },
+});
+const at = (p, weight = 75, date = "2026-12-31") =>
+  shown(
+    goalPaceText({
+      plan: p,
+      goalWeight: weight,
+      goalDate: date,
+      today: "2026-11-11",
+    }),
+  );
+
+test("goal pace: what the goal date needs a day, as Targets plans it", () => {
+  setRegistry([ENERGY], "kcal");
+  assert.equal(
+    at(plan(1950)),
+    "Your goal date needs a deficit ≈_450_kcal a day.",
+  );
+  assert.equal(
+    at(plan(2700)),
+    "Your goal date needs a surplus ≈_300_kcal a day.",
+  );
+  // Slowed or floored, the date needs more than the plan.
+  assert.equal(
+    at(plan(1950, { limited: true })),
+    "Your goal date needs a deficit ≥_450_kcal a day: Targets plans no faster.",
+  );
+  assert.equal(
+    at(plan(2400, { weight: 75.05 })),
+    "Your goal weight is reached.",
+  );
+  // No goal date ahead, no goal weight, no plan: nothing.
+  assert.equal(at(plan(1950), 75, "2026-11-11"), null);
+  assert.equal(at(plan(1950), null), null);
+  assert.equal(at({ weight: 80, maintenance: null, needed: null }), null);
 });

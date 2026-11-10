@@ -14,12 +14,15 @@ import {
   loggedDays,
   summaryHabits,
 } from "../habits.mjs";
+import { prepare, versusBefore } from "../insights.mjs";
 import { h } from "../ui.mjs";
 import { habitsSection } from "./habits.mjs";
 import { highlightStack } from "./summary-highlights.mjs";
 
 export const KEY = "habits";
 export const LABEL = "Habits";
+
+const key = (habit) => `habit:${habit.id}`;
 
 export async function load(p, sharing) {
   const [list, days, beforeDays, activities] = await Promise.all([
@@ -43,24 +46,23 @@ export function render(p, { list, days, beforeDays, activities }, shared) {
   // Today is still being logged: the numbers end yesterday.
   const end = p.through;
   const logged = [...loggedDays(days)].filter((d) => d <= end).length;
+  const ctx = {
+    kind: p.kind,
+    from: p.from,
+    to: p.to,
+    last: shift(today(), -1),
+    before: p.before,
+    // The nights after each day: alcohol ↔ sleep; the
+    // day's own stress: alcohol ↔ stress.
+    series: { ...habitSeries(habits, days), ...shared.series },
+    prev: habitSeries(habits, beforeDays),
+    correlations: touching(shared.correlations, KEY),
+  };
+  // The picked habit's change is its mean tile's, not a Highlight.
+  const slot = highlightStack(KEY, ctx, p, shared);
+  const c = prepare(ctx);
   return [
-    highlightStack(
-      KEY,
-      {
-        kind: p.kind,
-        from: p.from,
-        to: p.to,
-        last: shift(today(), -1),
-        before: p.before,
-        // The nights after each day: alcohol ↔ sleep; the
-        // day's own stress: alcohol ↔ stress.
-        series: { ...habitSeries(habits, days), ...shared.series },
-        prev: habitSeries(habits, beforeDays),
-        correlations: touching(shared.correlations, KEY),
-      },
-      p,
-      shared,
-    ),
+    slot,
     h(
       "p",
       { class: "muted" },
@@ -73,6 +75,9 @@ export function render(p, { list, days, beforeDays, activities }, shared) {
       from: p.from,
       to: p.to,
       kind: p.kind,
+      versus: (habit) =>
+        versusBefore(c, ctx.series[key(habit)], ctx.prev[key(habit)]),
+      onPick: (habit) => slot.paint([`change:${key(habit)}`]),
     }),
   ];
 }

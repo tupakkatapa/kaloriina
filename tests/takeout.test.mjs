@@ -182,3 +182,29 @@ test("something else than a zip says so", async () => {
     /isn't a zip/u,
   );
 });
+
+test("a broken zip says so, whichever part is off", async () => {
+  const good = makeZip([{ name: `${GH}/x/steps_1.csv`, text: "0\n" }]);
+  const end = good.length - 22;
+  const dir = good.readUInt32LE(end + 16);
+  // What is off: the 2- or 4-byte field at `at` set to `value`.
+  for (const [what, at, value, width = 4] of [
+    ["more entries than its directory holds", end + 10, 2, 2],
+    ["its directory past the end", end + 16, good.length + 100],
+    ["a name past its directory", dir + 28, 500, 2],
+    ["no directory entry where one starts", dir, 0],
+    ["a file's header past the end", dir + 42, good.length],
+    ["no file header where one starts", 0, 0],
+    ["a file's data past the end", dir + 20, good.length],
+  ]) {
+    const zip = Buffer.from(good);
+    zip.writeUIntLE(value, at, width);
+    await assert.rejects(
+      firstUpload([new Blob([zip])], MiB),
+      {
+        message: "The zip is broken.",
+      },
+      what,
+    );
+  }
+});

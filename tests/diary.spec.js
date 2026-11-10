@@ -177,7 +177,10 @@ test("targets show progress bars", async ({ page, request }, testInfo) => {
   ).toContainText(/5\sg left/u);
 });
 
-test("log a meal as several entries", async ({ page, request }, testInfo) => {
+test("a recipe built in its editor logs whole, as one entry", async ({
+  page,
+  request,
+}, testInfo) => {
   const { day, tag } = unique(6, testInfo);
   const a = await food(request, {
     name: `Egg ${tag}`,
@@ -188,20 +191,24 @@ test("log a meal as several entries", async ({ page, request }, testInfo) => {
     per100: { energy: 250 },
   });
 
-  await page.goto("/#/meal/new");
+  await page.goto("/#/recipe/new");
   await page.getByLabel("Name").fill(`Breakfast ${tag}`);
   for (const f of [a, b]) {
     await page.getByLabel("Search foods to add").fill(f.name);
     await page.getByRole("button", { name: starts(f.name) }).click();
   }
   await page.getByRole("button", { name: "Save" }).click();
-  await expect(page).toHaveURL(/#\/meal\/\d+$/u);
+  await expect(page.locator("#toast")).toContainText(`Saved Breakfast ${tag}`);
 
   await page.goto(`/#/add/${day}/Eaten`);
-  await page.getByRole("link", { name: starts(`Breakfast ${tag}`) }).click();
+  await page
+    .getByLabel("Search foods", { exact: true })
+    .fill(`Breakfast ${tag}`);
+  await page.getByRole("button", { name: starts(`Breakfast ${tag}`) }).click();
   await page.getByRole("button", { name: "Add to Eaten" }).click();
-  await expect(page.getByText(`Egg ${tag}`)).toBeVisible();
-  await expect(page.getByText(`Toast ${tag}`)).toBeVisible();
+  await expect(
+    page.locator(".entry", { hasText: `Breakfast ${tag}` }),
+  ).toHaveCount(1);
   await expect(headline(page)).toHaveText(/^400\skcal$/u);
 });
 
@@ -281,19 +288,20 @@ test("imported rows say they have no nutrients per entry", async ({
   await expect(page.getByRole("link", { name: /^Edit /u })).toHaveCount(0);
 });
 
-test("logging a meal can be undone", async ({ page, request }, testInfo) => {
+test("logging a recipe can be undone", async ({ page, request }, testInfo) => {
   const { day, tag } = unique(18, testInfo);
   const f = await food(request, {
     name: `Fig ${tag}`,
     per100: { energy: 100 },
   });
-  const res = await request.post("/api/meals", {
+  const res = await request.post("/api/recipes", {
     data: { name: `Snack ${tag}`, items: [{ food_id: f.id, grams: 100 }] },
   });
   expect(res.ok()).toBeTruthy();
 
   await page.goto(`/#/add/${day}/Eaten`);
-  await page.getByRole("link", { name: starts(`Snack ${tag}`) }).click();
+  await page.getByLabel("Search foods", { exact: true }).fill(`Snack ${tag}`);
+  await page.getByRole("button", { name: starts(`Snack ${tag}`) }).click();
   await page.getByRole("button", { name: "Add to Eaten" }).click();
   await expect(headline(page)).toHaveText(/^100\skcal$/u);
   await page.getByRole("button", { name: "Undo", exact: true }).click();
@@ -766,36 +774,6 @@ test("logging can be undone from the toast", async ({
   ).toHaveCount(0);
 });
 
-test("undoing a meal removes every item it logged", async ({
-  page,
-  request,
-}, testInfo) => {
-  const { day, tag } = unique(42, testInfo);
-  const a = await food(request, {
-    name: `Toast ${tag}`,
-    per100: { energy: 100 },
-  });
-  const b = await food(request, {
-    name: `Jam ${tag}`,
-    per100: { energy: 200 },
-  });
-  await request.post("/api/meals", {
-    data: {
-      name: `Breakfast ${tag}`,
-      items: [
-        { food_id: a.id, grams: 100 },
-        { food_id: b.id, grams: 50 },
-      ],
-    },
-  });
-  await page.goto(`/#/add/${day}/Eaten`);
-  await page.getByRole("link", { name: starts(`Breakfast ${tag}`) }).click();
-  await page.getByRole("button", { name: "Add to Eaten" }).click();
-  await expect(headline(page)).toHaveText(/^200\skcal$/u);
-  await page.getByRole("button", { name: "Undo", exact: true }).click();
-  await expect(page.locator(".headline")).toHaveText("Nothing logged");
-});
-
 test("an entry logged by serving edits by serving", async ({
   page,
   request,
@@ -1005,7 +983,7 @@ test("Mark eaten failing midway says how many moved, and Undo returns them", asy
   await expect(eaten.locator(".entry")).toHaveCount(0);
 });
 
-test("a meal logs its items times the portions", async ({
+test("a recipe logs its whole times the quantity", async ({
   page,
   request,
 }, testInfo) => {
@@ -1018,7 +996,7 @@ test("a meal logs its items times the portions", async ({
     name: `Ham ${tag}`,
     per100: { energy: 200 },
   });
-  const res = await request.post("/api/meals", {
+  const res = await request.post("/api/recipes", {
     data: {
       name: `Lunch ${tag}`,
       items: [
@@ -1028,22 +1006,17 @@ test("a meal logs its items times the portions", async ({
     },
   });
   expect(res.ok()).toBeTruthy();
-  const meal = await res.json();
+  const recipe = await res.json();
 
-  await page.goto(`/#/log-meal/${day}/Eaten/${meal.id}`);
-  await expect(page.getByText(/^2 items · 200\skcal$/u)).toBeVisible();
-  await page.getByLabel("Portions").fill("2");
-  await expect(page.getByText(/^2 items · 400\skcal$/u)).toBeVisible();
+  await page.goto(`/#/log/${day}/Eaten/${recipe.id}`);
+  await page.getByLabel("Quantity").fill("2");
   await page.getByRole("button", { name: "Add to Eaten" }).click();
 
   await expect(page).toHaveURL(new RegExp(`#/day/${day}$`, "u"));
   await expect(headline(page)).toHaveText(/^400\skcal$/u);
-  await expect(page.locator(".entry", { hasText: `Bun ${tag}` })).toContainText(
-    /200\sg/u,
-  );
-  await expect(page.locator(".entry", { hasText: `Ham ${tag}` })).toContainText(
-    /100\sg/u,
-  );
+  await expect(
+    page.locator(".entry", { hasText: `Lunch ${tag}` }),
+  ).toContainText(/300\sg/u);
 });
 
 test("empty groups say so; nothing planned, no planned total", async ({
@@ -1122,7 +1095,7 @@ test("a food log whose answer was lost is replayed and saves once", async ({
   );
 });
 
-test("a meal log whose answer was lost is replayed and saves once", async ({
+test("a Log again whose answer was lost is replayed and saves once", async ({
   page,
   request,
 }, testInfo) => {
@@ -1130,21 +1103,30 @@ test("a meal log whose answer was lost is replayed and saves once", async ({
   const pid = await ownProfile(page, request, `Retry ${tag}`);
   const a = await food(request, { name: `Bun ${tag}` });
   const b = await food(request, { name: `Ham ${tag}` });
-  const meal = await (
-    await request.post("/api/meals", {
-      data: {
-        name: `Lunch ${tag}`,
-        items: [
-          { food_id: a.id, grams: 100 },
-          { food_id: b.id, grams: 50 },
-        ],
-      },
-    })
-  ).json();
+  const from = shiftDay(day, -1);
+  for (const [f, grams] of [
+    [a, 100],
+    [b, 50],
+  ])
+    await entry(
+      request,
+      { day: from, group: "Eaten", food_id: f.id, grams },
+      pid,
+    );
   const sent = await loseFirstAnswer(page, "entries");
-  await page.goto(`/#/log-meal/${day}/Eaten/${meal.id}`);
-  await page.getByRole("button", { name: "Add to Eaten" }).click();
-  await expect(page).toHaveURL(new RegExp(`#/day/${day}$`, "u"));
+  await page.goto(`/#/day/${from}`);
+  const eaten = section(page, "Eaten");
+  await eaten.getByRole("button", { name: "Select from Eaten" }).click();
+  await eaten.getByRole("checkbox", { name: `Bun ${tag}` }).check();
+  await eaten.getByRole("checkbox", { name: `Ham ${tag}` }).check();
+  await eaten.getByRole("button", { name: "Log again…" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Day").fill(day);
+  await dialog
+    .getByRole("radiogroup", { name: "Group" })
+    .getByRole("radio", { name: "Eaten" })
+    .click();
+  await dialog.getByRole("button", { name: "Log 2 again" }).click();
   await expect(page.locator("#toast")).toHaveText(KEPT);
   // Sent again, answered: nothing waits.
   await expect
@@ -1697,7 +1679,7 @@ test("the Diary's title opens a day picker under it", async ({
 
 // The planned row's check sits in the middle of its square on
 // every platform: drawn (an svg centred by its viewBox), not a font glyph.
-// Owner (2026-10-14): within half a pixel, the square as painted.
+// Within half a pixel, the square as painted.
 test("the tick's check is centred in its square", async ({
   page,
   request,

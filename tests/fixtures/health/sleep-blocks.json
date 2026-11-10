@@ -115,6 +115,39 @@
       "skipped": 0
     },
     {
+      "name": "two short sleeps before a night both start it",
+      "sessions": [
+        {
+          "id": "a",
+          "start": "2026-09-05T21:10:00Z",
+          "end": "2026-09-05T21:40:00Z"
+        },
+        {
+          "id": "b",
+          "start": "2026-09-05T23:50:00Z",
+          "end": "2026-09-06T00:20:00Z"
+        },
+        {
+          "id": "c",
+          "start": "2026-09-06T02:30:00Z",
+          "end": "2026-09-06T07:30:00Z"
+        }
+      ],
+      "nights": [
+        {
+          "day": "2026-09-06",
+          "start_at": "2026-09-05T21:10:00Z",
+          "end_at": "2026-09-06T07:30:00Z",
+          "in_bed_min": 360,
+          "asleep_min": 360,
+          "bedtime": "00:10",
+          "wake_time": "10:30"
+        }
+      ],
+      "naps": [],
+      "skipped": 0
+    },
+    {
       "name": "a short sleep ending after 06:00 before the night stays a nap",
       "sessions": [
         {

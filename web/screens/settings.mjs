@@ -1,6 +1,6 @@
 // Profile's settings for this browser (layout, theme, energy unit, units,
-// nutrition label, reminders) and its importers (a profile export,
-// Cronometer).
+// nutrition label, reminders), the foods it never suggests and its
+// importers (a profile export, Cronometer).
 
 import {
   api,
@@ -15,7 +15,18 @@ import { NBSP, plural } from "../format.mjs";
 import { go, href, route } from "../nav.mjs";
 import { setEnergyUnit, setLabelStyle, setUnits } from "../nutrients.mjs";
 import { LAYOUT_KEY, remindersOn, setReminders, THEME_KEY } from "../prefs.mjs";
-import { choice, field, formDialog, h, nameInput, notify } from "../ui.mjs";
+import { menuRow } from "../rows.mjs";
+import {
+  choice,
+  field,
+  fill,
+  formDialog,
+  h,
+  nameInput,
+  notify,
+  removeButton,
+  undoable,
+} from "../ui.mjs";
 import {
   ENERGY_UNITS,
   energyUnit,
@@ -141,13 +152,14 @@ function importDialog() {
   return formDialog("Import a profile", {
     body: [
       field("Export file", file, {
-        hint: "A file saved with Export: everything in that profile.",
+        hint: "A file saved with Export.",
       }),
       field("Name", name, {
         hint: "It comes in as a new profile. Foods and exercises it uses join the shared ones.",
       }),
     ],
     submit: "Import",
+    running: "Importing…",
     run: () => {
       if (!data?.profile)
         throw Object.assign(
@@ -204,6 +216,7 @@ export async function importCronometer() {
       ),
     ],
     submit: "Import",
+    running: "Importing…",
     run: async () => {
       if (servings.files.length === 0 && summary.files.length === 0)
         throw Object.assign(new Error("Choose at least one file."), {
@@ -220,6 +233,49 @@ export async function importCronometer() {
   notify(
     `Imported ${plural(report.entries, "entry", "entries")} over ${plural(report.days, "day")}`,
   );
+}
+
+// The foods hidden with "Never suggest", each with ✕ suggesting it again
+// (Undo); with none, only a comment marks where they go.
+export function hiddenSuggestions(foods) {
+  const spot = document.createComment("hidden suggestions");
+  const title = h("h2", {}, "Hidden suggestions");
+  const list = h("ul", {
+    class: "menu card",
+    "aria-label": "Hidden suggestions",
+  });
+  const paint = () => {
+    if (foods.length === 0) {
+      title.remove();
+      list.remove();
+    } else if (!list.isConnected) spot.after(title, list);
+    fill(
+      list,
+      foods.map((f) =>
+        menuRow({
+          name: f.name,
+          action: removeButton(`Suggest ${f.name} again`, async () => {
+            const path = scoped(`/suggestions/hidden/${f.id}`);
+            await api("DELETE", path);
+            const at = foods.indexOf(f);
+            foods.splice(at, 1);
+            paint();
+            undoable(
+              `Suggesting ${f.name} again`,
+              async () => {
+                await api("PUT", path, {});
+                foods.splice(at, 0, f);
+                paint();
+              },
+              { travels: false },
+            );
+          }),
+        }),
+      ),
+    );
+  };
+  paint();
+  return foods.length > 0 ? [spot, title, list] : [spot];
 }
 
 // The "This browser" section: each switch with its hint; `onEnergy` and

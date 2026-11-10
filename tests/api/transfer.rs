@@ -97,13 +97,6 @@ async fn populate(app: &Router) {
                 "items": [{ "food_id": porridge["id"], "grams": 200.0 }, { "food_id": berries, "grams": 50.0 }] }),
     )
     .await;
-    let meal = ok(
-        app,
-        "POST",
-        "/api/meals",
-        json!({ "name": "Snack", "items": [{ "food_id": oats["id"], "grams": 30.0 }, { "food_id": berries, "grams": 70.0 }] }),
-    )
-    .await;
     let entries = "/api/profiles/1/entries";
     let consumed = |extra: Value| {
         let mut body = json!({ "day": DAY, "group": "Eaten" });
@@ -112,6 +105,13 @@ async fn populate(app: &Router) {
             .extend(extra.as_object().unwrap().clone());
         body
     };
+    let mut eaten = Vec::new();
+    for food in [
+        json!({ "food_id": oats["id"], "grams": 30.0 }),
+        json!({ "food_id": berries, "grams": 70.0 }),
+    ] {
+        eaten.push(ok(app, "POST", entries, consumed(food)).await["entries"][0]["id"].clone());
+    }
     ok(
         app,
         "POST",
@@ -130,7 +130,7 @@ async fn populate(app: &Router) {
         app,
         "POST",
         entries,
-        consumed(json!({ "meal_id": meal["id"], "uid": "meal-write-0001" })),
+        consumed(json!({ "entry_ids": eaten, "uid": "copy-write-0001" })),
     )
     .await;
     ok(
@@ -154,6 +154,18 @@ async fn populate(app: &Router) {
         json!({ "food_id": milk }),
     )
     .await;
+    for (food, body) in [
+        (json!(berries), json!({})),
+        (milk.clone(), json!({ "until": DAY })),
+    ] {
+        ok(
+            app,
+            "PUT",
+            &format!("/api/profiles/1/suggestions/hidden/{food}"),
+            body,
+        )
+        .await;
+    }
     populate_body(app).await;
 }
 
@@ -169,7 +181,8 @@ async fn populate_body(app: &Router) {
         hook,
         json!({ "event": "insert", "id": 4, "userId": 1, "username": "Alex",
                 "date": "2026-09-15T05:00:00.000Z", "weight": 72.4, "body_fat": 21.5,
-                "water": 0.0, "muscle": 0.0 }),
+                "water": 0.0, "muscle": 0.0,
+                "values": [{ "key": "bone", "value": 2.4 }, { "key": "lbm", "value": 45.2 }] }),
     )
     .await;
     ok(
@@ -333,7 +346,7 @@ async fn export_names_the_file_and_round_trips_on_the_same_instance() {
         "/api/profiles/1",
         json!({ "name": "Äiti Anna", "sex": null, "birth_date": null, "height_cm": null,
                 "activity": null, "goal_kg_per_week": 0.0, "goal_date": "2027-03-01",
-                "latitude": 60.2 }),
+                "latitude": 60.2, "day": DAY }),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -360,7 +373,7 @@ async fn export_names_the_file_and_round_trips_on_the_same_instance() {
         .iter()
         .map(|e| e["uid"].as_str().unwrap())
         .collect();
-    assert!(uids.contains(&"meal-write-0001:1") && uids.contains(&"meal-write-0001:2"));
+    assert!(uids.contains(&"copy-write-0001:1") && uids.contains(&"copy-write-0001:2"));
     assert_eq!(
         file["foods"].as_array().unwrap().len(),
         5,
@@ -803,9 +816,9 @@ async fn import_refuses_bad_files_and_writes_nothing() {
         bad["entries"] = json!([history(uid)]);
         refused(bad, StatusCode::BAD_REQUEST, "entries").await;
     }
-    // A meal item's suffix is fine.
+    // An item's suffix is fine.
     let mut items = bare("Items");
-    items["entries"] = json!([history("meal-write-0001:1"), history("meal-write-0001:2")]);
+    items["entries"] = json!([history("copy-write-0001:1"), history("copy-write-0001:2")]);
     let (status, res) = import(&app, &items).await;
     assert_eq!(status, StatusCode::CREATED, "{res}");
 
@@ -1024,8 +1037,8 @@ async fn scale_readings_and_weight_sources_travel_and_a_copy_isnt_connected() {
         file["scale_readings"],
         json!([{ "source": "openscale", "source_user": 1, "source_id": 4,
                  "taken_at": 1_789_448_400_000_i64, "day": "2026-09-15", "weight": 72.4,
-                 "body_fat": 21.5, "water": null, "muscle": null, "bone_kg": null,
-                 "lbm_kg": null, "bmr_kcal": null }])
+                 "body_fat": 21.5, "water": null, "muscle": null, "bone_kg": 2.4,
+                 "lbm_kg": 45.2, "bmr_kcal": null }])
     );
     let sources: Vec<(&str, &str)> = file["weights"]
         .as_array()
@@ -1056,6 +1069,11 @@ async fn scale_readings_and_weight_sources_travel_and_a_copy_isnt_connected() {
         (&day["weight_source"], &day["composition"]["body_fat"]),
         (&json!("openscale"), &json!(21.5))
     );
+    let scale = get_ok(&app, &format!("/api/profiles/{pid}/scale")).await;
+    assert_eq!(
+        (&scale[0]["bone_kg"], &scale[0]["lbm_kg"]),
+        (&json!(2.4), &json!(45.2))
+    );
     let status = get_ok(&app, &format!("/api/profiles/{pid}/sync/openscale")).await;
     assert_eq!(
         status["bound_user"],
@@ -1080,6 +1098,7 @@ fn session_shapes(list: &Value) -> Vec<String> {
                 "source_key",
                 "minutes",
                 "kcal",
+                "kcal_source",
             ];
             Value::Array(fields.iter().map(|k| s[*k].clone()).collect()).to_string()
         })
@@ -1130,14 +1149,9 @@ async fn health_connect_activity_travels_but_its_status_doesnt() {
           "total_kcal": null, "avg_hr": null, "min_hr": null, "max_hr": null,
           "sleep_avg_hr": null }]);
     hc_records(&app, 1, night_of_the_2nd()).await;
-    ok(
-        &app,
-        "POST",
-        "/api/profiles/1/sync/health",
-        json!({ "from": "2026-09-01", "to": "2026-09-07", "device": "Pixel 9",
-                "days": days, "sessions": sessions }),
-    )
-    .await;
+    let window = json!({ "from": "2026-09-01", "to": "2026-09-07", "device": "Pixel 9",
+                         "days": days, "sessions": sessions });
+    ok(&app, "POST", "/api/profiles/1/sync/health", window.clone()).await;
     // Stored, a day has its resting energy and distance (none sent here)
     // and a session's wire `kcal_total` is `total_kcal`.
     let days: Value = days
@@ -1169,7 +1183,7 @@ async fn health_connect_activity_travels_but_its_status_doesnt() {
         &app,
         "POST",
         "/api/profiles/1/activities",
-        json!({ "day": "2026-09-04", "name": "Swim", "minutes": 30, "type": "swim",
+        json!({ "day": "2026-09-04", "name": "Swim", "minutes": 30, "kcal": 250, "type": "swim",
                 "distance_m": 1000, "start_at": "2026-09-04T09:00:00+03:00",
                 "uid": "swim-0001" }),
     )
@@ -1182,8 +1196,8 @@ async fn health_connect_activity_travels_but_its_status_doesnt() {
     let tombstones = json!([{ "key": "hc-2", "type": "walk", "start_at": "2026-09-03T08:00:00Z" }]);
     assert_eq!(file["workout_tombstones"], tombstones);
     assert!(!file.to_string().contains("Pixel 9"), "no sync status");
-    let synced = r#"["Running","run",8200,"2026-09-02T14:02:00Z","health_connect","hc-1",46,410]"#;
-    let logged = r#"["Swim","swim",1000,"2026-09-04T06:00:00Z","hand",null,30,null]"#;
+    let synced = r#"["Running","run",8200,"2026-09-02T14:02:00Z","health_connect","hc-1",46,410,"health_connect"]"#;
+    let logged = r#"["Swim","swim",1000,"2026-09-04T06:00:00Z","hand",null,30,250,"hand"]"#;
     assert_eq!(session_shapes(&file["activities"]), [synced, logged]);
 
     let mut copy = file.clone();
@@ -1208,13 +1222,18 @@ async fn health_connect_activity_travels_but_its_status_doesnt() {
         activity,
         json!({ "days": shown, "sessions": sessions, "resting": [] })
     );
-    let health = get_ok(&app, &format!("/api/profiles/{pid}/sync/health")).await;
+    let sync = format!("/api/profiles/{pid}/sync/health");
+    let health = get_ok(&app, &sync).await;
     assert_eq!(health["last_seen"], Value::Null, "the copy never synced");
     assert_eq!(health["workouts"], "auto", "the mode stays behind");
     let back = get_ok(&app, &format!("/api/profiles/{pid}/activities")).await;
     assert_eq!(session_shapes(&back), [synced, logged]);
     let (_, again) = export(&app, pid.as_i64().unwrap()).await;
     assert_eq!(again["workout_tombstones"], tombstones);
+    // The copy's phone syncs the same window: the dismissed walk stays gone.
+    ok(&app, "POST", &sync, window).await;
+    let walked = get_ok(&app, &format!("/api/profiles/{pid}/day/2026-09-03")).await;
+    assert_eq!(walked["pending_activities"], json!([]), "{walked}");
 }
 
 #[tokio::test]
@@ -1407,6 +1426,172 @@ async fn import_normalises_check_in_tags() {
     assert_eq!(list[0]["tags"], json!(["travel", "poor sleep"]));
 }
 
+/// A file's days not fully logged (from before they were one-off items)
+/// import as one-off items without kcal; a file lists each once, a real
+/// day up to tomorrow. An export writes none.
+#[tokio::test]
+async fn days_not_fully_logged_import_as_one_off_items() {
+    let mut file = bare("Moved");
+    file["incomplete_days"] = json!([DAY]);
+    let target = app();
+    let (status, profile) = import(&target, &file).await;
+    assert_eq!(status, StatusCode::CREATED, "{profile}");
+    let pid = profile["id"].as_i64().unwrap();
+    let day = get_ok(&target, &format!("/api/profiles/{pid}/day/{DAY}")).await;
+    let e = &day["groups"][1]["entries"][0];
+    assert_eq!(
+        (
+            &e["name"],
+            &e["food_id"],
+            &e["nutrients"],
+            &day["incomplete"]
+        ),
+        (
+            &json!("Not fully logged"),
+            &Value::Null,
+            &Value::Null,
+            &json!(true)
+        ),
+        "{day}"
+    );
+    let (_, again) = export(&target, pid).await;
+    assert!(again.get("incomplete_days").is_none(), "{again}");
+    assert_eq!(again["entries"][0]["name"], "Not fully logged");
+    let (status, res) = import(&app(), &again).await;
+    assert_eq!(status, StatusCode::CREATED, "{res}");
+    // The tick's own route is gone: a queued tick is a 404.
+    let path = format!("/api/profiles/{pid}/incomplete/{DAY}");
+    assert_eq!(
+        call(&target, "PUT", &path, Some(json!({}))).await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    for days in [
+        json!([DAY, DAY]),
+        json!(["2999-01-01"]),
+        json!(["2026-13-01"]),
+    ] {
+        let mut file = bare("Bad");
+        file["incomplete_days"] = days.clone();
+        let (status, res) = import(&app(), &file).await;
+        assert_eq!(
+            (status, &res["field"]),
+            (StatusCode::BAD_REQUEST, &json!("incomplete_days")),
+            "{days}: {res}"
+        );
+    }
+}
+
+/// Hidden suggestions travel, a food's own too when nothing else uses it;
+/// a file names known foods and real days.
+#[tokio::test]
+async fn hidden_suggestions_travel() {
+    let source = app();
+    let kale = create_food(&source, "Kale", json!({ "energy": 30 })).await;
+    ok(
+        &source,
+        "PUT",
+        &format!("/api/profiles/1/suggestions/hidden/{kale}"),
+        json!({ "until": DAY }),
+    )
+    .await;
+    let (_, mut file) = export(&source, 1).await;
+    let kale_ref = kale.to_string();
+    assert_eq!(
+        file["hidden_suggestions"],
+        json!([{ "food": kale_ref, "until": DAY }])
+    );
+    file["hidden_suggestions"][0]["until"] = Value::Null;
+    file["profile"]["name"] = json!("Moved");
+    let target = app();
+    let (status, profile) = import(&target, &file).await;
+    assert_eq!(status, StatusCode::CREATED, "{profile}");
+    let hidden = get_ok(
+        &target,
+        &format!("/api/profiles/{}/suggestions/hidden", profile["id"]),
+    )
+    .await;
+    assert_eq!(hidden[0]["name"], "Kale", "{hidden}");
+
+    for bad in [
+        json!([{ "food": "nope" }]),
+        json!([{ "food": kale_ref, "until": "2026-13-01" }]),
+    ] {
+        let mut file = file.clone();
+        file["profile"]["name"] = json!("Bad");
+        file["hidden_suggestions"] = bad.clone();
+        let (status, res) = import(&app(), &file).await;
+        assert_eq!(
+            (status, &res["field"]),
+            (StatusCode::BAD_REQUEST, &json!("hidden_suggestions")),
+            "{bad}: {res}"
+        );
+    }
+}
+
+/// Text entries travel as they are: no food, no amount, kcal and macros
+/// or none.
+#[tokio::test]
+async fn text_entries_travel_and_only_their_shape_imports() {
+    let source = app();
+    for energy in [json!(600.0), Value::Null] {
+        ok(
+            &source,
+            "POST",
+            "/api/profiles/1/entries",
+            json!({ "day": DAY, "group": "Eaten", "name": "Lunch out", "energy": energy,
+                    "protein": 30.0 }),
+        )
+        .await;
+    }
+    let (_, mut file) = export(&source, 1).await;
+    let target = app();
+    file["profile"]["name"] = json!("Moved");
+    let (status, profile) = import(&target, &file).await;
+    assert_eq!(status, StatusCode::CREATED, "{profile}");
+    let day = get_ok(
+        &target,
+        &format!("/api/profiles/{}/day/{DAY}", profile["id"]),
+    )
+    .await;
+    let eaten: Vec<Value> = day["groups"][1]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| json!([e["name"], e["food_id"], e["amount"], e["nutrients"]]))
+        .collect();
+    assert_eq!(
+        eaten,
+        [
+            json!(["Lunch out", null, "", { "energy": 600.0, "protein": 30.0 }]),
+            json!(["Lunch out", null, "", { "protein": 30.0 }])
+        ]
+    );
+    assert_eq!(day["incomplete"], true);
+
+    let entry = json!({ "uid": "entry-text-0001", "day": DAY, "group": "Eaten",
+        "name": "Lunch out", "amount": "", "nutrients": { "energy": 600.0 },
+        "created_at": "2026-10-06T10:00:00Z" });
+    for (key, value) in [
+        ("amount", json!("1 plate")),
+        ("grams", json!(100.0)),
+        ("nutrients", json!({ "energy": 600.0, "fiber": 20.0 })),
+        ("nutrients", json!({ "energy": 10_001.0 })),
+        ("nutrients", json!({ "fat": 1_001.0 })),
+    ] {
+        let mut file = bare("Bad");
+        let mut e = entry.clone();
+        e[key] = value.clone();
+        file["entries"] = json!([e]);
+        let (status, res) = import(&app(), &file).await;
+        assert_eq!(
+            (status, &res["field"]),
+            (StatusCode::BAD_REQUEST, &json!("entries")),
+            "{key} {value}: {res}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn a_2500_kcal_day_imports() {
     // The per-100 caps guard new foods, never history a file carries:
@@ -1584,6 +1769,16 @@ async fn populate_health(app: &Router) {
 
 /// Profile 1's daily item, with a skip.
 async fn populate_daily(app: &Router) {
+    for energy in [json!(600.0), Value::Null] {
+        ok(
+            app,
+            "POST",
+            "/api/profiles/1/entries",
+            json!({ "day": DAY, "group": "Eaten", "name": "Lunch out", "energy": energy,
+                    "protein": energy.as_f64().map(|_| 30.0) }),
+        )
+        .await;
+    }
     let shake = create_food(app, "Shake", json!({ "energy": 400.0 })).await;
     let made = log_entry(app, "Eaten", shake, 30.0).await;
     let made = ok(
@@ -1683,12 +1878,85 @@ async fn round_trip_is_lossless_for_every_exported_column() {
 #[tokio::test]
 async fn restore_keeps_the_id_binding_and_water_food() {
     let app = everything().await;
+    let hook = "/api/profiles/1/hooks/home-assistant";
+    ok(
+        &app,
+        "PUT",
+        hook,
+        json!({ "url": "http://192.168.1.5:8123", "webhook_id": "kaloriina-secret-1",
+                "events": ["workout_finished"] }),
+    )
+    .await;
+    ok(
+        &app,
+        "POST",
+        "/api/profiles/1/naps",
+        json!({ "uid": "nap-hand-0001", "day": "2026-09-02",
+                "start_at": "2026-09-02T15:00:00Z", "end_at": "2026-09-02T15:20:00Z" }),
+    )
+    .await;
+    let health = |d: Value| json!([d["device_day"], d["naps"], d["stages"]]);
+    let night = get_ok(&app, "/api/profiles/1/day/2026-09-02").await;
+    let entries = |d: &Value| -> Vec<Value> {
+        d["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| g["entries"].as_array().unwrap().clone())
+            .map(|e| e["uid"].clone())
+            .collect()
+    };
+    let eaten = entries(&get_ok(&app, &format!("/api/profiles/1/day/{DAY}")).await);
     let (_, file) = export(&app, 1).await;
+    assert!(
+        !file.to_string().contains("kaloriina-secret-1"),
+        "never the hook's secret"
+    );
     let water = get_ok(&app, "/api/profiles/1/water-food").await;
     delete_profile(&app, 1).await;
+    // An entry logged since (its id the next one, never one profile 1 held).
+    let other = get_ok(&app, "/api/profiles").await[0]["id"].clone();
+    let milk = get_ok(&app, &format!("/api/profiles/{other}/foods?q=maito")).await[0]["id"].clone();
+    ok(
+        &app,
+        "POST",
+        &format!("/api/profiles/{other}/entries"),
+        json!({ "day": DAY, "group": "Eaten", "food_id": milk, "grams": 20.0 }),
+    )
+    .await;
     let (status, profile) = import_restore(&app, &file).await;
     assert_eq!(status, StatusCode::CREATED, "{profile}");
     assert_eq!(profile["id"], 1, "the webhook and phone URLs still work");
+    assert_eq!(
+        entries(&get_ok(&app, &format!("/api/profiles/1/day/{DAY}")).await),
+        eaten
+    );
+    let theirs = get_ok(&app, &format!("/api/profiles/{other}/day/{DAY}")).await;
+    assert_eq!(entries(&theirs).len(), 1, "{theirs}");
+    assert_eq!(
+        get_ok(&app, hook).await,
+        Value::Null,
+        "the hook stays behind"
+    );
+    let back = get_ok(&app, "/api/profiles/1/day/2026-09-02").await;
+    assert_eq!(health(back.clone()), health(night));
+    let naps: Vec<(&Value, &Value)> = back["naps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| (&n["in_bed_min"], &n["source"]))
+        .collect();
+    assert_eq!(
+        naps,
+        [
+            (&json!(40), &json!("health_connect")),
+            (&json!(20), &json!("hand"))
+        ]
+    );
+    assert_eq!(back["device_day"]["naps"], 2, "{back}");
+    // The dismissed workout stays dismissed.
+    let dismissed = get_ok(&app, "/api/profiles/1/day/2026-09-03").await;
+    assert_eq!(dismissed["pending_activities"], json!([]), "{dismissed}");
     let scale = get_ok(&app, "/api/profiles/1/sync/openscale").await;
     assert_eq!(scale["bound_user"], json!({ "id": 1, "username": "Alex" }));
     assert_eq!(get_ok(&app, "/api/profiles/1/water-food").await, water);
@@ -2004,9 +2272,10 @@ async fn food_basis_exports_and_imports() {
         assert_eq!(status, StatusCode::CREATED, "{profile}");
         let pid = profile["id"].as_i64().unwrap();
         let day = get_ok(&target, &format!("/api/profiles/{pid}/day/{DAY}")).await;
-        let id = group(&day, "Eaten")["entries"][0]["food_id"].clone();
-        let read = get_ok(&target, &format!("/api/foods/{id}")).await;
+        let entry = &group(&day, "Eaten")["entries"][0];
+        let read = get_ok(&target, &format!("/api/foods/{}", entry["food_id"])).await;
         assert_eq!((&read["name"], &read["basis"]), (&json!("Burger"), &basis));
+        assert_eq!(entry["weight_estimated"], !basis.is_null(), "{entry}");
     }
 
     // A basis naming no serving of its food is refused.
@@ -2182,6 +2451,28 @@ async fn an_active_file_workout_never_binds_an_archived_one() {
 }
 
 #[tokio::test]
+async fn an_archived_workout_restores_as_itself() {
+    let app = everything().await;
+    let mut upper = workouts_named(&app, "Upper").await.remove(0);
+    upper["archived"] = json!(true);
+    let id = upper["id"].clone();
+    ok(&app, "PUT", &format!("/api/workouts/{id}"), upper).await;
+    let before = workouts_named(&app, "Upper").await;
+    let (_, file) = export(&app, 1).await;
+    assert_eq!(
+        file["workouts"][0]["archived"], true,
+        "{}",
+        file["workouts"]
+    );
+    delete_profile(&app, 1).await;
+    let (status, profile) = import_restore(&app, &file).await;
+    assert_eq!(status, StatusCode::CREATED, "{profile}");
+    assert_eq!(workouts_named(&app, "Upper").await, before);
+    let plans = get_ok(&app, "/api/profiles/1/plans").await;
+    assert_eq!(plans[0]["workout_id"], id, "{plans}");
+}
+
+#[tokio::test]
 async fn two_ticks_for_one_item_day_are_400() {
     let app = app();
     let mut file = bare("Twice");
@@ -2303,6 +2594,22 @@ async fn the_golden_file_round_trips() {
         assert_eq!(&file[key], value, "{key}");
     }
     assert_eq!(file, golden);
+}
+
+/// A file 0.2.0 exported, every section filled, still imports, and its
+/// entries with it.
+#[tokio::test]
+async fn a_0_2_0_file_imports() {
+    let path = FsPath::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/export-v3-0.2.0.json");
+    let old: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let app = super::app();
+    let (status, made) = import_restore(&app, &old).await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let (_, file) = export(&app, made["id"].as_i64().unwrap()).await;
+    assert_eq!(
+        file["entries"].as_array().map(Vec::len),
+        old["entries"].as_array().map(Vec::len)
+    );
 }
 
 /// An import retried after its answer was lost (`?uid=`) makes

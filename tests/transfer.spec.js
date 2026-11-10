@@ -129,7 +129,7 @@ test("energy in kJ changes the diary's headline and bars", async ({
   await page.goto(`/#/activity/new?day=${day}&type=run`);
   await expect(page.getByLabel("Energy (kJ, total)")).toBeVisible();
   // The Summary's charts and list too.
-  await page.goto(`/#/summary/week/${day}`);
+  await page.goto(`/#/summary/food/week/${day}`);
   await expect(
     page.getByRole("img", { name: /^Energy by day/u }),
   ).toHaveAttribute("aria-label", /^Energy by day, kJ: /u);

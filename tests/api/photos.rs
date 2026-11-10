@@ -293,4 +293,16 @@ async fn a_photo_is_its_profiles() {
     let (status, file) = call(&app, "GET", "/api/profiles/1/export", None).await;
     assert_eq!(status, StatusCode::OK);
     assert!(file.get("photos").is_none(), "{file}");
+    let mut copy = file;
+    copy["profile"]["name"] = json!("Copy");
+    let (status, p) = call(&app, "POST", "/api/profiles/import", Some(copy)).await;
+    assert_eq!(status, StatusCode::CREATED, "{p}");
+    let (_, day) = call(
+        &app,
+        "GET",
+        &format!("/api/profiles/{}/day/{DAY}", p["id"]),
+        None,
+    )
+    .await;
+    assert_eq!(day["photos"], json!([]), "{day}");
 }

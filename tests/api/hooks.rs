@@ -134,6 +134,13 @@ async fn a_hook_is_checked() {
         let (status, e) = set(&app, body.clone()).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {e}");
         assert_eq!(e["field"], field, "{body}: {e}");
+        if field == "webhook_id" {
+            let said = e["error"].as_str().unwrap();
+            assert!(
+                said.contains("Webhook ID") && !said.contains(field),
+                "{said}"
+            );
+        }
     }
     // At the limits, https too.
     let id = "a".repeat(200);

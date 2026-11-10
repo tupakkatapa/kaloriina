@@ -23,7 +23,9 @@ mod plans;
 mod reports;
 mod security;
 mod stats;
+mod suggestions;
 mod targets;
+mod text_entries;
 mod transfer;
 mod water;
 

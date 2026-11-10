@@ -87,6 +87,14 @@ const login = (route) =>
     body: "<html><body>Proxy login</body></html>",
   });
 
+// The proxy's own error page while the server restarts.
+const restarting = (route) =>
+  route.fulfill({
+    status: 502,
+    contentType: "text/html",
+    body: "<html><body>502 Bad Gateway</body></html>",
+  });
+
 test("an opted-in write made offline waits, shows, and is stored once back online", async ({
   page,
   context,
@@ -160,6 +168,22 @@ test("a write whose answer was lost is stored once on replay", async ({
   expect(await outbox(page)).toEqual([]);
   expect(await stored(request, day, uid)).toBe(1);
   await expect(pill(page)).toBeHidden();
+});
+
+test("a proxy's error page while the server restarts waits, not asks to sign in", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { day, tag, body } = await setup(page, request, 1267, testInfo);
+  await page.route("**/api/profiles/1/entries", restarting);
+  const uid = `restart-${tag}`;
+  expect(
+    (await call(page, "POST", ENTRIES, body(uid), { queue: true })).code,
+  ).toBe("queued");
+  await expect(pill(page)).toHaveText("1 waiting");
+  await page.unroute("**/api/profiles/1/entries", restarting);
+  await flush(page);
+  expect(await stored(request, day, uid)).toBe(1);
 });
 
 test("a login page instead of the server asks to sign in again", async ({
@@ -501,6 +525,33 @@ test("Log again while writes fail waits on the day it goes to, then is stored", 
   await release();
   await expect(section(page, "Eaten").locator(".entry")).toHaveCount(2);
   await expect(section(page, "Waiting to send")).toHaveCount(0);
+});
+
+test("Log again today while writes fail waits on today, then is stored", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { day, f } = await setup(page, request, 1191, testInfo);
+  const {
+    entries: [e],
+  } = await entry(request, { day, group: "Eaten", food_id: f.id, grams: 50 });
+  const today = todayInApp();
+  const copies = async () =>
+    (await (await request.get(`/api/profiles/1/day/${today}`)).json()).groups
+      .flatMap((g) => g.entries)
+      .filter((x) => x.food_id === f.id).length;
+  await page.goto(`/#/entry/${e.id}`);
+  const release = await hold(page, "**/api/profiles/1/entries");
+  await page.getByRole("button", { name: "Log again today" }).click();
+  await expect(page).toHaveURL(new RegExp(`#/day/${today}$`, "u"));
+  await expect(page.locator("#toast")).toHaveText(KEPT);
+  await expect(queuedIn(page, "Eaten")).toHaveText([
+    "Log again · 1 foodWaiting to send · not counted yet",
+  ]);
+  expect(await copies()).toBe(0);
+
+  await release();
+  await expect.poll(copies).toBe(1);
 });
 
 // A flush (as a GET's answer starts one) whose POST is on the wire, `end`ing
@@ -911,7 +962,7 @@ const down = (route) =>
     body: JSON.stringify({ error: "Down for maintenance" }),
   });
 
-test("Try again resends a write that failed on server errors", async ({
+test("Retry resends a write that failed on server errors", async ({
   page,
   request,
 }, testInfo) => {
@@ -947,7 +998,7 @@ test("Try again resends a write that failed on server errors", async ({
 
   await pill(page).click();
   await expect(page.getByText("Not sent: Down for maintenance")).toBeVisible();
-  await page.getByRole("button", { name: "Try again Note" }).click();
+  await page.getByRole("button", { name: "Retry Note" }).click();
   await expect(page.getByText("Nothing waits")).toBeVisible();
   expect((await dayOf(request, pid, day)).note).toBe("kept");
 });
@@ -1021,7 +1072,7 @@ test("charts_failed_says_so: a chart library that won't load says Reload", async
   await page.route("**/vendor/chart.umd.min.js", (route) =>
     route.fulfill({ status: 404, body: "" }),
   );
-  await page.goto(`/#/summary/week/${day}`);
+  await page.goto(`/#/summary/food/week/${day}`);
   await expect(page.getByText("Charts didn't load.").first()).toBeVisible();
   await expect(page.locator("#app canvas")).toHaveCount(0);
 });

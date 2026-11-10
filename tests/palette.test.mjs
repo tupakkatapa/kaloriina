@@ -124,7 +124,7 @@ const mixed = (a, b, share) =>
     )
     .join("")}`;
 
-test("every Summary calendar tile's words read at AA on every hue, light and dark (U3-4)", () => {
+test("every Summary calendar tile's words read at AA on every hue, light and dark", () => {
   const HUES = ["--accent", "--sleep", "--habit", "--alcohol", "--caffeine"];
   for (const [mode, v] of MODES) {
     const pct = (name) => Number.parseFloat(v(name)) / 100;

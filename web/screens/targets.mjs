@@ -5,7 +5,7 @@
 import { STEPS_MORE, stepsSuggestion } from "../activities.mjs";
 import { api, get, meta, scoped } from "../api.mjs";
 import { pretty, shift, today } from "../dates.mjs";
-import { hhmm, minutesOf, ON_SCHEDULE_MIN } from "../device.mjs";
+import { hhmm, minutesOf, ON_SCHEDULE_MINUTES } from "../device.mjs";
 import {
   balanceWhy,
   maintenanceFrom,
@@ -40,6 +40,8 @@ import {
   recommendedWith,
   setEnergyTarget,
 } from "../targets.mjs";
+import { tiles } from "../tiles.mjs";
+import { withTip } from "../tips.mjs";
 import {
   busy,
   confirmDialog,
@@ -52,8 +54,6 @@ import {
   RECALC,
   timeField,
 } from "../ui.mjs";
-import { tiles } from "../tiles.mjs";
-import { withTip } from "../tips.mjs";
 import { localDisplay, unitQty } from "../units.mjs";
 import { SETS_PER_WEEK, SETS_WEEKS, setsPerGroup } from "../workouts.mjs";
 // A goal's row: its name and unit, which way it points, its number (a
@@ -63,7 +63,14 @@ const targetRow = (r, note = null, ...extra) =>
     "tr",
     {},
     h("th", { scope: "row" }, r.unit ? withUnit(r) : r.label),
-    h("td", { class: "muted", title: GOAL_HINT[r.goal] }, GOAL_SIGN[r.goal]),
+    h(
+      "td",
+      { class: "muted tip-host" },
+      ...withTip(
+        h("button", { type: "button", class: "link" }, GOAL_SIGN[r.goal]),
+        GOAL_HINT[r.goal],
+      ),
+    ),
     h(
       "td",
       {},
@@ -110,7 +117,7 @@ function goalRow(key, target) {
   const show = energy?.show ?? (n && !b ? n.show : (v) => v * factor);
   r.store = energy?.store ?? (n && !b ? n.store : (v) => v / factor);
   r.parse = clock ? minutesOf : Number;
-  r.note = clock ? `±${NBSP}${ON_SCHEDULE_MIN}${NBSP}min` : null;
+  r.note = clock ? `±${NBSP}${ON_SCHEDULE_MINUTES}${NBSP}min` : null;
   r.target = target ?? null;
   r.problem = h("small", { id: `${key}-problem`, hidden: true });
   const label = `${r.label} target`;

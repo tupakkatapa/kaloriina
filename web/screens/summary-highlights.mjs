@@ -1,7 +1,7 @@
 // A Summary subtab's Highlights stack (ADR 0030, scannable cards): the
 // ranked cards of web/insights.mjs less those hidden, each opening where
 // it points (a nutrient's sources, a Body chart's metric, exercises for a
-// muscle, the activities, a pair's chart), with "Hide for 2 weeks"; and
+// muscle, the activities or records, a pair's chart), with "Hide for 2 weeks"; and
 // the discovery tier (web/correlate.mjs `discover`), worked out after the
 // first paint, once per period, at most DISCOVERED_SHOWN across Summary
 // beyond those marked "Interesting".
@@ -17,9 +17,10 @@ import {
   keptPatterns,
   notHidden,
   seriesOf,
+  withWin,
 } from "../insights.mjs";
 import { href } from "../nav.mjs";
-import { fmtUnit, foodDay, KNOWN, nutrient } from "../nutrients.mjs";
+import { countedDay, fmtUnit, KNOWN, nutrient } from "../nutrients.mjs";
 import { trend } from "../series.mjs";
 import { source } from "../series-keys.mjs";
 import {
@@ -77,7 +78,7 @@ async function discoverySeries(shared) {
   const series = Object.fromEntries(
     Object.entries(shared.trailing).filter(([k]) => k !== "activities"),
   );
-  const eaten = days.filter((x) => foodDay(x));
+  const eaten = days.filter((x) => countedDay(x));
   const keys = new Set(eaten.flatMap((d) => Object.keys(d.total)));
   for (const key of ["energy", "alcohol", "caffeine"]) keys.delete(key);
   for (const key of keys) {
@@ -185,6 +186,8 @@ function linkOf(r, p) {
       return linkTo(href.exercises({ q: l.q }), `Exercises for ${l.q}`);
     case "activities":
       return linkTo(href.activities(), "See activities");
+    case "records":
+      return linkTo(href.records(), "See records");
     case "chart": {
       const button = h(
         "button",
@@ -213,11 +216,13 @@ export function highlightStack(tab, ctx, p, shared) {
   let failure = null;
   const prefs = shared.prefs;
   const paint = () => {
-    const list = highlights(
-      tab,
-      { ...ctx, discovered: touching(kept(patterns, prefs), tab) },
-      { omit },
-    ).filter((r) => shown(r, prefs));
+    const list = withWin(
+      highlights(
+        tab,
+        { ...ctx, discovered: touching(kept(patterns, prefs), tab) },
+        { omit },
+      ).filter((r) => shown(r, prefs)),
+    );
     const node = highlightList(list, { actions });
     fill(slot, node, failure);
     slot.hidden = !node && !failure;

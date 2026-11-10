@@ -10,7 +10,7 @@ import { minutesOf } from "./device.mjs";
 import { isNil } from "./format.mjs";
 
 // Either side of the supplement's time.
-export const WINDOW_MIN = 60;
+export const WINDOW_MINUTES = 60;
 // Fat a meal needs to count: absorption studies compare a meal of 5–15 g
 // with a fat-free one (brief).
 export const FAT_G = 5;
@@ -53,15 +53,15 @@ const doseOf = (e) => (isDose(e) ? supplementOf(e.name) : null);
 const fatCeiling = (e) => e.nutrients?.fat ?? e.grams ?? Infinity;
 
 // Minutes into the day (it starts at DAY_START) at clock time `hhmm`.
-const DAY_MIN = 24 * 60;
+const DAY_MINUTES = 24 * 60;
 const intoDay = (hhmm) =>
-  (minutesOf(hhmm) - DAY_START * 60 + DAY_MIN) % DAY_MIN;
+  (minutesOf(hhmm) - DAY_START * 60 + DAY_MINUTES) % DAY_MINUTES;
 
 // Now on this device: {day, time}.
 const deviceNow = () => ({ day: today(), time: nowTime(today()) });
 
 // Notes on `entries` (one day's Eaten), key → text, for each supplement
-// dose (`doseOf`) eaten at a logged time with no meal of FAT_G fat within WINDOW_MIN.
+// dose (`doseOf`) eaten at a logged time with no meal of FAT_G fat within WINDOW_MINUTES.
 // Said only when the log proves it: the fat of every other entry timed
 // within the window and of every untimed one (it could be anywhere) is
 // counted at its ceiling (fatCeiling). No time, within the window of the
@@ -75,16 +75,16 @@ export function supplementNotes(entries, now = deviceNow()) {
   for (const s of taken) {
     if (isNil(s.time)) continue;
     const t = intoDay(s.time);
-    if (t < WINDOW_MIN || t + WINDOW_MIN > DAY_MIN) continue;
+    if (t < WINDOW_MINUTES || t + WINDOW_MINUTES > DAY_MINUTES) continue;
     if (
       now &&
       (s.day > now.day ||
-        (s.day === now.day && t + WINDOW_MIN > intoDay(now.time)))
+        (s.day === now.day && t + WINDOW_MINUTES > intoDay(now.time)))
     )
       continue;
     const fat = meals
       .filter(
-        (e) => isNil(e.time) || Math.abs(intoDay(e.time) - t) <= WINDOW_MIN,
+        (e) => isNil(e.time) || Math.abs(intoDay(e.time) - t) <= WINDOW_MINUTES,
       )
       .reduce((sum, e) => sum + fatCeiling(e), 0);
     if (fat < FAT_G)

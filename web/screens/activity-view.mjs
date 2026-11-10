@@ -10,11 +10,13 @@ import {
   activityType,
   currentProfile,
   get,
+  offlineOr,
   profileId,
   scoped,
 } from "../api.mjs";
 import { clockAt, duration, pretty, shift } from "../dates.mjs";
 import { activityHeartText } from "../device.mjs";
+import { isNil } from "../format.mjs";
 import { activityLoad, loadText, NEEDS_PROFILE } from "../load.mjs";
 import { href, safeBack } from "../nav.mjs";
 import {
@@ -22,9 +24,9 @@ import {
   loadResting,
   menuRow,
   result,
+  section,
   sourceText,
 } from "../rows.mjs";
-import { isNil } from "../format.mjs";
 import { editLink, h, titleBar } from "../ui.mjs";
 import { distanceText } from "../units.mjs";
 import { lastTimeText, recordSets } from "../workouts.mjs";
@@ -95,7 +97,7 @@ export async function activityView(id, params = new URLSearchParams()) {
   const [s, workouts] = await Promise.all([
     get(scoped(`/activities/${id}`)),
     // Offline and never read: its workout goes unnamed.
-    get("/workouts").catch(() => []),
+    get("/workouts").catch(offlineOr([])),
     loadResting(),
   ]);
   const here = href.activityView(id, safeBack(params.get("back")));
@@ -104,7 +106,7 @@ export async function activityView(id, params = new URLSearchParams()) {
   const records =
     s.sets.length > 0
       ? recordSets(
-          await get(scoped(`/activities?to=${s.day}`)).catch(() => [s]),
+          await get(scoped(`/activities?to=${s.day}`)).catch(offlineOr([s])),
           s,
         )
       : new Set();
@@ -114,7 +116,7 @@ export async function activityView(id, params = new URLSearchParams()) {
     ? null
     : await get(scoped(`/device-days?from=${shift(s.day, -6)}&to=${s.day}`))
         .then((r) => r.days)
-        .catch(() => null);
+        .catch(offlineOr(null));
   const metres = distanceOf(s);
   const workout = workouts.find((w) => w.id === s.workout_id);
   const facts = [
@@ -151,10 +153,8 @@ export async function activityView(id, params = new URLSearchParams()) {
     ),
     // The workout it was done from, a row that leads to it.
     workout
-      ? h(
-          "section",
-          { class: "finder-section" },
-          h("h2", {}, "Workout"),
+      ? section(
+          "Workout",
           h(
             "ul",
             { class: "results card activity-workout" },
@@ -165,13 +165,6 @@ export async function activityView(id, params = new URLSearchParams()) {
           ),
         )
       : null,
-    s.sets.length > 0
-      ? h(
-          "section",
-          { class: "finder-section" },
-          h("h2", {}, "Exercises"),
-          setGroups(s.sets, records),
-        )
-      : null,
+    s.sets.length > 0 ? section("Exercises", setGroups(s.sets, records)) : null,
   );
 }

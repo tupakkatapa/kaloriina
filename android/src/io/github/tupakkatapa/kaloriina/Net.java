@@ -102,13 +102,19 @@ final class Net {
         }
     }
 
-    /** Whether Kaloriina answers at {@code origin}: {@code /api/meta} is JSON with its limits. */
-    static boolean isKaloriina(String origin) {
+    /**
+     * Null when Kaloriina answers at {@code origin} ({@code /api/meta} is JSON with its limits),
+     * else why not, in words for the person.
+     */
+    static String probe(String origin) {
         try {
-            JSONObject meta = get(origin + "/api/meta", QUICK_MS).object();
-            return meta != null && meta.has("limits");
+            Reply reply = get(origin + "/api/meta", QUICK_MS);
+            JSONObject meta = reply.object();
+            return meta != null && meta.has("limits")
+                    ? null
+                    : "Something else answers at " + origin + " (HTTP " + reply.code + ")";
         } catch (IOException e) {
-            return false;
+            return "Can't reach " + origin + ": " + e.getMessage();
         }
     }
 }

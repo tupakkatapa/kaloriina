@@ -45,7 +45,7 @@ export const activitiesMetres = (list) =>
 // The slowest a type moves (km/h) for its distance to have a pace: slower
 // is a phone's leftover (317 m in 19 min is no walk). The server's
 // `ActivityType::min_kmh`.
-const MIN_KMH = { walk: 2, run: 5, cycling: 5 };
+export const MIN_KMH = { walk: 2, run: 5, cycling: 5 };
 
 // An activity's distance when its pace is one: a distance (distanceOf)
 // covered at least as fast as its type moves (MIN_KMH); else null.
@@ -134,24 +134,9 @@ export function newTypeRecords(before, activity) {
   }).map(([key, label]) => ({ key, label }));
 }
 
-// The best step day, the longest night (`asleep_min`) and the most sleep
-// in a day (the naps' time asleep added: `total_asleep_min`) among Health
-// Connect `days`, each `{day, value}`, or null without any. Later days win
-// ties.
-export function dayRecords(days) {
-  const best = (key) =>
-    days
-      .filter((d) => !isNil(d[key]))
-      .reduce(
-        (b, d) => (!b || d[key] >= b.value ? { day: d.day, value: d[key] } : b),
-        null,
-      );
-  return {
-    steps: best("steps"),
-    night: best("asleep_min"),
-    sleep: best("total_asleep_min"),
-  };
-}
+// An exercise's record (`/records`): its heaviest set, else its most reps
+// or longest.
+export const exerciseBest = (r) => r.kg ?? r.reps ?? r.seconds;
 
 // How many weeks of [from, to] met `perWeek` workouts (`counted` ones), of
 // how many judged: Monday-first weeks wholly inside the period, from the
@@ -191,14 +176,14 @@ export function targetWeeks(
 // A steps target from your own days: the median of the STEPS_DAYS before
 // `today` (today's are still coming) that have steps (0 is a phone not
 // carried), at least
-// STEPS_DAYS_MIN of them, STEPS_MORE more (each 1,000 a day goes with 15 %
+// MIN_STEPS_DAYS of them, STEPS_MORE more (each 1,000 a day goes with 15 %
 // lower mortality: Banach et al., Eur J Prev Cardiol 2023), to the nearest
 // 500, up to where the benefit levels off (Paluch et al., Lancet Public
 // Health 2022: 8,000–10,000 under 60, 6,000–8,000 from 60) unless you're
 // past it already (then kept). `deviceDays` [{day, steps}], `birth` or
 // null. {median, days, value, plateau}, or null with too few days.
 const STEPS_DAYS = 28;
-const STEPS_DAYS_MIN = 14;
+const MIN_STEPS_DAYS = 14;
 export const STEPS_MORE = 1000;
 const to500 = (n) => Math.round(n / 500) * 500;
 export function stepsSuggestion(deviceDays, today, birth) {
@@ -206,7 +191,7 @@ export function stepsSuggestion(deviceDays, today, birth) {
   const steps = deviceDays
     .filter((d) => d.day >= from && d.day < today && d.steps > 0)
     .map((d) => d.steps);
-  if (steps.length < STEPS_DAYS_MIN) return null;
+  if (steps.length < MIN_STEPS_DAYS) return null;
   const m = median(steps);
   const plateau = birth && ageOn(birth, today) >= 60 ? 8000 : 10_000;
   return {

@@ -1,4 +1,4 @@
-//! Foods, servings, recipes and meals, and their checks.
+//! Foods, servings and recipes, and their checks.
 
 use std::collections::BTreeMap;
 
@@ -309,7 +309,7 @@ fn poured(label: &str) -> Option<&'static str> {
     None
 }
 
-/// An ingredient or meal item as written by the client: grams, or a
+/// An ingredient as written by the client: grams, or a
 /// quantity of one of its food's servings (checked against the food when
 /// saved, by [`Amount::of`]).
 #[derive(Debug, Clone, Deserialize)]
@@ -333,7 +333,7 @@ impl ItemInput {
     }
 }
 
-/// An ingredient or meal item as read back, with what the editor shows
+/// An ingredient as read back, with what the editor shows
 /// of its food: name, source, values and servings.
 #[derive(Debug, Clone, Serialize)]
 pub struct Item {
@@ -403,18 +403,6 @@ pub struct Recipe {
     pub items: Vec<Item>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct MealInput {
-    pub name: String,
-    pub items: Vec<ItemInput>,
-    #[serde(default)]
-    pub rev: Option<i64>,
-    /// A create's retry key: a create naming one saved before
-    /// answers with that record. Ignored by an update.
-    #[serde(default)]
-    pub uid: Option<String>,
-}
-
 /// Merge food `from` into the one addressed; `rev` is that one's.
 #[derive(Debug, Clone, Deserialize)]
 pub struct MergeInput {
@@ -423,14 +411,13 @@ pub struct MergeInput {
     pub rev: Option<i64>,
 }
 
-/// What uses a food, counted: diary entries (all profiles), recipes and
-/// meals holding it, profiles starring it, daily items of it and profiles
-/// whose water it is.
+/// What uses a food, counted: diary entries (all profiles), recipes
+/// holding it, profiles starring it, daily items of it and profiles whose
+/// water it is.
 #[derive(Debug, Serialize)]
 pub struct Usage {
     pub entries: i64,
     pub recipes: i64,
-    pub meals: i64,
     pub favorites: i64,
     pub daily_items: i64,
     pub water: i64,
@@ -439,7 +426,7 @@ pub struct Usage {
     pub deletable: bool,
 }
 
-/// A copy of a saved food, recipe, meal or workout: its retry key only.
+/// A copy of a saved food, recipe or workout: its retry key only.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct CopyInput {
     /// See [`FoodInput::uid`]; each Copy press makes its own.
@@ -506,17 +493,6 @@ pub fn fit_score(food: &Macros, portion_g: f64, left: &Macros) -> Option<f64> {
     };
     let too_much = food.energy * portion_g / 100.0 > left.energy.max(0.0);
     Some(cosine - if too_much { 1.0 } else { 0.0 })
-}
-
-#[derive(Debug, Serialize)]
-pub struct Meal {
-    pub id: i64,
-    pub name: String,
-    pub items: Vec<Item>,
-    pub rev: i64,
-    /// Its labels ([`super::labels`]) from its items' values per 100 g,
-    /// as a food (never a drink).
-    pub labels: super::Labels,
 }
 
 /// # Errors
@@ -722,17 +698,6 @@ impl RecipeInput {
         }
         self.category = checked_category(self.category.as_deref())?;
         self.servings = checked_servings(&self.servings)?;
-        check_items(&mut self.items)?;
-        Ok(self)
-    }
-}
-
-impl MealInput {
-    /// # Errors
-    /// A blank or long name, or bad items.
-    pub fn checked(mut self) -> Result<Self, Error> {
-        self.name = text(&self.name, "name", NAME_MAX)?;
-        checked_opt_uid(self.uid.as_deref())?;
         check_items(&mut self.items)?;
         Ok(self)
     }

@@ -1,0 +1,796 @@
+{
+  "activities": [
+    {
+      "avg_hr": null,
+      "created_at": "2026-10-17T11:46:57Z",
+      "day": "2026-10-05",
+      "distance_m": null,
+      "kcal": null,
+      "kcal_source": null,
+      "max_hr": null,
+      "minutes": 20,
+      "name": "Upper",
+      "sets": [
+        {
+          "exercise": "1",
+          "kg": 5.0,
+          "name": "Pull-up",
+          "reps": 5
+        }
+      ],
+      "source": "hand",
+      "source_key": null,
+      "start_at": null,
+      "type": "workout",
+      "uid": "session-0002",
+      "workout": "1"
+    },
+    {
+      "avg_hr": null,
+      "created_at": "2026-10-17T11:46:57Z",
+      "day": "2026-10-06",
+      "distance_m": null,
+      "kcal": 120,
+      "kcal_source": "hand",
+      "max_hr": null,
+      "minutes": 25,
+      "name": "Pulls",
+      "sets": [
+        {
+          "exercise": "1",
+          "kg": 10.0,
+          "name": "Pull-up",
+          "reps": 8
+        },
+        {
+          "exercise": "138",
+          "name": "Ankle rocks",
+          "reps": 12,
+          "side": "left"
+        },
+        {
+          "exercise": "274",
+          "name": "Towel hang",
+          "seconds": 30
+        }
+      ],
+      "source": "hand",
+      "source_key": null,
+      "start_at": null,
+      "type": "workout",
+      "uid": "session-0001",
+      "workout": null
+    }
+  ],
+  "check_ins": [
+    {
+      "day": "2026-10-06",
+      "energy": null,
+      "mood": 4,
+      "stress": null,
+      "tags": ["travel"]
+    }
+  ],
+  "daily_items": [
+    {
+      "created_at": "2026-10-17T11:46:57Z",
+      "food": "10",
+      "grams": 30.0,
+      "quantity": null,
+      "ref": "1",
+      "serving": null,
+      "skips": ["2026-10-07"],
+      "start": "2026-10-06"
+    }
+  ],
+  "day_totals": [
+    {
+      "day": "2026-06-02",
+      "group": "Lunch",
+      "nutrients": {
+        "energy": 500.0
+      }
+    }
+  ],
+  "device_days": [
+    {
+      "active_kcal": null,
+      "asleep_min": null,
+      "avg_hr": 68,
+      "bedtime": null,
+      "bmr_kcal": 1650.5,
+      "bmr_origin": "com.sec.android.app.shealth",
+      "day": "2026-09-02",
+      "deep_min": null,
+      "distance_m": 6100,
+      "hrv_ms": null,
+      "in_bed_min": null,
+      "light_min": null,
+      "max_hr": null,
+      "min_hr": null,
+      "rem_min": null,
+      "resting_hr": null,
+      "sleep_avg_hr": null,
+      "steps": 9120,
+      "total_kcal": null,
+      "wake_time": null
+    }
+  ],
+  "device_sessions": [
+    {
+      "avg_hr": 101,
+      "day": "2026-09-03",
+      "distance_m": null,
+      "end_at": "2026-09-03T08:30:00Z",
+      "kcal": 90,
+      "key": "hc-2",
+      "max_hr": 122,
+      "name": "Walking",
+      "recording_method": 0,
+      "start_at": "2026-09-03T08:00:00Z",
+      "total_kcal": 140,
+      "type": 53
+    }
+  ],
+  "entries": [
+    {
+      "amount": "1 slice",
+      "created_at": "2026-10-17T11:46:57Z",
+      "day": "2026-06-02",
+      "food": null,
+      "grams": null,
+      "group": "Lunch",
+      "name": "Rye",
+      "nutrients": null,
+      "quantity": null,
+      "repeat": null,
+      "serving": null,
+      "src_group": "Lunch",
+      "time": null,
+      "uid": "7e7bb06a3a736e723550f1c8e63d0a06"
+    },
+    {
+      "amount": "250 g",
+      "created_at": "2026-10-17T11:46:57Z",
+      "day": "2026-10-06",
+      "food": "7",
+      "grams": 250.0,
+      "group": "Eaten",
+      "name": "Breakfast",
+      "nutrients": {
+        "energy": 229.075173595,
+        "fat": 2.947368423,
+        "net_carbs": 28.421052633,
+        "protein": 10.368421053
+      },
+      "quantity": null,
+      "repeat": null,
+      "serving": null,
+      "src_group": null,
+      "time": "08:15",
+      "uid": "903de200d046c2fd7f3d10524e52c95b"
+    },
+    {
+      "amount": "1.5 × Cup (120 g)",
+      "created_at": "2026-10-17T11:46:57Z",
+      "day": "2026-10-06",
+      "food": "4",
+      "grams": 120.0,
+      "group": "Eaten",
+      "name": "Oats",
+      "nutrients": {
+        "energy": 444.0,
+        "fat": 8.4,
+        "net_carbs": 69.6,
+        "protein": 15.6
+      },
+      "quantity": 1.5,
+      "repeat": null,
+      "serving": "Cup",
+      "src_group": null,
+      "time": null,
+      "uid": "da580f2724b26f417c74a7277de6cad0"
+    },
+    {
+      "amount": "30 g",
+      "created_at": "2026-10-17T11:46:57Z",
+      "day": "2026-10-06",
+      "food": "4",
+      "grams": 30.0,
+      "group": "Eaten",
+      "name": "Oats",
+      "nutrients": {
+        "energy": 111.0,
+        "fat": 2.1,
+        "net_carbs": 17.4,
+        "protein": 3.9
+      },
+      "quantity": null,
+      "repeat": null,
+      "serving": null,
+      "src_group": null,
+      "time": null,
+      "uid": "meal-write-0001:1"
+    },
+    {
+      "amount": "70 g",
+      "created_at": "2026-10-17T11:46:57Z",
+      "day": "2026-10-06",
+      "food": "5",
+      "grams": 70.0,
+      "group": "Eaten",
+      "name": "Berries",
+      "nutrients": {
+        "energy": 28.0,
+        "net_carbs": 5.6
+      },
+      "quantity": null,
+      "repeat": null,
+      "serving": null,
+      "src_group": null,
+      "time": null,
+      "uid": "meal-write-0001:2"
+    },
+    {
+      "amount": "30 g",
+      "created_at": "2026-10-17T11:46:57Z",
+      "day": "2026-10-06",
+      "food": "10",
+      "grams": 30.0,
+      "group": "Eaten",
+      "name": "Shake",
+      "nutrients": {
+        "energy": 120.0
+      },
+      "quantity": null,
+      "repeat": "1",
+      "serving": null,
+      "src_group": null,
+      "time": null,
+      "uid": "f2b94e707b9d9a3249bce7ac4a9bab3b"
+    },
+    {
+      "amount": "200 g",
+      "created_at": "2026-10-17T11:46:57Z",
+      "day": "2026-10-07",
+      "food": "3",
+      "grams": 200.0,
+      "group": "Planned",
+      "name": "Maito, rasvaton",
+      "nutrients": {
+        "energy": 67.495219886,
+        "protein": 6.2
+      },
+      "quantity": null,
+      "repeat": null,
+      "serving": null,
+      "src_group": null,
+      "time": null,
+      "uid": "20e4738fadac414c2e39bed4fc1f2757"
+    }
+  ],
+  "exercises": [
+    {
+      "difficulty": "intermediate",
+      "equipment": ["pull-up bar"],
+      "group": "back",
+      "laterality": "bilateral",
+      "load": "optional",
+      "measure": "reps",
+      "mechanics": "compound",
+      "name": "Pull-up",
+      "pattern": "vertical pull",
+      "primary": ["latissimus dorsi", "biceps"],
+      "ref": "1",
+      "region": "upper body",
+      "secondary": [
+        "rhomboids",
+        "trapezius",
+        "brachialis",
+        "rear deltoids",
+        "forearms"
+      ],
+      "variant_of": null
+    },
+    {
+      "difficulty": "beginner",
+      "equipment": ["bodyweight"],
+      "group": "core",
+      "laterality": "bilateral",
+      "load": "optional",
+      "measure": "time",
+      "mechanics": "compound",
+      "name": "Plank",
+      "pattern": "anti-extension",
+      "primary": ["rectus abdominis", "transverse abdominis"],
+      "ref": "64",
+      "region": "core",
+      "secondary": [
+        "obliques",
+        "front deltoids",
+        "serratus anterior",
+        "glutes",
+        "quadriceps"
+      ],
+      "variant_of": null
+    },
+    {
+      "difficulty": "beginner",
+      "equipment": ["bodyweight"],
+      "group": "legs",
+      "laterality": "unilateral",
+      "load": "none",
+      "measure": "reps",
+      "mechanics": "compound",
+      "name": "Ankle rocks",
+      "pattern": "mobility",
+      "primary": ["calves"],
+      "ref": "138",
+      "region": "lower body",
+      "secondary": [],
+      "variant_of": null
+    },
+    {
+      "difficulty": null,
+      "equipment": [],
+      "group": null,
+      "laterality": null,
+      "load": null,
+      "measure": "time",
+      "mechanics": null,
+      "name": "Towel hang",
+      "pattern": null,
+      "primary": [],
+      "ref": "274",
+      "region": null,
+      "secondary": [],
+      "variant_of": "1"
+    }
+  ],
+  "exported_at": "2026-10-17T00:00:00Z",
+  "favorites": ["3", "5", "9"],
+  "foods": [
+    {
+      "archived": false,
+      "barcode": null,
+      "brand": "Fineli",
+      "category": null,
+      "cooked_g": null,
+      "drink": false,
+      "fineli_id": 11,
+      "items": [],
+      "kind": "food",
+      "makes": null,
+      "name": "Maito, rasvaton",
+      "per100": {
+        "energy": 33.747609943,
+        "protein": 3.1
+      },
+      "ref": "3",
+      "servings": [
+        {
+          "grams": 103.0,
+          "label": "dl"
+        }
+      ],
+      "source": "custom"
+    },
+    {
+      "archived": false,
+      "barcode": "6410000000017",
+      "brand": "Mill",
+      "category": null,
+      "cooked_g": null,
+      "drink": false,
+      "fineli_id": null,
+      "items": [],
+      "kind": "food",
+      "makes": null,
+      "name": "Oats",
+      "per100": {
+        "energy": 370.0,
+        "fat": 7.0,
+        "net_carbs": 58.0,
+        "protein": 13.0
+      },
+      "ref": "4",
+      "servings": [
+        {
+          "grams": 80.0,
+          "label": "Cup"
+        }
+      ],
+      "source": "custom"
+    },
+    {
+      "archived": false,
+      "barcode": null,
+      "brand": null,
+      "category": null,
+      "cooked_g": null,
+      "drink": false,
+      "fineli_id": null,
+      "items": [],
+      "kind": "food",
+      "makes": null,
+      "name": "Berries",
+      "per100": {
+        "energy": 40.0,
+        "net_carbs": 8.0
+      },
+      "ref": "5",
+      "servings": [],
+      "source": "custom"
+    },
+    {
+      "archived": false,
+      "barcode": null,
+      "brand": null,
+      "category": null,
+      "cooked_g": null,
+      "drink": false,
+      "fineli_id": null,
+      "items": [
+        {
+          "food": "4",
+          "grams": 80.0,
+          "quantity": null,
+          "serving": null
+        },
+        {
+          "food": "3",
+          "grams": 300.0,
+          "quantity": null,
+          "serving": null
+        }
+      ],
+      "kind": "recipe",
+      "makes": 2,
+      "name": "Porridge",
+      "notes": "Simmer 5 min.\n\nStir in the milk.",
+      "per100": {
+        "energy": 104.537586797,
+        "fat": 1.473684211,
+        "net_carbs": 12.210526316,
+        "protein": 5.184210526
+      },
+      "ref": "6",
+      "servings": [
+        {
+          "grams": 380.0,
+          "label": "Whole recipe"
+        },
+        {
+          "grams": 190.0,
+          "label": "Portion"
+        }
+      ],
+      "source": "custom"
+    },
+    {
+      "archived": false,
+      "barcode": null,
+      "brand": null,
+      "category": null,
+      "cooked_g": null,
+      "drink": false,
+      "fineli_id": null,
+      "items": [
+        {
+          "food": "6",
+          "grams": 200.0,
+          "quantity": null,
+          "serving": null
+        },
+        {
+          "food": "5",
+          "grams": 50.0,
+          "quantity": null,
+          "serving": null
+        }
+      ],
+      "kind": "recipe",
+      "makes": null,
+      "name": "Breakfast",
+      "per100": {
+        "energy": 91.630069438,
+        "fat": 1.178947369,
+        "net_carbs": 11.368421053,
+        "protein": 4.147368421
+      },
+      "ref": "7",
+      "servings": [
+        {
+          "grams": 250.0,
+          "label": "Whole recipe"
+        }
+      ],
+      "source": "custom"
+    },
+    {
+      "archived": false,
+      "barcode": null,
+      "brand": null,
+      "category": null,
+      "cooked_g": null,
+      "drink": true,
+      "fineli_id": null,
+      "items": [],
+      "kind": "food",
+      "makes": null,
+      "name": "Water",
+      "per100": {
+        "water": 100.0
+      },
+      "ref": "8",
+      "servings": [],
+      "source": "custom"
+    },
+    {
+      "archived": false,
+      "barcode": null,
+      "brand": null,
+      "category": "fruit_veg",
+      "cooked_g": null,
+      "drink": false,
+      "fineli_id": null,
+      "items": [],
+      "kind": "food",
+      "makes": null,
+      "name": "Apple",
+      "per100": {
+        "energy": 52.0
+      },
+      "ref": "9",
+      "servings": [],
+      "source": "custom"
+    },
+    {
+      "archived": false,
+      "barcode": null,
+      "brand": null,
+      "category": null,
+      "cooked_g": null,
+      "drink": false,
+      "fineli_id": null,
+      "items": [],
+      "kind": "food",
+      "makes": null,
+      "name": "Shake",
+      "per100": {
+        "energy": 400.0
+      },
+      "ref": "10",
+      "servings": [],
+      "source": "custom"
+    }
+  ],
+  "format": "kaloriina-profile",
+  "habits": [
+    {
+      "archived": false,
+      "created_at": "2026-10-17T11:46:57Z",
+      "days": [],
+      "goal_dir": "at_least",
+      "goal_value": 10.0,
+      "name": "Stretching",
+      "unit": "minutes"
+    }
+  ],
+  "import_days": [
+    {
+      "active_kcal": null,
+      "asleep_min": null,
+      "avg_hr": null,
+      "bedtime": null,
+      "bmr_kcal": null,
+      "bmr_origin": null,
+      "day": "2026-09-04",
+      "deep_min": null,
+      "distance_m": null,
+      "hrv_ms": null,
+      "in_bed_min": null,
+      "light_min": null,
+      "max_hr": null,
+      "min_hr": null,
+      "rem_min": null,
+      "resting_hr": 55,
+      "sleep_avg_hr": null,
+      "steps": null,
+      "total_kcal": null,
+      "wake_time": null
+    }
+  ],
+  "insight_prefs": [
+    {
+      "id": "low-fibre",
+      "state": "hidden",
+      "until": "2026-11-01"
+    },
+    {
+      "id": "protein-streak",
+      "state": "pinned"
+    }
+  ],
+  "measurements": [
+    {
+      "day": "2026-10-06",
+      "kind": "waist",
+      "value": 82.5
+    },
+    {
+      "day": "2026-10-06",
+      "kind": "hips",
+      "value": 95.0
+    }
+  ],
+  "naps": [
+    {
+      "asleep_min": null,
+      "day": "2026-09-02",
+      "end_at": "2026-09-02T12:40:00Z",
+      "source": "health_connect",
+      "source_key": "nap-1",
+      "start_at": "2026-09-02T12:00:00Z",
+      "uid": "90e9f90ff4f124ffe106275e9be074d9"
+    }
+  ],
+  "notes": [
+    {
+      "day": "2026-10-06",
+      "text": "Slept badly"
+    }
+  ],
+  "openscale": {
+    "bound_user": 1,
+    "bound_username": "Alex"
+  },
+  "plans": [
+    {
+      "created_at": "2026-10-17T11:46:57Z",
+      "day": "2026-10-08",
+      "uid": "plan-0001",
+      "workout": "1"
+    }
+  ],
+  "profile": {
+    "activity": null,
+    "birth_date": null,
+    "goal_date": null,
+    "goal_kg_per_week": 0.0,
+    "height_cm": null,
+    "id": 2,
+    "latitude": null,
+    "name": "Golden",
+    "sex": null
+  },
+  "scale_readings": [
+    {
+      "bmr_kcal": 1500.0,
+      "body_fat": 21.0,
+      "bone_kg": 2.9,
+      "day": "2026-09-04",
+      "lbm_kg": 57.0,
+      "muscle": null,
+      "source": "health_connect",
+      "source_id": null,
+      "source_user": 0,
+      "taken_at": 1788501600000,
+      "water": null,
+      "weight": 72.1
+    },
+    {
+      "bmr_kcal": null,
+      "body_fat": 21.5,
+      "bone_kg": null,
+      "day": "2026-09-15",
+      "lbm_kg": null,
+      "muscle": null,
+      "source": "openscale",
+      "source_id": 4,
+      "source_user": 1,
+      "taken_at": 1789448400000,
+      "water": null,
+      "weight": 72.4
+    }
+  ],
+  "sleep_stages": [
+    {
+      "day": "2026-09-02",
+      "end_at": "2026-09-01T22:30:00Z",
+      "source": "health_connect",
+      "stage": "deep",
+      "start_at": "2026-09-01T21:00:00Z"
+    }
+  ],
+  "synced_workouts": "ask",
+  "targets": [
+    {
+      "metric": "energy",
+      "value": 2100.0
+    },
+    {
+      "metric": "protein",
+      "value": 120.0
+    }
+  ],
+  "version": 3,
+  "water_food": "8",
+  "weights": [
+    {
+      "day": "2026-09-01",
+      "kg": 73.0,
+      "set_at": 1792237617697,
+      "source": "hand"
+    },
+    {
+      "day": "2026-09-04",
+      "kg": 72.1,
+      "set_at": 1792237617772,
+      "source": "health_connect"
+    },
+    {
+      "day": "2026-09-15",
+      "kg": 72.4,
+      "set_at": 1792237617696,
+      "source": "openscale"
+    },
+    {
+      "day": "2026-10-06",
+      "kg": 71.5,
+      "set_at": 1792237617697,
+      "source": "hand"
+    }
+  ],
+  "workout_tombstones": [
+    {
+      "key": "hc-2",
+      "start_at": "2026-09-03T08:00:00Z",
+      "type": "walk"
+    }
+  ],
+  "workouts": [
+    {
+      "archived": false,
+      "kcal": 150,
+      "minutes": null,
+      "name": "Upper",
+      "notes": "Warm up first.\nShoulders down.",
+      "ref": "1",
+      "steps": [
+        {
+          "exercise": "1",
+          "kg": 5.0,
+          "kind": "exercise",
+          "reps": 5
+        },
+        {
+          "kind": "rest",
+          "seconds": 60
+        },
+        {
+          "every": 90,
+          "kind": "repeat",
+          "name": "Core",
+          "steps": [
+            {
+              "kind": "note",
+              "name": "Cue",
+              "text": "Hips level."
+            },
+            {
+              "exercise": "64",
+              "kind": "exercise",
+              "seconds": 45
+            },
+            {
+              "kind": "note",
+              "name": "Breathe out"
+            }
+          ],
+          "times": 2
+        }
+      ]
+    }
+  ]
+}

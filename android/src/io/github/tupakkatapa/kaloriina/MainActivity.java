@@ -5,22 +5,28 @@ import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.ContentValues;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Insets;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.MediaStore;
+import android.view.Gravity;
+import android.view.View;
 import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.webkit.PermissionRequest;
 import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.Button;
 import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 import android.widget.Toast;
 import android.window.OnBackInvokedDispatcher;
 
@@ -31,21 +37,28 @@ import java.util.Arrays;
 /**
  * Kaloriina full screen in a WebView, locked to the configured origin. The page gets no native API;
  * a {@code kaloriina-app://settings?profile=N} link it shows opens the settings, and {@code
- * kaloriina-app://sync} (its pull to refresh) runs a sync now, answered with a {@code
- * kaloriina-sync} event when the run ends.
+ * kaloriina-app://theme?bg=rrggbb&dark=0|1} (a theme change) colours the system bars.
  */
 public final class MainActivity extends Activity {
     private static final String SCHEME = "kaloriina-app";
     private static final int FILES = 1;
     private static final int CAMERA = 2;
 
+    /** The page's theme as {@code bg=rrggbb&dark=0|1}, or "" without the meta, a JSON string. */
+    private static final String READ_THEME =
+            "(() => { const m = document.querySelector('meta[name=\"theme-color\"]');"
+                    + " return m ? 'bg=' + m.content.slice(1) + '&dark='"
+                    + " + (document.documentElement.classList.contains('dark') ? 1 : 0) : ''; })()";
+
+    private FrameLayout root;
     private WebView web;
+
+    /** Shown instead of the page when it doesn't load: the only way to Settings then. */
+    private LinearLayout unreachable;
+
     private String origin;
     private ValueCallback<Uri[]> files;
     private PermissionRequest camera;
-
-    /** Kept here: the store holds its listeners weakly. */
-    private final SharedPreferences.OnSharedPreferenceChangeListener syncEnded = this::onSyncEnded;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -58,8 +71,14 @@ public final class MainActivity extends Activity {
             return;
         }
         web = new WebView(this);
-        FrameLayout root = new FrameLayout(this);
+        root = new FrameLayout(this);
         root.addView(web);
+        // The bars show the page's own background: no scrim over the navigation bar.
+        getWindow().setNavigationBarContrastEnforced(false);
+        Payload.Theme last = Payload.theme(store.theme());
+        if (last != null) {
+            paint(last);
+        }
         // targetSdk 35 is edge to edge: keep the page off the system bars and the keyboard.
         root.setOnApplyWindowInsetsListener(
                 (v, insets) -> {
@@ -125,7 +144,6 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        new Store(this).unlisten(syncEnded);
         if (web != null) {
             web.destroy();
         }
@@ -138,8 +156,24 @@ public final class MainActivity extends Activity {
 
     /**
      * The configured origin loads here; http(s) elsewhere opens the browser; the rest is blocked.
+     * Its page, loaded, says its theme.
      */
     private final class Lock extends WebViewClient {
+        @Override
+        public void onReceivedError(
+                WebView view, WebResourceRequest request, WebResourceError error) {
+            if (request.isForMainFrame()) {
+                unreachable(error.getDescription().toString());
+            }
+        }
+
+        @Override
+        public void onPageFinished(WebView view, String url) {
+            if (here(url)) {
+                view.evaluateJavascript(READ_THEME, value -> theme(value.replace("\"", "")));
+            }
+        }
+
         @Override
         public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
             Uri url = request.getUrl();
@@ -154,10 +188,11 @@ public final class MainActivity extends Activity {
                 if (!here(view.getUrl())) {
                     return true;
                 }
+                // The theme is cosmetic: it needs no gesture.
                 if (request.hasGesture() && "settings".equals(url.getHost())) {
                     settings(Payload.profileId(url.getQueryParameter("profile")));
-                } else if ("sync".equals(url.getHost())) {
-                    syncNow();
+                } else if ("theme".equals(url.getHost())) {
+                    theme(url.getEncodedQuery());
                 }
                 return true;
             }
@@ -172,34 +207,56 @@ public final class MainActivity extends Activity {
         }
     }
 
-    /**
-     * The page's pull to refresh: a sync now, as Settings' "Sync now" (it replaces one waiting to
-     * retry), answered when a run ends. No gesture needed: it comes after the page sent its outbox,
-     * and a sync starts unasked on resume anyway.
-     */
-    private void syncNow() {
-        Store store = new Store(this);
-        if (store.profile() == 0) {
-            answer(store, false);
+    /** The page's theme ({@code bg=rrggbb&dark=0|1}) on the bars, kept for the next cold start. */
+    private void theme(String query) {
+        Payload.Theme theme = Payload.theme(query);
+        if (theme == null) {
             return;
         }
-        store.listen(syncEnded);
-        SyncJob.runNow(this, 0);
+        new Store(this).theme(query);
+        paint(theme);
     }
 
-    private void onSyncEnded(SharedPreferences prefs, String key) {
-        if (Store.RUN_ENDED.equals(key)) {
-            Store store = new Store(this);
-            store.unlisten(syncEnded);
-            answer(store, true);
+    /** Edge to edge, the bars show the root's background behind them. */
+    private void paint(Payload.Theme theme) {
+        root.setBackgroundColor(theme.bg());
+        int light =
+                WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                        | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+        WindowInsetsController bars = getWindow().getInsetsController();
+        if (bars != null) {
+            bars.setSystemBarsAppearance(theme.dark() ? 0 : light, light);
         }
     }
 
-    /** Only to the configured origin's page: the status may name the server's errors. */
-    private void answer(Store store, boolean bound) {
-        if (web != null && here(web.getUrl())) {
-            web.evaluateJavascript(Payload.syncEvent(bound, store.lastError(), store.note()), null);
+    /** "Can't reach" the origin, why, and Retry and Settings, instead of the failed page. */
+    private void unreachable(String why) {
+        if (unreachable != null) {
+            root.removeView(unreachable);
         }
+        unreachable = new LinearLayout(this);
+        unreachable.setOrientation(LinearLayout.VERTICAL);
+        unreachable.setGravity(Gravity.CENTER);
+        TextView text = new TextView(this);
+        text.setText("Can't reach " + origin + "\n" + why);
+        text.setGravity(Gravity.CENTER);
+        unreachable.addView(text);
+        Button retry = new Button(this);
+        retry.setText("Retry");
+        retry.setOnClickListener(
+                v -> {
+                    root.removeView(unreachable);
+                    unreachable = null;
+                    web.setVisibility(View.VISIBLE);
+                    web.reload();
+                });
+        unreachable.addView(retry);
+        Button settings = new Button(this);
+        settings.setText("Settings");
+        settings.setOnClickListener(v -> settings(null));
+        unreachable.addView(settings);
+        web.setVisibility(View.INVISIBLE);
+        root.addView(unreachable);
     }
 
     private void settings(Long profile) {

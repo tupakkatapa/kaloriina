@@ -5,7 +5,7 @@ use std::path::Path;
 
 use axum::http::StatusCode;
 use common::{ME, app_from, call, import_servings, import_summary};
-use kaloriina::{AppState, import, open, router};
+use kaloriina::{AppState, cronometer, open, router};
 use serde_json::{Value, json};
 
 fn fixture(name: &str) -> File {
@@ -168,10 +168,18 @@ fn rejects_unknown_columns_and_bad_rows() {
     assert!(err.to_string().contains("Mystery (g)"), "{err}");
 
     let bad_date = "Day,Group,Food Name,Amount\n06/02/2026,Consumed,X,1 g\n";
-    assert!(import_servings(&mut conn, ME, bad_date.as_bytes()).is_err());
+    let err = import_servings(&mut conn, ME, bad_date.as_bytes()).unwrap_err();
+    assert!(
+        err.to_string().contains(r#"bad date "06/02/2026""#),
+        "{err}"
+    );
 
     let missing = "Day,Group,Amount\n2026-06-02,Consumed,1 g\n";
-    assert!(import_servings(&mut conn, ME, missing.as_bytes()).is_err());
+    let err = import_servings(&mut conn, ME, missing.as_bytes()).unwrap_err();
+    assert!(
+        err.to_string().contains(r#"missing column "Food Name""#),
+        "{err}"
+    );
 }
 
 #[test]
@@ -181,7 +189,11 @@ fn failed_import_writes_nothing() {
     let broken = "Day,Group,Food Name,Amount\n\
                   2026-06-02,Consumed,Replacement,1 g\n\
                   06/03/2026,Consumed,Bad date,1 g\n";
-    assert!(import_servings(&mut conn, ME, broken.as_bytes()).is_err());
+    let err = import_servings(&mut conn, ME, broken.as_bytes()).unwrap_err();
+    assert!(
+        err.to_string().contains("line 3 of servings.csv: bad date"),
+        "{err}"
+    );
     let names: Vec<String> = conn
         .prepare("SELECT name FROM entry WHERE day = '2026-06-02' ORDER BY id")
         .unwrap()
@@ -201,7 +213,7 @@ fn failed_import_writes_nothing() {
 fn a_bad_summary_leaves_the_database_untouched() {
     let mut conn = open(Path::new(":memory:")).unwrap();
     let summary = "Date,Group,Energy (kcal),Completed\n2026-06-02,Consumed,lots,true\n";
-    let err = import::import(
+    let err = cronometer::import(
         &mut conn,
         ME,
         Some(fixture("servings.csv")),
@@ -420,12 +432,13 @@ fn a_bad_loop_backup_writes_nothing() {
          INSERT INTO Habits VALUES (1, 'Floss');",
     );
     let missing = dir.join("missing.db");
-    for path in [&text, &other, &missing] {
-        assert!(
-            kaloriina::loop_habits::import(&mut conn, ME, path).is_err(),
-            "{}",
-            path.display()
-        );
+    for (path, says) in [
+        (&text, "is no Loop Habit Tracker backup"),
+        (&other, "no Repetitions"),
+        (&missing, "opening"),
+    ] {
+        let err = kaloriina::loop_habits::import(&mut conn, ME, path).unwrap_err();
+        assert!(err.to_string().contains(says), "{}: {err}", path.display());
     }
     assert!(!missing.exists(), "no file made");
     assert!(habits(&conn).is_empty());

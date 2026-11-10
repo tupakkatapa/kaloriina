@@ -629,7 +629,7 @@ export function records(activities, exerciseId) {
 // run's last time).
 export const setText = (set) =>
   [
-    set.seconds ? clock(set.seconds) : plural(set.reps, "rep"),
+    isNil(set.seconds) ? plural(set.reps, "rep") : clock(set.seconds),
     set.side,
     set.kg ? loadText(set.kg) : null,
   ]
@@ -684,9 +684,9 @@ export function lastTime(activities, exerciseId) {
 // heaviest weight.
 export function lastTimeText({ sets }) {
   const kg = Math.max(0, ...sets.map((set) => set.kg ?? 0));
-  const timed = sets.some((set) => set.seconds);
+  const timed = sets.some((set) => !isNil(set.seconds));
   const done = timed
-    ? sets.map((set) => clock(set.seconds || 0)).join(", ")
+    ? sets.map((set) => clock(set.seconds ?? 0)).join(", ")
     : `${sets.map((set) => fmt(set.reps)).join(", ")} ${sets.length === 1 && sets[0].reps === 1 ? "rep" : "reps"}`;
   return [done, kg ? loadText(kg) : null].filter(Boolean).join(" · ");
 }

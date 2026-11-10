@@ -1,30 +1,33 @@
-// Finding food: search with filters, logging a food or a meal, barcodes and
+// Finding food: search with filters, logging a food, barcodes and
 // scanning.
 
 import { logged, serverCopy, storedOrKept } from "../actions.mjs";
-import { api, createId, get, meta, scoped } from "../api.mjs";
-import { recipeKnown, recipePer100, wholeOf } from "../coverage.mjs";
-import { eatenTime, shift } from "../dates.mjs";
-import { capitalized, isNil, NBSP, PER_100G, plural } from "../format.mjs";
-import { weightGuessed } from "../health.mjs";
+import { api, createId, get, meta, offlineOr, scoped } from "../api.mjs";
+import { eatenTime } from "../dates.mjs";
+import { capitalized, isNil, PER_100G } from "../format.mjs";
 import { go, href, leaving } from "../nav.mjs";
 import {
   EATEN,
   inputValue,
-  kcal,
   nutrient,
   ordered,
   PLANNED,
-  scaled,
   searchedSources,
   SOURCES,
-  summed,
   withUnit,
 } from "../nutrients.mjs";
-import { labelChips, nutritionPanel } from "../nutrition-panel.mjs";
+import { labelChips } from "../nutrition-panel.mjs";
 import { photoButton } from "../photos.mjs";
 import { readJson, writeJson } from "../prefs.mjs";
-import { contextLine, foodRow, resultRow, starButton } from "../rows.mjs";
+import {
+  actionRow,
+  contextLine,
+  foodRow,
+  result,
+  resultRow,
+  section,
+  starButton,
+} from "../rows.mjs";
 import {
   busy,
   chip,
@@ -35,28 +38,36 @@ import {
   fill,
   h,
   icon,
+  modal,
   notify,
   num,
+  PLUS,
   removeButton,
   SCAN,
   STAR,
-  timeField,
   titleBar,
+  undoable,
 } from "../ui.mjs";
 import { unitOf } from "../units.mjs";
 import { addWater } from "../water.mjs";
-import { matches } from "../workouts.mjs";
-import { amountView, itemRow, repeatFrom } from "./amount-view.mjs";
+import { amountView, repeatFrom } from "./amount-view.mjs";
+import { addText } from "../text-entry.mjs";
 
 // Back from logging: the group's Add screen, or the Foods tab.
 const backFrom = (day, group) => (group ? href.add(day, group) : href.foods());
 
-export async function add(day, group) {
+// `params`: `q` searched at once; `replace`, a text entry's id: only
+// finding its food, which then takes its place.
+export async function add(day, group, params = new URLSearchParams()) {
+  const replace = params.get("replace");
   return h(
     "section",
     {},
-    titleBar(`Add to ${group}`, href.day(day)),
-    await finder({ day, group }),
+    titleBar(
+      replace ? "Find the food" : `Add to ${group}`,
+      replace ? href.entry(replace) : href.day(day),
+    ),
+    await finder({ day, group, q: params.get("q") ?? "", replace }),
   );
 }
 
@@ -109,30 +120,26 @@ const timeBody = (day, group, input) => (to) => {
   return time ? { time } : {};
 };
 
-function timeEaten(day, group) {
-  const input = timeField({
-    name: "time",
-    value: eatenTime(day, group) ?? "",
-  });
-  return {
-    node: field("Time eaten", input),
-    body: timeBody(day, group, input),
-  };
-}
-
-// Log a food or recipe (`amountView`). With `group` it comes from a group's
-// Add screen; without, from the Foods tab, which offers both groups.
-export async function log(day, group, id) {
-  const [food, favorites, targets] = await Promise.all([
+// Log a food or recipe (`amountView`), starting from the amount last
+// logged of it. With `group` it comes from a group's Add screen; without,
+// from the Foods tab, which offers both groups.
+export async function log(day, group, id, params = new URLSearchParams()) {
+  const replace = params.get("replace");
+  // Finding a text entry's food: Back returns to its search.
+  const q = replace ? params.get("q") : null;
+  const [food, favorites, targets, last] = await Promise.all([
     get(`/foods/${id}`),
     get(scoped("/foods/favorites")),
     // Only what 100 kcal gives needs them: none, and it isn't shown.
-    get(scoped("/targets")).catch(() => null),
+    get(scoped("/targets")).catch(offlineOr(null)),
+    // Without it, the food's default amount.
+    get(scoped(`/foods/${id}/last`)).catch(offlineOr(null)),
   ]);
-  const here = href.log(day, group, food.id);
+  const here = href.log(day, group, food.id, { replace, q });
   const kind = food.kind === "recipe" ? "recipe" : "food";
   const view = amountView({
     food,
+    start: last,
     time: eatenTime(day, group) ?? "",
     sub: contextLine(
       day,
@@ -144,12 +151,25 @@ export async function log(day, group, id) {
     here,
     targets,
   });
-  // Into Planned nothing is eaten yet: no time to ask.
-  view.timeRow.hidden = group === PLANNED;
+  // Into Planned nothing is eaten yet: no time to ask. Finding a text
+  // entry's food, its time and group stay its own, and a text repeats
+  // nothing.
+  view.timeRow.hidden = group === PLANNED || Boolean(replace);
+  view.repeat.closest(".field").hidden = Boolean(replace);
   const time = timeBody(day, group, view.time);
   const key = createId();
   const submit = busy(async (e) => {
     e.preventDefault();
+    if (replace) {
+      // Online only, as an entry's edits are; no Undo (it would delete).
+      await api("PATCH", scoped(`/entries/${replace}`), {
+        food_id: food.id,
+        ...view.amount.body(),
+      });
+      go(href.day(day));
+      notify(`Matched to ${food.name}`);
+      return;
+    }
     const to = group ?? e.submitter?.value ?? EATEN;
     let entries;
     const body = {
@@ -174,145 +194,38 @@ export async function log(day, group, id) {
   return h(
     "section",
     { class: "amount-view" },
-    titleBar(food.name, backFrom(day, group), [
-      starButton(
-        food,
-        favorites.some((f) => f.id === food.id),
-        `Favourite ${food.name}`,
-      ),
-      editLink(href.food(food, here), kind),
-    ]),
+    titleBar(
+      food.name,
+      replace ? href.add(day, group, { replace, q }) : backFrom(day, group),
+      [
+        starButton(
+          food,
+          favorites.some((f) => f.id === food.id),
+          `Favourite ${food.name}`,
+        ),
+        editLink(href.food(food, here), kind),
+      ],
+    ),
     h(
       "form",
       { class: "log", onsubmit: submit },
       view.head,
       view.fields,
       // The copy's editor saves back to logging the copy.
-      groupButtons(
-        group,
-        serverCopy(`/foods/${food.id}`, kind, (copy) =>
-          href.food(copy, href.log(day, group, copy.id)),
-        ),
-      ),
+      replace
+        ? h(
+            "div",
+            { class: "actions" },
+            h("button", { class: "primary" }, "Use this food"),
+          )
+        : groupButtons(
+            group,
+            serverCopy(`/foods/${food.id}`, kind, (copy) =>
+              href.food(copy, href.log(day, group, copy.id)),
+            ),
+          ),
     ),
     view.tail,
-  );
-}
-
-// A meal's energy and size: "3 items · 422 kcal", "≥ 422 kcal" when an
-// item's energy (or a recipe item's, in part) is unknown.
-const mealLine = (m, portions = 1) => {
-  const energy = summed(m.items.map((i) => scaled(i.per100, i.grams))).energy;
-  const partly = !isNil(energy) && !isNil(recipeKnown(m.items, null).energy);
-  return `${plural(m.items.length, "item")} · ${partly ? `≥${NBSP}` : ""}${kcal(isNil(energy) ? null : energy * portions)}`;
-};
-
-// Log a meal: every item, times a number of portions, as entries of their
-// own.
-export async function logMeal(day, group, id) {
-  const [meal, targets] = await Promise.all([
-    get(`/meals/${id}`),
-    get(scoped("/targets")).catch(() => null),
-  ]);
-  // A meal is graded as food, never as a drink (ADR 0017).
-  const per100 = recipePer100(meal.items, null);
-  const known = recipeKnown(meal.items, null);
-  const mealGrams = meal.items.reduce((t, i) => t + i.grams, 0);
-  const portions = num({
-    name: "portions",
-    value: 1,
-    min: "0.1",
-    max: meta.limits.portions,
-    step: "0.1",
-    required: true,
-    "aria-label": "Portions",
-  });
-  const preview = h("p", { class: "muted" });
-  const panel = nutritionPanel();
-  const list = h("ul", { class: "results card" });
-  const paint = () => {
-    const p = Number(portions.value) || 0;
-    preview.textContent = mealLine(meal, p);
-    fill(
-      list,
-      ...meal.items.map((i) => itemRow(i, href.logMeal(day, group, id), p)),
-    );
-    panel.paint(
-      [
-        {
-          label: `${plural(p, "portion")}`,
-          ...wholeOf(
-            meal.items.map((i) => ({ ...i, grams: i.grams * p })),
-            known,
-            mealGrams * p,
-          ),
-        },
-      ],
-      {
-        per100,
-        known,
-        drink: false,
-        grams: mealGrams * p,
-        targets,
-        estimated: weightGuessed(meal),
-      },
-    );
-  };
-  portions.addEventListener("input", paint);
-  paint();
-  const time = timeEaten(day, group);
-  const form = h(
-    "form",
-    { class: "log" },
-    field(
-      "Amount",
-      h("div", { class: "row amount" }, portions, h("span", {}, "portions")),
-    ),
-    preview,
-    time.node,
-    groupButtons(
-      group,
-      serverCopy(`/meals/${meal.id}`, "meal", (copy) =>
-        href.meal(copy.id, href.logMeal(day, group, copy.id)),
-      ),
-    ),
-  );
-  const key = createId();
-  form.addEventListener(
-    "submit",
-    busy(async (e) => {
-      e.preventDefault();
-      const to = group ?? e.submitter?.value ?? EATEN;
-      let entries;
-      const body = {
-        uid: key.get(),
-        day,
-        group: to,
-        meal_id: meal.id,
-        portions: Number(portions.value),
-        ...time.body(to),
-      };
-      const write = async () => {
-        ({ entries } = await api("POST", scoped("/entries"), body, {
-          queue: true,
-          label: meal.name,
-        }));
-      };
-      if (!(await storedOrKept(write, day))) return;
-      key.done();
-      logged(day, to, meal.name, entries);
-    }),
-  );
-  return h(
-    "section",
-    {},
-    titleBar(meal.name, backFrom(day, group), [
-      editLink(href.meal(meal.id), "meal"),
-    ]),
-    h("p", { class: "muted" }, contextLine(day, group)),
-    form,
-    list,
-    panel.node,
   );
 }
 
@@ -403,10 +316,17 @@ function searchQuery(q, f, day) {
   if (f.sources.length < offered().length)
     params.set("sources", f.sources.join(","));
   for (const dir of ["min", "max"]) {
-    const rules = f.rules
-      .filter((r) => r.dir === dir && !isNil(r.amount))
-      .map((r) => `${r.key}:${r.amount}`);
-    if (rules.length > 0) params.set(dir, rules.join(","));
+    // One rule a nutrient each way: a later row for it says what counts.
+    const rules = new Map(
+      f.rules
+        .filter((r) => r.dir === dir && !isNil(r.amount))
+        .map((r) => [r.key, r.amount]),
+    );
+    if (rules.size > 0)
+      params.set(
+        dir,
+        [...rules].map(([key, amount]) => `${key}:${amount}`).join(","),
+      );
   }
   if (f.sort !== "relevance") params.set("sort", f.sort);
   if (f.sort === FIT) params.set("day", day);
@@ -491,6 +411,8 @@ function filtersPanel(filters, onChange, { fit = false } = {}) {
           "aria-label": "Rule nutrient",
           onchange: (ev) => {
             rule.key = ev.target.value;
+            // Its amount was in the last nutrient's unit.
+            rule.amount = null;
             changed();
           },
         },
@@ -649,26 +571,54 @@ function filtersPanel(filters, onChange, { fit = false } = {}) {
   return { toggle, panel, paint, clearButton };
 }
 
-const section = (title, list, none) =>
-  h(
-    "section",
-    { class: "finder-section" },
-    h("h2", {}, title),
-    list.length > 0 ? h("ul", { class: "results card" }, list) : empty(none),
-  );
-
 // The foods Recent lists: the last few, not a second catalogue.
 const RECENT = 8;
 
-// Find food to log: favourites, recent and meals until you search; results
-// with filters after (your meals that match first), and with nothing found
-// a way to make the food. With `group` it logs there; without (the Foods
-// tab) the log screen offers both groups.
-export async function finder({ day, group }) {
+// Which of browsing's folds this device left open (`{key: true}`).
+const FOLDS_KEY = "finder-folds";
+
+// One of browsing's lists folded away: "Title (n)", open as this device
+// left it (closed at first), or when `open`.
+function fold(key, title, rows, none, open) {
+  const node = h(
+    "details",
+    {
+      class: "fold finder-fold",
+      open: open || readJson(FOLDS_KEY, {})[key] === true,
+    },
+    h(
+      "summary",
+      {
+        // Before the toggle: it is about to flip.
+        onclick: () =>
+          writeJson(FOLDS_KEY, {
+            ...readJson(FOLDS_KEY, {}),
+            [key]: !node.open,
+          }),
+      },
+      `${title} (${rows.length})`,
+    ),
+    rows.length > 0 ? h("ul", { class: "results card" }, rows) : empty(none),
+  );
+  return node;
+}
+
+// Find food to log: suggestions, then favourites and recent folded away,
+// until you search; results with filters after, a text entry of what was
+// searched, and with nothing found a way to make the food. With `group` it
+// logs there; without (the Foods tab) the log screen offers both groups.
+// `q` is searched at once; `replace` (a text entry's id) only finds a food
+// for it: no quick logs, barcodes, water or text.
+export async function finder({ day, group, q: start = "", replace = null }) {
   const filters = loadFilters();
   const status = h("p", { role: "status" });
   const results = h("div", { class: "finder-results" });
-  const pick = (f) => go(href.log(day, group, f.id));
+  const logHref = (f) =>
+    href.log(day, group, f.id, {
+      replace,
+      q: replace ? input.value.trim() : null,
+    });
+  const pick = (f) => go(logHref(f));
   // Loaded once; a star toggled here updates them.
   // The Foods tab also lists your own recipes and foods by name (archived
   // ones hidden), so one never logged is found without its name.
@@ -676,12 +626,17 @@ export async function finder({ day, group }) {
     group ? [] : get(scoped(`/foods?q=&sources=${sources}&sort=name`));
   // Known before it's needed: a tap made offline still finds the food.
   const waterFood = group ? get(scoped("/water-food")).catch(() => null) : null;
-  const [favourites, recent, meals, yesterday, targets, recipes, made, water] =
+  // Suggested at now when that's Eaten today: the Foods tab logs there too.
+  const now = eatenTime(day, group ?? EATEN);
+  const [favorites, recent, suggestions, targets, recipes, made, water] =
     await Promise.all([
       get(scoped("/foods/favorites")),
       get(scoped("/foods/recent")),
-      get("/meals"),
-      group === PLANNED ? get(scoped(`/day/${shift(day, -1)}`)) : null,
+      get(
+        scoped(
+          `/foods/suggestions?${new URLSearchParams({ day, ...(now ? { time: now } : {}) })}`,
+        ),
+      ).catch(() => []),
       get(scoped("/targets")),
       own("recipe"),
       own("custom"),
@@ -689,55 +644,7 @@ export async function finder({ day, group }) {
     ]);
   // Water is the app's food for logging water, not one you made.
   const customs = made.filter((f) => f.id !== water?.food?.id);
-  const starred = new Set(favourites.map((f) => f.id));
-  // Planning: what was eaten the day before, planned again in one tap (no
-  // time: planned isn't eaten yet).
-  const eatenYesterday = (yesterday?.groups ?? [])
-    .filter((g) => g.name === EATEN)
-    .flatMap((g) => g.entries)
-    .filter((e) => e.kind !== "imported");
-  const yesterdayKey = createId();
-  const sameAsYesterday = busy(async () => {
-    const what = plural(eatenYesterday.length, "food");
-    let entries;
-    const write = async () => {
-      ({ entries } = await api(
-        "POST",
-        scoped("/entries"),
-        {
-          uid: yesterdayKey.get(),
-          day,
-          group,
-          entry_ids: eatenYesterday.map((e) => e.id),
-        },
-        { queue: true, label: `Same as yesterday · ${what}` },
-      ));
-    };
-    if (!(await storedOrKept(write, day))) return;
-    yesterdayKey.done();
-    logged(day, group, what, entries);
-  });
-  const yesterdayRow =
-    eatenYesterday.length > 0
-      ? h(
-          "ul",
-          { class: "results card" },
-          resultRow({
-            onclick: sameAsYesterday,
-            name: "Same as yesterday",
-            // "≥" as the Diary says it: a food without energy, or a recipe
-            // with an ingredient without (yesterday's `known.energy`).
-            detail: `${plural(eatenYesterday.length, "food")} · ${
-              eatenYesterday.some((e) => isNil(e.nutrients?.energy)) ||
-              !isNil(yesterday.known?.energy)
-                ? `≥${NBSP}`
-                : ""
-            }${kcal(
-              summed(eatenYesterday.map((e) => e.nutrients ?? {})).energy ?? 0,
-            )}`,
-          }),
-        )
-      : null;
+  const starred = new Set(favorites.map((f) => f.id));
   let latest = 0;
   let timer = 0;
   const later = (ms) => {
@@ -752,16 +659,9 @@ export async function finder({ day, group }) {
     // Short: the field is narrow on a phone; its name says what.
     placeholder: "Search",
     "aria-label": "Search foods",
+    value: start,
     oninput: () => later(150),
   });
-
-  const mealRow = (m) =>
-    resultRow({
-      href: href.logMeal(day, group, m.id),
-      name: m.name,
-      detail: mealLine(m),
-      extra: labelChips(m),
-    });
 
   // Rows with a star. While browsing, starring redraws so Favourites follows;
   // in search results the star just flips in place.
@@ -771,11 +671,11 @@ export async function finder({ day, group }) {
       onChange: (on) => {
         if (on) {
           starred.add(f.id);
-          favourites.push(f);
+          favorites.push(f);
         } else {
           starred.delete(f.id);
-          favourites.splice(
-            favourites.findIndex((x) => x.id === f.id),
+          favorites.splice(
+            favorites.findIndex((x) => x.id === f.id),
             1,
           );
         }
@@ -783,52 +683,191 @@ export async function finder({ day, group }) {
       },
     });
 
-  // Water first on a group's Add screen: how many ml, then logged.
-  const waterRow = group
-    ? h(
-        "ul",
-        { class: "results card" },
-        resultRow({
-          onclick: busy(() => addWater(day, group, waterFood)),
-          name: "Water",
-          detail: `How much, in ${unitOf("ml")}`,
-        }),
-      )
-    : null;
+  // Why a suggestion, and hiding it: through the day, or until shown
+  // again (Profile). Online only, as entry edits; Undo shows it again.
+  const whyDialog = (suggestion) => {
+    const { food: f, reasons } = suggestion;
+    const path = scoped(`/suggestions/hidden/${f.id}`);
+    const hide = (until, message) =>
+      busy(async () => {
+        await api("PUT", path, until ? { until } : {});
+        close();
+        const at = suggestions.indexOf(suggestion);
+        // Hidden already, by the dialog's other button.
+        if (at < 0) return;
+        suggestions.splice(at, 1);
+        refresh();
+        undoable(message, async () => {
+          await api("DELETE", path);
+          suggestions.splice(at, 0, suggestion);
+          refresh();
+        });
+      });
+    const { close } = modal(
+      { class: "confirm", "aria-labelledby": "why-title" },
+      [
+        h("h2", { id: "why-title" }, `Why ${f.name}?`),
+        reasons.length > 0
+          ? h(
+              "ul",
+              {},
+              reasons.map((r) => h("li", {}, r)),
+            )
+          : null,
+        h(
+          "div",
+          { class: "actions" },
+          h("button", { type: "button", onclick: () => close() }, "Close"),
+          h(
+            "button",
+            {
+              type: "button",
+              onclick: hide(day, `Won't suggest ${f.name} today`),
+            },
+            "Not today",
+          ),
+          h(
+            "button",
+            { type: "button", onclick: hide(null, `Won't suggest ${f.name}`) },
+            "Never suggest",
+          ),
+        ),
+      ],
+    );
+  };
 
+  // A suggestion: "?" for why, and once logged before, "+" logging that
+  // amount again in one tap (into the group, or from the Foods tab into
+  // Eaten). Tapping it logs with that amount to start from.
+  const suggestionRow = (suggestion) => {
+    const { food: f, last } = suggestion;
+    const key = createId();
+    const again = busy(async () => {
+      const to = group ?? EATEN;
+      const time = eatenTime(day, to);
+      const body = {
+        uid: key.get(),
+        day,
+        group: to,
+        food_id: f.id,
+        // A serving since removed: its grams.
+        ...(last.serving && f.servings.some((s) => s.label === last.serving)
+          ? { serving: last.serving, quantity: last.quantity }
+          : { grams: last.grams }),
+        ...(time ? { time } : {}),
+      };
+      let entries;
+      const write = async () => {
+        ({ entries } = await api("POST", scoped("/entries"), body, {
+          queue: true,
+          label: f.name,
+        }));
+      };
+      if (!(await storedOrKept(write, day))) return;
+      key.done();
+      logged(day, to, f.name, entries);
+    });
+    const why = h(
+      "button",
+      {
+        type: "button",
+        class: "icon",
+        "aria-label": `Why ${f.name}?`,
+        onclick: () => whyDialog(suggestion),
+      },
+      "?",
+    );
+    return actionRow(
+      result({
+        href: logHref(f),
+        name: f.name,
+        extra: labelChips(f),
+      }),
+      why,
+      last && !replace
+        ? h(
+            "button",
+            {
+              type: "button",
+              class: "icon",
+              "aria-label": `Add ${f.name} as last time`,
+              onclick: again,
+            },
+            icon(PLUS),
+          )
+        : null,
+    );
+  };
+
+  // First on a group's Add screen: water (how many ml, then logged), and a
+  // one-off item, named and never a food.
+  const waterRow =
+    group && !replace
+      ? h(
+          "ul",
+          { class: "results card" },
+          resultRow({
+            onclick: busy(() => addWater(day, group, waterFood)),
+            name: "Water",
+            detail: `How much, in ${unitOf("ml")}`,
+          }),
+          resultRow({
+            cls: "as-text",
+            onclick: () => addText(day, group, ""),
+            name: "One-off item",
+            detail: "Not saved as a food; kcal if you know them",
+          }),
+        )
+      : null;
+
+  // Suggestions open; the rest folded. With none, the first list that has
+  // anything opens instead.
   const browse = () => {
-    return [
-      yesterdayRow,
-      waterRow,
-      section(
+    const folds = [
+      [
+        "favourites",
         "Favourites",
-        favourites.map((f) => starRow(f, true)),
+        favorites.map((f) => starRow(f, true)),
         ["Star a food (", icon(STAR), ") to keep it here."],
-      ),
-      section(
+      ],
+      [
+        "recent",
         "Recent",
         recent.slice(0, RECENT).map((f) => starRow(f, true)),
         "Foods you log show up here.",
-      ),
-      section(
-        "Meals",
-        meals.map((x) => mealRow(x)),
-        "A meal logs several foods at once.",
-      ),
-      group
-        ? null
+      ],
+      ...(group
+        ? []
         : [
-            section(
+            [
+              "recipes",
               "Your recipes",
               recipes.map((f) => starRow(f, true)),
               "Recipes you make show up here.",
-            ),
-            section(
+            ],
+            [
+              "foods",
               "Your foods",
               customs.map((f) => starRow(f, true)),
               "Foods you make show up here.",
-            ),
-          ],
+            ],
+          ]),
+    ];
+    const opened =
+      suggestions.length > 0
+        ? null
+        : folds.find(([, , rows]) => rows.length > 0)?.[0];
+    return [
+      waterRow,
+      suggestions.length > 0
+        ? section(
+            "Suggestions",
+            suggestions.map((x) => suggestionRow(x)),
+          )
+        : null,
+      folds.map(([key, title, rows, none]) =>
+        fold(key, title, rows, none, key === opened),
+      ),
     ];
   };
 
@@ -837,7 +876,8 @@ export async function finder({ day, group }) {
     try {
       foods = await get(searchQuery(q, filters, day));
     } catch (err) {
-      if (err.status !== 400) throw err;
+      // The query itself refused (too long) is the query's to fix.
+      if (err.status !== 400 || err.field === "q") throw err;
       // A filter the server no longer accepts: start over rather than stall.
       Object.assign(filters, noFilters());
       saveFilters(filters);
@@ -845,15 +885,8 @@ export async function finder({ day, group }) {
       notify("Reset the search filters");
       foods = await get(searchQuery(q, filters, day));
     }
-    // Your meals lead, when the words fit; filters are about foods.
-    const mine = activeFilters(filters)
-      ? []
-      : meals.filter((m) => matches(m.name.toLowerCase(), q));
-    const rows = [
-      ...mine.map((x) => mealRow(x)),
-      ...foods.map((f) => starRow(f, false)),
-    ];
-    if (isBarcode(q))
+    const rows = foods.map((f) => starRow(f, false));
+    if (isBarcode(q) && !replace)
       rows.unshift(
         resultRow({
           onclick: busy(() => byBarcode(q, day, group, status)),
@@ -861,18 +894,41 @@ export async function finder({ day, group }) {
           detail: "your foods, then Open Food Facts",
         }),
       );
-    if (rows.length > 0) return h("ul", { class: "results card" }, rows);
+    // What was searched, logged as words: a group's Add screen only.
+    const typed =
+      q && group && !replace
+        ? h(
+            "ul",
+            { class: "results card" },
+            resultRow({
+              cls: "as-text",
+              onclick: () => addText(day, group, q),
+              name: `Add “${q}” as a one-off`,
+              detail: "no food, kcal if you know them",
+              "aria-label": `Add “${q}” as a one-off`,
+            }),
+          )
+        : null;
+    if (rows.length > 0)
+      return [h("ul", { class: "results card" }, rows), typed];
     const make = h(
       "a",
       {
         class: "button",
-        href: href.newFood({ name: q, ...(group ? { day, group } : {}) }),
+        href: href.newFood({
+          name: q,
+          ...(group ? { day, group } : {}),
+          replace,
+        }),
       },
       `New food “${q}”`,
     );
-    return activeFilters(filters)
-      ? empty(["No matches with these filters. ", ui.clearButton()])
-      : empty(["No matches. ", make]);
+    return [
+      activeFilters(filters)
+        ? empty(["No matches with these filters. ", ui.clearButton()])
+        : empty(["No matches. ", make]),
+      typed,
+    ];
   }
 
   async function refresh() {
@@ -894,20 +950,22 @@ export async function finder({ day, group }) {
       "div",
       { class: "search-bar" },
       input,
-      h(
-        "a",
-        {
-          class: "button icon",
-          href: href.scan(day, group),
-          "aria-label": "Scan barcode",
-        },
-        icon(SCAN),
-      ),
+      replace
+        ? null
+        : h(
+            "a",
+            {
+              class: "button icon",
+              href: href.scan(day, group),
+              "aria-label": "Scan barcode",
+            },
+            icon(SCAN),
+          ),
       ui.toggle,
     ),
     ui.panel,
     // A meal's photo is of what's eaten: not on Planned, nor the Foods tab.
-    group === EATEN ? photoButton(day, group) : null,
+    group === EATEN && !replace ? photoButton(day, group) : null,
     status,
     results,
   );

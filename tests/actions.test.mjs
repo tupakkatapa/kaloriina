@@ -97,7 +97,7 @@ test("copyForm without a change copies the form as it is", async () => {
 
 test("each Copy press is a copy of its own", async () => {
   const button = copyForm(
-    "/meals",
+    "/recipes",
     () => ({ name: "Lunch" }),
     () => null,
     () => "#/",

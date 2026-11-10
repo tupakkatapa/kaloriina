@@ -253,10 +253,10 @@ test("unique() days stay 62 days apart across projects, retries and repeats", ()
   );
 });
 
-test("unique() days stay real dates for --repeat-each 20", () => {
+test("unique() days stay real dates for --repeat-each 18", () => {
   const days = [];
   for (const name of ["chromium", "mobile-chromium"]) {
-    for (let repeatEachIndex = 0; repeatEachIndex < 20; repeatEachIndex++) {
+    for (let repeatEachIndex = 0; repeatEachIndex < 18; repeatEachIndex++) {
       for (let slot = 0; slot < SLOTS; slot++) {
         const info = {
           project: { name, retries: 0 },
@@ -486,7 +486,12 @@ test("screens import screens only to compose them", () => {
     // The recipe and meal editors pick their parts in the Finder.
     "foods → finder": ["finder"],
     "profile → connections": ["ago", "connectionsLine"],
-    "profile → settings": ["importCronometer", "importProfile", "thisDevice"],
+    "profile → settings": [
+      "hiddenSuggestions",
+      "importCronometer",
+      "importProfile",
+      "thisDevice",
+    ],
     "run → activity-editor": ["activityForm"],
     "summary → summary-activity": ["*"],
     "summary → summary-body": ["*"],

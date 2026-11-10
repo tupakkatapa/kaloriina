@@ -15,7 +15,7 @@ import {
 } from "./expenditure.mjs";
 import { isNil, plural } from "./format.mjs";
 import { seriesOf, tracking, TRACKS_WEIGHT } from "./insights.mjs";
-import { foodDay, kcal, KCAL_PER_G } from "./nutrients.mjs";
+import { countedDay, kcal, KCAL_PER_G } from "./nutrients.mjs";
 import { leastSquares } from "./stats.mjs";
 
 // The trend: a weigh-in averaged with the others of its last 7 days.
@@ -161,7 +161,7 @@ function figures(intake, raw, trended) {
 export function balance({ days, weights, yesterday }) {
   const { start } = balanceRange(yesterday);
   const inWindow = (d) => d.day >= start && d.day <= yesterday;
-  const eaten = days.filter((d) => inWindow(d) && foodDay(d));
+  const eaten = days.filter((d) => inWindow(d) && countedDay(d));
   const weighed = weights.filter((x) => inWindow(x));
   const span =
     weighed.length > 0 ? daysIn(weighed[0].day, weighed.at(-1).day) - 1 : 0;
@@ -183,7 +183,7 @@ export function balance({ days, weights, yesterday }) {
 // 1.1 + TEF, an assumption: a profile without that history plans by its
 // activity level instead.
 const evidenced = (burned, days) => {
-  const fed = new Set(days.filter((x) => foodDay(x)).map((d) => d.day));
+  const fed = new Set(days.filter((x) => countedDay(x)).map((d) => d.day));
   return burned.filter((b) => b.source === "active" || fed.has(b.day));
 };
 
@@ -210,7 +210,7 @@ export function maintenanceSeries({
   const inside = (x) => x.day >= start && x.day <= to;
   const eaten = new Map(
     days
-      .filter((d) => inside(d) && foodDay(d))
+      .filter((d) => inside(d) && countedDay(d))
       .map((d) => [d.day, d.total.energy]),
   );
   const spent = new Map(
@@ -313,7 +313,8 @@ function goalsOf(byKey, fat, muscle) {
 // balanceRange's `from` back by the model's carry, `deviceDays` (Health
 // Connect days), `resting` (its resting energy served, [{day, kcal,
 // origin}]) and `activities` over the balance window, `today`.
-// {balance, maintenance: {kcal, source} | null, resting (bmrOf's today,
+// {balance, maintenance: {kcal, source} | null, weight (kg planned from, or
+// null), resting (bmrOf's today,
 // or null) and `bmr` its kcal, tracked: {body_fat,
 // muscle} (tracksWeight), weightOnly (two goals, one a tracked share:
 // planned from goal weight alone, none without it), needed: needed()'s |
@@ -378,6 +379,7 @@ export function plan({
   return {
     balance: b,
     maintenance,
+    weight,
     tracked: { body_fat: fat.tracked, muscle: muscle.tracked },
     weightOnly,
     resting: restingOf,
@@ -435,14 +437,14 @@ export function withEnergy(targets, energy, protein = 0) {
 // moving less than this a week is flat; further off than this, no date.
 const AT_GOAL_KG = 0.1;
 const FLAT_KG_PER_WEEK = 0.05;
-const PROJECTION_DAYS_MAX = 730;
+const MAX_PROJECTION_DAYS = 730;
 
 // Where the 7-day trend over the last WINDOW_DAYS up to `today` takes you
 // against `goal` (kg), from the weigh-ins ([{day, kg}] by day, from
 // TREND_DAYS before the window on): `reached` (the trend is within
 // AT_GOAL_KG of it), `unclear` (under 2 weigh-ins MIN_WEIGH_SPAN days
 // apart), `flat` (moving under FLAT_KG_PER_WEEK), `away`, `far` (past
-// PROJECTION_DAYS_MAX), else `on` with the `day` it gets there.
+// MAX_PROJECTION_DAYS), else `on` with the `day` it gets there.
 export function projection(weights, goal, today) {
   const start = shift(today, -(WINDOW_DAYS - 1));
   const trended = trend(weights).filter(
@@ -458,7 +460,7 @@ export function projection(weights, goal, today) {
   if (Math.abs(perDay * 7) < FLAT_KG_PER_WEEK) return { kind: "flat" };
   if (Math.sign(perDay) !== Math.sign(gap)) return { kind: "away" };
   const day = shift(last.day, Math.round(gap / perDay));
-  return day > shift(today, PROJECTION_DAYS_MAX)
+  return day > shift(today, MAX_PROJECTION_DAYS)
     ? { kind: "far" }
     : { kind: "on", day };
 }

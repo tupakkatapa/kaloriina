@@ -52,7 +52,7 @@ test("resting energy: Mifflin–St Jeor", () => {
   assert.equal(mifflin({ ...MAN, height_cm: null }, 80, T), null);
 });
 
-test("burned: one model every day, resting + TEF + max(device active, everyday + activities) (EN-2)", () => {
+test("burned: one model every day, resting + TEF + max(device active, everyday + activities)", () => {
   const activities = [
     { kcal: 300, kcal_source: "health_connect", minutes: 30 },
     { kcal: 400, kcal_source: "hand", minutes: 60 },
@@ -113,7 +113,7 @@ test("burned: one model every day, resting + TEF + max(device active, everyday +
   );
 });
 
-test("burned: a quiet device day is resting × 1.1 + TEF, whatever its total (the owner's report, EN-1)", () => {
+test("burned: a quiet device day is resting × 1.1 + TEF, whatever its total", () => {
   // Oct 5: the device's total 1,792 kcal (its own resting formula, no
   // TEF), 37 active, against resting ≈ 1,712 and 1,729 eaten: the day
   // burned resting + TEF + everyday movement, as a day without a device.
@@ -289,7 +289,7 @@ test("active energy: max(device active, Σ active of activities), null with neit
   assert.equal(dayActive(null, [hour({ kcal_source: "hand" })], null), null);
 });
 
-test("BMR: Mifflin–St Jeor every day, never from a scale's body fat or its own estimate (EN-8)", () => {
+test("BMR: Mifflin–St Jeor every day, never from a scale's body fat or its own estimate", () => {
   const weights = [
     { day: shift(T, -60), kg: 82 },
     { day: shift(T, -10), kg: 80 },
@@ -356,6 +356,21 @@ test("burned days are linear: no per-day scan of the activities or weigh-ins", (
   }
 });
 
+// Resting energy of 1,800 kcal every day.
+const resting1800 = () => ({ kcal: 1800 });
+
+test("burned: a day not fully logged takes TEF of the baseline, not its partial food", () => {
+  const y = year(2);
+  y.days[0] = { ...y.days[0], incomplete: true };
+  const [partial, whole] = burnedDays({
+    ...y,
+    activities: [],
+    bmr: resting1800,
+  });
+  near(partial.kcal, 1800 * 1.1 + 0.1 * 1800 * 1.1);
+  near(whole.kcal, 1800 * 1.1 + 200);
+});
+
 test("period after yesterday → no burned days; a running one ends yesterday", () => {
   const y = year(10);
   const bmr = bmrOf({ person: MAN, weights: y.weights });
@@ -389,7 +404,7 @@ test("period after yesterday → no burned days; a running one ends yesterday", 
 const device = (n, kcal, source = "active") =>
   Array.from({ length: n }, () => ({ kcal, source }));
 
-test("maintenance said to 10 kcal, like its range and the target (EN-9)", () => {
+test("maintenance said to 10 kcal, like its range and the target", () => {
   assert.equal(
     maintenanceText({ kcal: 2153.4, spread: 221.4 }),
     "≈ 2,150\u00A0kcal (± 220)",
@@ -397,7 +412,7 @@ test("maintenance said to 10 kcal, like its range and the target (EN-9)", () => 
   assert.equal(maintenanceText({ kcal: 2386 }), "≈ 2,390\u00A0kcal");
 });
 
-test("maintenance: the mean of every day burned, not only the device's high days (EN-3)", () => {
+test("maintenance: the mean of every day burned, not only the device's high days", () => {
   // 9 days the device read high, 19 quiet ones under the estimate: the
   // window's mean is of all 28.
   const burned = [...device(9, 2400), ...device(19, 2050, "activities")];
@@ -462,7 +477,7 @@ test("maintenance: the adaptive balance when sure, else the mean of burned, else
 // The mean kcal of burned rows.
 const mean = (list) => list.reduce((t, b) => t + b.kcal, 0) / list.length;
 
-test("maintenance by day: the window ending each day, balance → mean of burned → PAL (EN-4)", () => {
+test("maintenance by day: the window ending each day, balance → mean of burned → PAL", () => {
   // 70 days ending T: the device's active energy 600 on the first 20; from
   // day 20 food (2200) every day and a weigh-in every other day, 0.05 kg a
   // day down.
@@ -837,7 +852,7 @@ test("workoutLine: a workout's total reads as its activities will, netted of tod
 
 // ------------------------------------------------------ decision edges
 
-test("needed: a reached goal or a pace away from it plans at maintenance (TEST11-5)", () => {
+test("needed: a reached goal or a pace away from it plans at maintenance", () => {
   // 0.05 kg off the goal is reached, whichever way the pace points.
   for (const goalKgPerWeek of [-0.5, 0.5]) {
     const n = needed({ ...base, goalWeight: 80.05, goalKgPerWeek });
@@ -861,7 +876,7 @@ test("needed: a reached goal or a pace away from it plans at maintenance (TEST11
   ]);
 });
 
-test("needed: edges, each on both sides (TEST11-13)", () => {
+test("needed: edges, each on both sides", () => {
   // Recomposition at exactly 1 kg from the goal; not past it.
   const recomp = (goalWeight) =>
     needed({ ...base, bf: 25, goalWeight, goalBf: 20, goalDate: shift(T, 120) })
@@ -901,7 +916,7 @@ const judged = (spread, maintenance = 2000) => ({
   maintenance,
 });
 
-test("sure and offered: edges, each on both sides (TEST11-13)", () => {
+test("sure and offered: edges, each on both sides", () => {
   // A spread of exactly 250 kcal is sure; past it, not.
   assert.equal(sure(judged(250), null), true);
   assert.equal(sure(judged(250.5), null), false);
@@ -918,7 +933,7 @@ test("sure and offered: edges, each on both sides (TEST11-13)", () => {
   assert.equal(offered(30, null), true);
 });
 
-test("resting energy's weigh-in: carried 90 days, then the next, else the last (TEST11-13)", () => {
+test("resting energy's weigh-in: carried 90 days, then the next, else the last", () => {
   const first = shift(T, -200);
   const weights = [
     { day: first, kg: 90 },
@@ -993,7 +1008,7 @@ test("activeOf and burned: one resting a day, Health Connect's where served", ()
   near(b.kcal, 1440 + 200 + 144 + 295);
 });
 
-test("an estimate is said to 10 kcal, or 50 kJ: rounded in the unit shown (QUAL11-N2)", () => {
+test("an estimate is said to 10 kcal, or 50 kJ: rounded in the unit shown", () => {
   setRegistry([ENERGY], "kJ");
   // 2,520 kcal is 10,543.7 kJ; its range 221.4 kcal is 926.3 kJ.
   assert.equal(

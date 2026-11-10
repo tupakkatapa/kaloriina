@@ -105,9 +105,9 @@ export const copyButton = (post, shell, to, label = "Copy") =>
     label,
   );
 
-// A view's Copy of saved food, recipe (`/foods/{id}`) or meal
-// (`/meals/{id}`) at `path`, by `kind` ("Copy recipe"): the server copies
-// it as saved, and `to(copy)` opens.
+// A view's Copy of saved food or recipe (`/foods/{id}`) at `path`, by
+// `kind` ("Copy recipe"): the server copies it as saved, and `to(copy)`
+// opens.
 export const serverCopy = (path, kind, to) =>
   copyButton(
     (key) => api("POST", `${path}/copy`, { uid: key }),

@@ -137,9 +137,10 @@ test("Summary → Activity's Highlights say a month's cardio load against the 4 
     Object.fromEntries([...sep, ...aug].map((d) => [d, 55])),
   );
   await page.goto("/#/summary/activity/month/2026-09-01");
+  // Shown or under "+N more": a new best (the step day) takes a place.
   await expect(
     page
-      .locator("section.highlight-stack > ul.highlights > li")
+      .locator("section.highlight-stack li")
       .filter({ hasText: "Cardio load up" }),
   ).toContainText(/≈\s93 vs 31 a week · Sep 1\s–\s30 vs the 4 weeks before/u);
 });

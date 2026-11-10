@@ -47,7 +47,7 @@ use crate::model::sleep::{
 use crate::model::{
     ACTIVITY_NAME_MAX, ActivityType, DISTANCE_M_MAX, DeviceDay, GOOGLE_HEALTH, HealthRecord,
     IMPORT_KEY_PREFIX, ImportCounts, ImportedWorkout, KCAL_MAX, NapIn, ProfileId, RECORD_KIND_MAX,
-    SleepStage, StageSource, day_so_far, is_key, kept_data, sneaky,
+    SleepStage, StageSource, day_so_far, is_key, kept_data, label,
 };
 
 /// Raw rows written per transaction: the database is free between them.
@@ -264,15 +264,9 @@ fn rounded(milli: i64) -> i64 {
     milli.saturating_add(500).div_euclid(1000)
 }
 
-/// A name as a label: no control characters, trimmed, at most
-/// [`ACTIVITY_NAME_MAX`] characters.
-fn label(s: &str) -> String {
-    let s: String = s.chars().filter(|c| !sneaky(*c)).collect();
-    let s: String = s.trim().chars().take(ACTIVITY_NAME_MAX).collect();
-    match s.trim_end() {
-        "" => "Activity".to_owned(),
-        s => s.to_owned(),
-    }
+/// A name as a label ([`label`]); "Activity" when none is left.
+fn activity_name(s: &str) -> String {
+    label(s, ACTIVITY_NAME_MAX).unwrap_or_else(|| "Activity".to_owned())
 }
 
 /// A workout's type from its activity name: a word starting with one of
@@ -349,7 +343,7 @@ fn workout(v: &[&str], tz: &TimeZone, latest: Date) -> Row<ImportedWorkout> {
     if seconds < 60 {
         return Row::Left;
     }
-    let name = label(name);
+    let name = activity_name(name);
     Row::Read(ImportedWorkout {
         key,
         day: day.to_string(),
@@ -731,9 +725,10 @@ fn best(samples: &HashMap<(Timestamp, u32), i64>, tz: &TimeZone) -> (BTreeMap<Da
 }
 
 /// Read the export's files Kaloriina knows (others are ignored; [`other`]
-/// ones are only kept raw), one at a time, heart rate last; the time series fall on days in `tz`. Raw rows go
-/// to `keep` as they are read, [`RAW_BATCH`] at a time. The export read,
-/// and how many raw rows `keep` found new.
+/// ones are only kept raw), one at a time, heart rate last; the time
+/// series fall on days in `tz`. Raw rows go to `keep` as they are read,
+/// [`RAW_BATCH`] at a time. The export read, and how many raw rows `keep`
+/// found new.
 ///
 /// # Errors
 /// None of the files known (400 `files`), or one not readable as CSV with
@@ -877,8 +872,8 @@ mod tests {
     #[test]
     fn a_nameless_session_is_an_activity() {
         // As the phone names one: "Workout" is the set-based type only.
-        assert_eq!(label(" \u{7} "), "Activity");
-        assert_eq!(label(" Run "), "Run");
+        assert_eq!(activity_name(" \u{7} "), "Activity");
+        assert_eq!(activity_name(" Run "), "Run");
     }
 
     fn file(name: &str, text: &str) -> File {

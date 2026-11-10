@@ -54,7 +54,7 @@ pub fn import_servings(
     profile: ProfileId,
     reader: impl std::io::Read,
 ) -> Result<usize, kaloriina::Error> {
-    kaloriina::import::import(conn, profile, Some(reader), None::<&[u8]>).map(|r| r.entries)
+    kaloriina::cronometer::import(conn, profile, Some(reader), None::<&[u8]>).map(|r| r.entries)
 }
 
 /// Import `dailysummary.csv` alone.
@@ -62,7 +62,7 @@ pub fn import_summary(
     conn: &mut Connection,
     profile: ProfileId,
     reader: impl std::io::Read,
-) -> Result<kaloriina::import::SummaryReport, kaloriina::Error> {
-    kaloriina::import::import(conn, profile, None::<&[u8]>, Some(reader))
+) -> Result<kaloriina::cronometer::SummaryReport, kaloriina::Error> {
+    kaloriina::cronometer::import(conn, profile, None::<&[u8]>, Some(reader))
         .map(|r| r.summary.expect("a summary was given"))
 }

@@ -8,7 +8,6 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -873,12 +872,12 @@ public final class Payload {
     public static final Outcome UNREACHABLE = new Outcome("Server unreachable", true, false);
 
     /**
-     * The outcome of HTTP {@code code} with {@code json}, the body when it is JSON (else null):
-     * stored and counted; a server error, retried; a login page or refusal of the network's
-     * sign-in, "sign in"; any other refusal shows the server's sentence and isn't retried.
+     * The outcome of HTTP {@code code} with {@code body}, the answer's members by name when it is a
+     * JSON object (else null): stored and counted; a server error, retried; a login page or refusal
+     * of the network's sign-in, "sign in"; any other refusal shows the server's sentence and isn't
+     * retried.
      */
-    public static Outcome outcome(int code, String json) {
-        Map<String, String> body = json == null ? null : flatObject(json);
+    public static Outcome outcome(int code, Function<String, Object> body) {
         if (code == 200 && body != null) {
             return new Outcome(
                     plural(count(body, "days"), "day")
@@ -895,7 +894,7 @@ public final class Payload {
         if (body == null || code == 401 || code == 403 || code == 407) {
             return new Outcome("Sign in again: open the app", false, false);
         }
-        String error = body.getOrDefault("error", "HTTP " + code);
+        String error = body.apply("error") instanceof String e ? e : "HTTP " + code;
         return new Outcome(
                 code == 404 ? error + ". Profile gone: choose a profile in Settings" : error,
                 false,
@@ -903,24 +902,21 @@ public final class Payload {
     }
 
     /**
-     * The script that answers the page's pull to refresh ({@code web/refresh.mjs}) once a sync run
-     * ended: a {@code kaloriina-sync} event whose detail is {@code {"note"}} (Health Connect's read
-     * limit: this run's), else {@code {"error"}} (the last failure), else {@code {"synced"}};
-     * {@code {}} when no profile is bound, so nothing synced. The text is a JSON string, so a
-     * server's sentence can't end it.
+     * The system bars' colours: the page's background ({@code 0xAARRGGBB}) and whether it's dark.
      */
-    public static String syncEvent(boolean bound, String error, String note) {
-        String detail;
-        if (!bound) {
-            detail = "{}";
-        } else if (!note.isEmpty()) {
-            detail = "{\"note\":" + quoted(note) + "}";
-        } else if (!error.isEmpty()) {
-            detail = "{\"error\":" + quoted(error) + "}";
-        } else {
-            detail = "{\"synced\":true}";
+    public record Theme(int bg, boolean dark) {}
+
+    private static final Pattern THEME = Pattern.compile("bg=([0-9a-f]{6})&dark=([01])");
+
+    /**
+     * The page's theme ({@code web/layout.js}) from {@code bg=rrggbb&dark=0|1}, exactly; else null.
+     */
+    public static Theme theme(String query) {
+        Matcher m = query == null ? null : THEME.matcher(query);
+        if (m == null || !m.matches()) {
+            return null;
         }
-        return "dispatchEvent(new CustomEvent(\"kaloriina-sync\",{detail:" + detail + "}))";
+        return new Theme(0xff000000 | Integer.parseInt(m.group(1), 16), "1".equals(m.group(2)));
     }
 
     /** "1 day", "2 days": the word's plural is its singular plus "s". */
@@ -933,67 +929,8 @@ public final class Payload {
         return n + " " + (n == 1 ? one : many);
     }
 
-    private static long count(Map<String, String> body, String key) {
-        try {
-            return Long.parseLong(body.getOrDefault(key, "0"));
-        } catch (NumberFormatException e) {
-            return 0;
-        }
-    }
-
-    private static final Pattern MEMBER =
-            Pattern.compile(
-                    "\"((?:[^\"\\\\]|\\\\.)*)\"\\s*:\\s*(?:\"((?:[^\"\\\\]|\\\\.)*)\"|([^,}\\s]+))");
-
-    /**
-     * A flat JSON object's members as text (strings unescaped, other values as written), or null
-     * when {@code json} isn't an object. Nested values aren't read: the server's answers here are
-     * flat.
-     */
-    static Map<String, String> flatObject(String json) {
-        String s = json.strip();
-        if (!s.startsWith("{") || !s.endsWith("}")) {
-            return null;
-        }
-        Map<String, String> out = new HashMap<>();
-        Matcher m = MEMBER.matcher(s);
-        while (m.find()) {
-            out.putIfAbsent(
-                    unquoted(m.group(1)), m.group(2) != null ? unquoted(m.group(2)) : m.group(3));
-        }
-        return out;
-    }
-
-    /** A JSON string's content with its escapes resolved. */
-    private static String unquoted(String s) {
-        StringBuilder out = new StringBuilder();
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            if (c != '\\' || i + 1 == s.length()) {
-                out.append(c);
-                continue;
-            }
-            char e = s.charAt(++i);
-            switch (e) {
-                case 'n' -> out.append('\n');
-                case 'r' -> out.append('\r');
-                case 't' -> out.append('\t');
-                case 'b' -> out.append('\b');
-                case 'f' -> out.append('\f');
-                case 'u' -> {
-                    String hex = s.substring(i + 1, Math.min(i + 5, s.length()));
-                    if (hex.length() == 4
-                            && hex.chars().allMatch(h -> Character.digit(h, 16) >= 0)) {
-                        out.append((char) Integer.parseInt(hex, 16));
-                        i += 4;
-                    } else {
-                        out.append(e);
-                    }
-                }
-                default -> out.append(e);
-            }
-        }
-        return out.toString();
+    private static long count(Function<String, Object> body, String key) {
+        return body.apply(key) instanceof Number n ? n.longValue() : 0;
     }
 
     /** A JSON string: quotes, backslashes and control characters escaped. */

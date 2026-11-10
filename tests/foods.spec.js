@@ -1,4 +1,4 @@
-// The Foods tab and search: foods, recipes, meals, barcodes, favourites.
+// The Foods tab and search: foods, recipes, barcodes, favourites.
 
 import { expect, test } from "@playwright/test";
 import {
@@ -6,11 +6,14 @@ import {
   answered,
   entry,
   expectFits,
+  fixedToday,
+  fold,
   food,
   headline,
   loseFirstAnswer,
   mockJson,
   newProfile,
+  openFold,
   ownProfile,
   save,
   settled,
@@ -97,6 +100,26 @@ test("barcode lookup with Open Food Facts down offers manual entry", async ({
   await expect(page.getByLabel("Barcode", { exact: true })).toHaveValue(
     "4999999999999",
   );
+});
+
+test("Archive refuses a value it can't read and saves no part of the form", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { tag } = unique(1264, testInfo);
+  const oats = await food(request, {
+    name: `Kept Oats ${tag}`,
+    per100: { energy: 370, protein: 13 },
+  });
+  await request.post("/api/recipes", {
+    data: { name: `Jar ${tag}`, items: [{ food_id: oats.id, grams: 40 }] },
+  });
+  await page.goto(`/#/food/${oats.id}`);
+  await page.getByLabel("Protein (g)", { exact: true }).fill("13 g");
+  await page.getByRole("button", { name: "Archive", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  const saved = await (await request.get(`/api/foods/${oats.id}`)).json();
+  expect([saved.archived, saved.per100.protein]).toEqual([false, 13]);
 });
 
 test("archived foods can be found again", async ({
@@ -377,9 +400,7 @@ test("the foods tab lists favorites until you search", async ({
   });
 
   await page.goto("/#/foods");
-  const favourites = page.locator(".finder-section", {
-    has: page.getByRole("heading", { name: "Favourites" }),
-  });
+  const favourites = await openFold(page, "Favourites");
   await expect(
     favourites.getByRole("button", { name: starts(`Liked ${tag}`) }),
   ).toBeVisible();
@@ -435,10 +456,10 @@ test("a food from the foods tab is added, not edited", async ({
   await expect(planned.getByText(`Snack ${tag}`)).toBeVisible();
 });
 
-test("an empty search shows favourites, recent and meals", async ({ page }) => {
+test("an empty search shows favourites and recent", async ({ page }) => {
   await page.goto("/#/foods");
-  for (const name of ["Favourites", "Recent", "Meals"])
-    await expect(page.getByRole("heading", { name })).toBeVisible();
+  for (const name of ["Favourites", "Recent"])
+    await expect(fold(page, name)).toBeVisible();
 });
 
 test("a new food saved from Foods stays in its editor", async ({
@@ -534,6 +555,32 @@ test("filters saved by an older version reset instead of breaking search", async
   ).toBeVisible();
 });
 
+test("a refused query or a second rule for a nutrient keeps the filters", async ({
+  page,
+}) => {
+  const saved = { rules: [{ key: "protein", dir: "min", amount: 20 }] };
+  await page.addInitScript((f) => {
+    if (!localStorage.getItem("food-filters"))
+      localStorage.setItem("food-filters", JSON.stringify(f));
+  }, saved);
+  const filters = () =>
+    page.evaluate(() => JSON.parse(localStorage.getItem("food-filters")));
+  await page.goto("/#/foods");
+  await page
+    .getByLabel("Search foods")
+    .fill("one two three four five six seven eight nine");
+  await expect(page.getByRole("alert")).toContainText("8 words");
+  await expect(page.locator("#toast")).not.toContainText("Reset");
+  expect((await filters()).rules).toEqual(saved.rules);
+
+  await page.getByLabel("Search foods").fill("a");
+  await page.getByRole("button", { name: /^Filters/u }).click();
+  await page.getByRole("button", { name: "+ Rule" }).click();
+  await page.getByLabel("Rule amount").last().fill("5");
+  await expect(page.locator("#toast")).not.toContainText("Reset");
+  expect((await filters()).rules[0]).toEqual(saved.rules[0]);
+});
+
 test("a scanned barcode opens the food", async ({
   page,
   request,
@@ -612,8 +659,8 @@ test("nutrition shows in every food view and follows the amounts", async ({
     page.getByRole("columnheader", { name: /^bowl \(50\sg\)$/u }),
   ).toBeVisible();
 
-  // A meal: the total of its items, updated as items change.
-  await page.goto("/#/meal/new");
+  // A recipe: its whole, updated as items change.
+  await page.goto("/#/recipe/new");
   await answer(page, "Leave");
   await page.getByLabel("Search foods to add").fill(`Panel oats ${tag}`);
   await page.getByRole("button", { name: starts(`Panel oats ${tag}`) }).click();
@@ -627,7 +674,7 @@ test("nutrition shows in every food view and follows the amounts", async ({
   await expect(row("Energy")).toContainText("80 kcal");
 });
 
-test("a meal's and recipe's totals say how much of their food carries a nutrient", async ({
+test("a recipe's totals say how much of its food carries a nutrient", async ({
   page,
   request,
 }, testInfo) => {
@@ -651,20 +698,14 @@ test("a meal's and recipe's totals say how much of their food carries a nutrient
     await page.getByRole("button", { name: starts(name) }).click();
   };
   // 100 g each: the salt's oats are 90 of the 100 g of dry matter, 90 %:
-  // judged, a floor all the same (ADR 0030, by dry matter).
-  for (const [screen, columns] of [
-    ["meal", [0]],
-    ["recipe", [0, 1]],
-  ]) {
-    await page.goto(`/#/${screen}/new`);
-    // Leaving the meal just built asks first.
-    if (screen === "recipe") await answer(page, "Leave");
-    await add(`Cover oats ${tag}`);
-    await add(`Cover milk ${tag}`);
-    for (const nth of columns) {
-      await expect(salt(nth)).toContainText(/^≥\s/u);
-      await expect(salt(nth)).toContainText(/from 9\d\s%/u);
-    }
+  // judged, a floor all the same (ADR 0030, by dry matter), read without
+  // "≥" from 80 %; the share is still said.
+  await page.goto("/#/recipe/new");
+  await add(`Cover oats ${tag}`);
+  await add(`Cover milk ${tag}`);
+  for (const nth of [0, 1]) {
+    await expect(salt(nth)).toContainText(/^[\d.]+\sg/u);
+    await expect(salt(nth)).toContainText(/from 9\d\s%/u);
   }
 });
 
@@ -677,9 +718,7 @@ test("a food can be starred right from the list", async ({
   const name = `Star kale ${tag}`;
   await food(request, { name, per100: { energy: 50 } });
   await page.goto("/#/foods");
-  const favourites = page.locator(".finder-section", {
-    has: page.getByRole("heading", { name: "Favourites" }),
-  });
+  const favourites = await openFold(page, "Favourites");
   await expect(favourites).toContainText("Star a food");
 
   await page.getByLabel("Search foods").fill(name);
@@ -734,7 +773,34 @@ test("an ingredient starts at its food's default serving and opens the food, kee
   expect(saved.servings.map((s) => s.label)).toEqual(["Big scoop", "Scoop"]);
 });
 
-test("your own foods and meals come first in search", async ({
+test("a recipe opened from elsewhere goes back there after editing an ingredient", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { tag } = unique(1268, testInfo);
+  const oats = await food(request, {
+    name: `Draft oats ${tag}`,
+    per100: { energy: 370 },
+  });
+  const jar = await (
+    await request.post("/api/recipes", {
+      data: {
+        name: `Draft jar ${tag}`,
+        items: [{ food_id: oats.id, grams: 40 }],
+      },
+    })
+  ).json();
+  const back = `#/log/${jar.id}`;
+  await page.goto(`/#/recipe/${jar.id}?back=${encodeURIComponent(back)}`);
+  await page.getByRole("button", { name: `Edit Draft oats ${tag}` }).click();
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page).toHaveURL(new RegExp(`#/recipe/${jar.id}\\?`, "u"));
+  await page.getByLabel("Name", { exact: true }).fill(`Draft jar 2 ${tag}`);
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page).toHaveURL(new RegExp(`${back}$`, "u"));
+});
+
+test("your own foods and recipes come first in search", async ({
   page,
   request,
 }, testInfo) => {
@@ -743,7 +809,7 @@ test("your own foods and meals come first in search", async ({
     name: `Rahka ${tag} z`,
     per100: { energy: 60 },
   });
-  await request.post("/api/meals", {
+  await request.post("/api/recipes", {
     data: {
       name: `Rahka ${tag} breakfast`,
       items: [{ food_id: mine.id, grams: 200 }],
@@ -752,7 +818,7 @@ test("your own foods and meals come first in search", async ({
   await page.goto("/#/foods");
   await page.getByLabel("Search foods").fill(`rahka ${tag}`);
   const rows = page.locator(".results .result .name");
-  await expect(rows.first()).toHaveText(`Rahka ${tag} breakfast`);
+  await expect(rows).toHaveText([`Rahka ${tag} breakfast`, `Rahka ${tag} z`]);
 });
 
 test("the food editor saves in place and asks before losing changes", async ({
@@ -980,16 +1046,16 @@ test("editing what you log is a header action", async ({
 }, testInfo) => {
   const { day, tag } = unique(190, testInfo);
   const f = await food(request, { name: `Bun ${tag}` });
-  const meal = await (
-    await request.post("/api/meals", {
+  const recipe = await (
+    await request.post("/api/recipes", {
       data: { name: `Lunch ${tag}`, items: [{ food_id: f.id, grams: 100 }] },
     })
   ).json();
   for (const [url, name] of [
     [`/#/log/${day}/Eaten/${f.id}`, "Edit food"],
-    [`/#/log-meal/${day}/Eaten/${meal.id}`, "Edit meal"],
+    [`/#/log/${day}/Eaten/${recipe.id}`, "Edit recipe"],
     [`/#/log/${f.id}`, "Edit food"],
-    [`/#/log-meal/${meal.id}`, "Edit meal"],
+    [`/#/log/${recipe.id}`, "Edit recipe"],
   ]) {
     await page.goto(url);
     const edit = page.locator("header.title").getByRole("link", { name });
@@ -1028,23 +1094,18 @@ test("the foods tab lists your recipes and foods, never logged ones too", async 
     data: { ...archived, archived: true },
   });
   await page.goto("/#/foods");
-  const section = (name) =>
-    page.locator(".finder-section", {
-      has: page.getByRole("heading", { name, exact: true }),
-    });
-  await expect(page.locator(".finder-section h2")).toHaveText([
-    "Favourites",
-    "Recent",
-    "Meals",
-    "Your recipes",
-    "Your foods",
+  await expect(page.locator(".finder-fold > summary")).toHaveText([
+    /^Favourites \(\d+\)$/u,
+    /^Recent \(\d+\)$/u,
+    /^Your recipes \(\d+\)$/u,
+    /^Your foods \(\d+\)$/u,
   ]);
   await expect(
-    section("Your recipes").getByRole("button", {
+    (await openFold(page, "Your recipes")).getByRole("button", {
       name: starts(`0 Bowl ${tag}`),
     }),
   ).toBeVisible();
-  const foods = section("Your foods");
+  const foods = await openFold(page, "Your foods");
   await expect(
     foods.getByRole("button", { name: starts(`0 Rice ${tag}`) }),
   ).toBeVisible();
@@ -1068,7 +1129,7 @@ test("the foods tab lists your recipes and foods, never logged ones too", async 
   ).toBeVisible();
 });
 
-test("logging a food or meal: an Amount, a time, one context line", async ({
+test("logging a food or recipe: an Amount, a time, one context line", async ({
   page,
   request,
 }, testInfo) => {
@@ -1080,7 +1141,7 @@ test("logging a food or meal: an Amount, a time, one context line", async ({
     per100: { energy: 220 },
     servings: [{ label: "Slice", grams: 35 }],
   });
-  const made = await request.post("/api/meals", {
+  const made = await request.post("/api/recipes", {
     data: {
       name: `Lunch ${tag}`,
       items: [{ food_id: bread.id, grams: 70 }],
@@ -1108,17 +1169,17 @@ test("logging a food or meal: an Amount, a time, one context line", async ({
 
   await page.goto(`/#/add/${day}/Eaten`);
   await page.getByLabel("Search foods").fill(`Lunch ${tag}`);
-  await page.getByRole("link", { name: starts(`Lunch ${tag}`) }).click();
+  await page.getByRole("button", { name: starts(`Lunch ${tag}`) }).click();
   await expect(
     page.locator("form.log").getByText("Amount", { exact: true }),
   ).toBeVisible();
-  await expect(page.locator("section > p.muted").first()).toHaveText(
-    / · Eaten$/u,
+  await expect(page.locator("main p.muted").first()).toHaveText(
+    / · Eaten · From your recipes$/u,
   );
   await page.getByRole("button", { name: "Add to Eaten" }).click();
   await expect(page).toHaveURL(new RegExp(`#/day/${day}$`, "u"));
   // Without a time, none is sent.
-  expect(await logged()).toContainEqual([`Rye ${tag}`, null]);
+  expect(await logged()).toContainEqual([`Lunch ${tag}`, null]);
 });
 
 test("a recipe that makes portions logs one portion by default", async ({
@@ -1203,8 +1264,7 @@ const tablet = (request, tag) =>
     servings: [{ label: "poretabletti", grams: 4.3 }],
   });
 
-// The item row of `name` in a recipe or meal editor: its quantity, unit and
-// weight.
+// The item row of `name` in a recipe editor: its quantity, unit and weight.
 const itemRow = (page, name) => ({
   row: page.locator(".items li", { hasText: name }),
   quantity: page.getByLabel(`${name} quantity`),
@@ -1212,10 +1272,7 @@ const itemRow = (page, name) => ({
   weight: page.locator(".items li", { hasText: name }).locator(".weight"),
 });
 
-for (const [kind, slot] of [
-  ["recipe", 870],
-  ["meal", 871],
-]) {
+for (const [kind, slot] of [["recipe", 870]]) {
   test(`a ${kind} item is a count of its food's serving, kept as chosen`, async ({
     page,
     request,
@@ -1272,11 +1329,8 @@ test("item rows fit 320 px", async ({ page, request }, testInfo) => {
 });
 
 // Back from an ingredient's food, its new serving is offered, and every
-// unsaved edit is still there: in a recipe and in a meal.
-for (const [kind, slot] of [
-  ["recipe", 931],
-  ["meal", 932],
-])
+// unsaved edit is still there.
+for (const [kind, slot] of [["recipe", 931]])
   test(`a ${kind}'s ingredient offers the serving just added to its food`, async ({
     page,
     request,
@@ -1336,7 +1390,7 @@ for (const [kind, slot] of [
 
 // While a recipe makes portions, one Portion is its default (unless a
 // serving of your own leads): its editor says so, and picking it as an
-// ingredient of a recipe or a meal starts there, as logging it does.
+// ingredient of a recipe starts there, as logging it does.
 test("a recipe with portions defaults to one portion everywhere", async ({
   page,
   request,
@@ -1392,24 +1446,16 @@ test("a recipe with portions defaults to one portion everywhere", async ({
     .getByRole("button", { name: `Remove Portion base ${tag}` })
     .click();
 
-  for (const kind of ["recipe", "meal"]) {
-    if (kind === "meal") {
-      await page.goto(`/#/${kind}/new`);
-      await answer(page, "Leave");
-    }
-    const unit = (name) =>
-      page.getByLabel(`${name} ${tag} unit`).locator("option:checked");
-    for (const name of ["Portioned pilaf", "Bowled stew"]) {
-      await page.getByLabel("Search foods to add").fill(`${name} ${tag}`);
-      await page
-        .getByRole("button", { name: starts(`${name} ${tag}`) })
-        .click();
-      await expect(page.getByLabel(`${name} ${tag} quantity`)).toHaveValue("1");
-    }
-    await expect(unit("Portioned pilaf")).toHaveText(/^Portion \(200\sg\)/u);
-    // Your own default leads.
-    await expect(unit("Bowled stew")).toHaveText(/^Bowl \(250\sg\)/u);
+  const unit = (name) =>
+    page.getByLabel(`${name} ${tag} unit`).locator("option:checked");
+  for (const name of ["Portioned pilaf", "Bowled stew"]) {
+    await page.getByLabel("Search foods to add").fill(`${name} ${tag}`);
+    await page.getByRole("button", { name: starts(`${name} ${tag}`) }).click();
+    await expect(page.getByLabel(`${name} ${tag} quantity`)).toHaveValue("1");
   }
+  await expect(unit("Portioned pilaf")).toHaveText(/^Portion \(200\sg\)/u);
+  // Your own default leads.
+  await expect(unit("Bowled stew")).toHaveText(/^Bowl \(250\sg\)/u);
 });
 
 // What a recipe copy shares: everything but its id, name and revision.
@@ -1570,7 +1616,7 @@ test("archiving a logged food asks first", async ({
   await page.goto(`/#/food/${f.id}`);
   await page.getByRole("button", { name: "Archive", exact: true }).click();
   await expect(page.getByRole("dialog")).toContainText(
-    "Logged 1 time. Archiving hides it from search; your diary, recipes and meals keep it.",
+    "Logged 1 time. Archiving hides it from search; your diary and recipes keep it.",
   );
   expect(await answer(page, "Cancel")).toBe(`Archive Old jam ${tag}?`);
   await page.getByRole("button", { name: "Archive", exact: true }).click();
@@ -1583,24 +1629,24 @@ test("archiving a logged food asks first", async ({
   );
 });
 
-test("changing a recipe a meal uses says the meal follows", async ({
+test("changing a recipe another uses says that one follows", async ({
   page,
   request,
 }, testInfo) => {
   const { tag } = unique(939, testInfo);
   const oats = await food(request, {
-    name: `Meal oats ${tag}`,
+    name: `Used oats ${tag}`,
     per100: { energy: 370 },
   });
   const porridge = await (
     await request.post("/api/recipes", {
       data: {
-        name: `Meal porridge ${tag}`,
+        name: `Used porridge ${tag}`,
         items: [{ food_id: oats.id, grams: 100 }],
       },
     })
   ).json();
-  await request.post("/api/meals", {
+  await request.post("/api/recipes", {
     data: {
       name: `Breakfast ${tag}`,
       items: [{ food_id: porridge.id, grams: 200 }],
@@ -1608,14 +1654,14 @@ test("changing a recipe a meal uses says the meal follows", async ({
   });
 
   await page.goto(`/#/recipe/${porridge.id}`);
-  await page.getByLabel(`Meal oats ${tag} quantity`).fill("150");
+  await page.getByLabel(`Used oats ${tag} quantity`).fill("150");
   await page.getByRole("button", { name: "Save" }).click();
   await expect(page.getByRole("dialog")).toContainText(
-    "Used in 1 meal. The 1 meal will use the new values. To leave it as it is, Cancel and use Copy: it saves your changes as a new recipe.",
+    "Used in 1 recipe. The 1 recipe will use the new values. To leave it as it is, Cancel and use Copy: it saves your changes as a new recipe.",
   );
   await answer(page, "Save");
   await expect(page.locator("#toast")).toContainText(
-    `Saved Meal porridge ${tag}`,
+    `Saved Used porridge ${tag}`,
   );
 });
 
@@ -1706,7 +1752,7 @@ test("recipe health cues follow its ingredients", async ({
   await expect(health(page)).toContainText("Sugars medium");
 });
 
-test("meal health cues come from its items", async ({
+test("a recipe's health cues come from its items, in the amount shown", async ({
   page,
   request,
 }, testInfo) => {
@@ -1717,33 +1763,30 @@ test("meal health cues come from its items", async ({
     name: `Cue pastry ${tag}`,
     per100: { energy: 400, fat: 17, protein: 5, net_carbs: 40 },
   });
-  const made = await request.post("/api/meals", {
+  // One portion: the whole of it.
+  const made = await request.post("/api/recipes", {
     data: {
       name: `Cue brunch ${tag}`,
+      makes: 1,
       items: [{ food_id: fatty.id, grams: 124 }],
     },
   });
   expect(made.ok()).toBeTruthy();
-  const meal = await made.json();
+  const recipe = await made.json();
 
-  await page.goto(`/#/meal/${meal.id}`);
+  await page.goto(`/#/recipe/${recipe.id}`);
   await expect(health(page)).toContainText("Fat high in this amount");
   await page.getByLabel(`Cue pastry ${tag} quantity`).fill("100");
   await expect(health(page)).toContainText("Fat medium");
   await page.getByLabel(`Cue pastry ${tag} quantity`).fill("124");
   await expect(health(page)).toContainText("Fat high in this amount");
 
-  // The finder's meal row: tagged per 100 g, no portion, so no "High fat".
-  await page.goto("/#/foods");
-  await page.getByLabel("Search foods").fill(`Cue brunch ${tag}`);
-  const row = page.getByRole("link", { name: starts(`Cue brunch ${tag}`) });
-  await expect(row).toBeVisible();
-  await expect(row.locator(".light")).toHaveCount(0);
-
-  // Logging: the portions field sets the amount.
-  await page.goto(`/#/log-meal/${meal.id}`);
+  // Logging: the quantity sets the amount. The editor stays until the log
+  // screen replaces it.
+  await page.goto(`/#/log/${recipe.id}`);
+  await expect(page.locator("section.amount-view")).toBeVisible();
   await expect(health(page)).toContainText("Fat high in this amount");
-  await page.getByLabel("Portions").fill("0.9");
+  await page.getByLabel("Quantity").fill("0.9");
   await expect(health(page)).toContainText("Fat medium");
 });
 
@@ -1847,7 +1890,7 @@ test("search rows show only the verdict; positive sublabels filter the search fr
   await page.getByLabel("Search foods").fill(`Cue ${tag}`);
   const row = (name) =>
     page.getByRole("button", { name: starts(`Cue ${name} ${tag}`) });
-  // Owner (2026-10-14): a row shows the verdict only; sublabels filter.
+  // A row shows the verdict only; sublabels filter.
   await expect(row("bacon").locator(".light")).toHaveText(["Unhealthy"]);
   await expect(row("chicken").locator(".light")).toHaveText(["Healthy"]);
   await expect(row("lentils").locator(".light")).toHaveText(["Healthy"]);
@@ -1942,52 +1985,6 @@ test("search rows show only the verdict; positive sublabels filter the search fr
   await page.getByLabel("Search foods").fill(`Cue ${tag}`);
   await row("bacon").click();
   await expect(own).toHaveText(["Unhealthy"]);
-});
-
-// A recipe's or meal's items as read back: food, grams, serving, quantity.
-const read = (got) =>
-  got.items.map((i) => [i.food_id, i.grams, i.serving, i.quantity]);
-
-test("a meal saves as a recipe, and a recipe as a meal, keeping both", async ({
-  page,
-  request,
-}, testInfo) => {
-  const { tag } = unique(1133, testInfo);
-  const oats = await food(request, { name: `Oats ${tag}` });
-  const milk = await food(request, {
-    name: `Milk ${tag}`,
-    servings: [{ label: "Glass", grams: 200 }],
-  });
-  const items = [
-    { food_id: oats.id, grams: 60 },
-    { food_id: milk.id, serving: "Glass", quantity: 1 },
-  ];
-  const want = [
-    [oats.id, 60, null, null],
-    [milk.id, 200, "Glass", 1],
-  ];
-  const meal = await (
-    await request.post("/api/meals", {
-      data: { name: `Porridge ${tag}`, items },
-    })
-  ).json();
-  await page.goto(`/#/meal/${meal.id}`);
-  await page.getByRole("button", { name: "Recipe from this meal" }).click();
-  await expect(page).toHaveURL(/#\/recipe\/\d+$/u);
-  const recipeId = page.url().match(/(\d+)$/u)[1];
-  const recipe = await (await request.get(`/api/recipes/${recipeId}`)).json();
-  expect(recipe.name).toBe(`Porridge ${tag}`);
-  expect(read(recipe)).toEqual(want);
-  expect((await request.get(`/api/meals/${meal.id}`)).ok()).toBe(true);
-
-  await page.getByRole("button", { name: "Meal from this recipe" }).click();
-  await expect(page).toHaveURL(/#\/meal\/\d+$/u);
-  const mealId = page.url().match(/(\d+)$/u)[1];
-  expect(mealId).not.toBe(String(meal.id));
-  const back = await (await request.get(`/api/meals/${mealId}`)).json();
-  expect(back.name).toBe(`Porridge ${tag}`);
-  expect(read(back)).toEqual(want);
-  expect((await request.get(`/api/recipes/${recipeId}`)).ok()).toBe(true);
 });
 
 test("the Filters panel's rating keeps one verdict's foods", async ({
@@ -2602,8 +2599,8 @@ test("Copy takes the editor's unsaved changes, the original keeps its own", asyn
 });
 
 // The save dialog's "Cancel and use Copy" does what it says: the
-// copy has the changes, the recipe the meal uses stays as it was.
-test("Cancel and use Copy keeps the meal's recipe as it was", async ({
+// copy has the changes, the recipe another uses stays as it was.
+test("Cancel and use Copy keeps the used recipe as it was", async ({
   page,
   request,
 }, testInfo) => {
@@ -2620,8 +2617,8 @@ test("Cancel and use Copy keeps the meal's recipe as it was", async ({
       },
     })
   ).json();
-  const meal = await (
-    await request.post("/api/meals", {
+  const breakfast = await (
+    await request.post("/api/recipes", {
       data: {
         name: `Kept breakfast ${tag}`,
         items: [{ food_id: porridge.id, grams: 200 }],
@@ -2647,15 +2644,14 @@ test("Cancel and use Copy keeps the meal's recipe as it was", async ({
   expect(
     await (await request.get(`/api/recipes/${porridge.id}`)).json(),
   ).toEqual(porridge);
-  expect(await (await request.get(`/api/meals/${meal.id}`)).json()).toEqual(
-    meal,
-  );
+  expect(
+    await (await request.get(`/api/recipes/${breakfast.id}`)).json(),
+  ).toEqual(breakfast);
 });
 
 // A saved copy (the Copy of the screen that logs it) keeps
 // everything its original saves but what a copy resets: a name at the
-// limit still fits, a meal's gram items and a recipe's cooked weight come
-// along, an archived original gives a copy in use. A Fineli food's editor
+// limit still fits, a recipe's items and cooked weight come along, an archived original gives a copy in use. A Fineli food's editor
 // Copy is yours: your source, no Fineli brand.
 test("a copy keeps what its original saves", async ({
   page,
@@ -2689,23 +2685,10 @@ test("a copy keeps what its original saves", async ({
       },
     })
   ).json();
-  const meal = await (
-    await request.post("/api/meals", {
-      data: {
-        name: `Lunch ${tag}`,
-        items: [
-          { food_id: archived.id, grams: 120 },
-          { food_id: atLimit.id, serving: "Bar", quantity: 1 },
-        ],
-      },
-    })
-  ).json();
-
   const cases = [
     [`/#/log/${atLimit.id}`, "Copy food", "foods", atLimit],
     [`/#/log/${archived.id}`, "Copy food", "foods", archived],
     [`/#/log/${cooked.id}`, "Copy recipe", "recipes", cooked],
-    [`/#/log-meal/${meal.id}`, "Copy meal", "meals", meal],
   ];
   for (const [url, label, kind, original] of cases) {
     await page.goto(url);
@@ -2769,18 +2752,12 @@ test("header actions sit on Back's row", async ({
         data: { name, items: [{ food_id: f.id, grams: 100 }] },
       })
     ).json();
-    const meal = await (
-      await request.post("/api/meals", {
-        data: { name, items: [{ food_id: f.id, grams: 100 }] },
-      })
-    ).json();
     const {
       entries: [e],
     } = await entry(request, { day, group: "Eaten", food_id: f.id, grams: 50 });
     for (const url of [
       `/#/log/${day}/Eaten/${f.id}`,
       `/#/log/${recipe.id}`,
-      `/#/log-meal/${day}/Eaten/${meal.id}`,
       `/#/entry/${e.id}`,
       `/#/food/${f.id}`,
       `/#/recipe/${recipe.id}`,
@@ -3131,9 +3108,7 @@ test("Recent shows 8, and a gram item's amount shows once", async ({
     );
   }
   await page.goto("/#/foods");
-  const recent = page.locator(".finder-section", {
-    has: page.getByRole("heading", { name: "Recent" }),
-  });
+  const recent = await openFold(page, "Recent");
   await expect(recent.locator("li")).toHaveCount(8);
 
   const stew = await (
@@ -3151,4 +3126,229 @@ test("Recent shows 8, and a gram item's amount shows once", async ({
   const weights = page.locator(".items .item .weight");
   await expect(weights.nth(0)).toHaveText("");
   await expect(weights.nth(1)).toHaveText("160 g");
+});
+
+// A log starts from the amount last logged of the food.
+test("a log starts from the last amount, or its grams once the serving is gone", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { day, tag } = unique(1193, testInfo);
+  const pid = await ownProfile(page, request, `Last ${tag}`);
+  const bread = await food(request, {
+    name: `Bread ${tag}`,
+    per100: { energy: 250 },
+    servings: [
+      { label: "Slab", grams: 100 },
+      { label: "Slice", grams: 40 },
+    ],
+  });
+  await entry(
+    request,
+    { day, group: "Eaten", food_id: bread.id, serving: "Slice", quantity: 2 },
+    pid,
+  );
+  await page.goto(`/#/log/${day}/Eaten/${bread.id}`);
+  await expect(page.getByLabel("Quantity")).toHaveValue("2");
+  await expect(page.getByLabel("Unit").locator("option:checked")).toHaveText(
+    /^Slice/u,
+  );
+
+  const res = await request.put(`/api/foods/${bread.id}`, {
+    data: { ...bread, servings: [{ label: "Slab", grams: 100 }] },
+  });
+  expect(res.ok()).toBeTruthy();
+  await page.reload();
+  await expect(page.getByLabel("Quantity")).toHaveValue("80");
+  await expect(page.getByLabel("Unit").locator("option:checked")).toHaveText(
+    "g",
+  );
+});
+
+// What a profile eats: Porridge at 07:30 on the three days before today.
+async function porridgeDays(page, request, tag) {
+  const pid = await ownProfile(page, request, `Suggest ${tag}`);
+  const today = await fixedToday(page);
+  const porridge = await food(request, {
+    name: `Porridge ${tag}`,
+    per100: { energy: 70 },
+  });
+  for (const back of [1, 2, 3])
+    await entry(
+      request,
+      {
+        day: new Date(Date.parse(today) - back * 864e5)
+          .toISOString()
+          .slice(0, 10),
+        group: "Eaten",
+        food_id: porridge.id,
+        grams: 300,
+        time: "07:30",
+      },
+      pid,
+    );
+  return { pid, today, porridge };
+}
+
+const suggestions = (page) =>
+  page.locator(".finder-section", {
+    has: page.getByRole("heading", { name: "Suggestions" }),
+  });
+
+test('the foods tab opens on suggestions, why only behind "?", the rest folded as last left', async ({
+  page,
+  request,
+}, testInfo) => {
+  const { tag } = unique(1194, testInfo);
+  await porridgeDays(page, request, tag);
+  await page.goto("/#/foods");
+  await expect(
+    suggestions(page).getByRole("link", { name: starts(`Porridge ${tag}`) }),
+  ).not.toContainText("You had it yesterday");
+  await expect(
+    page.locator(".finder-results > :is(section, details)").first(),
+  ).toHaveClass(/finder-section/u);
+  await expect(page.locator(".finder-fold > summary")).toHaveText([
+    "Favourites (0)",
+    "Recent (1)",
+    /^Your recipes \(\d+\)$/u,
+    /^Your foods \(\d+\)$/u,
+  ]);
+  await expect(page.locator(".finder-fold[open]")).toHaveCount(0);
+
+  await openFold(page, "Recent");
+  await page.reload();
+  await expect(fold(page, "Recent")).toHaveAttribute("open", "");
+  await expect(page.locator(".finder-fold[open]")).toHaveCount(1);
+});
+
+test("a suggestion says why, and + logs its last amount with Undo", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { tag } = unique(1195, testInfo);
+  const { pid, today, porridge } = await porridgeDays(page, request, tag);
+  const eaten = async () =>
+    (
+      await (await request.get(`/api/profiles/${pid}/day/${today}`)).json()
+    ).groups.find((g) => g.name === "Eaten").entries;
+  await page.goto("/#/foods");
+  await page.getByRole("button", { name: `Why Porridge ${tag}?` }).click();
+  const why = page.getByRole("dialog", { name: `Why Porridge ${tag}?` });
+  await expect(why.getByRole("listitem")).toHaveText([
+    "You had it yesterday",
+    "Often your first food",
+  ]);
+  await why.getByRole("button", { name: "Close" }).click();
+  await expect(why).toHaveCount(0);
+
+  await page
+    .getByRole("button", { name: `Add Porridge ${tag} as last time` })
+    .click();
+  await expect(page).toHaveURL(new RegExp(`#/day/${today}$`, "u"));
+  await expect(page.locator("#toast")).toContainText(
+    `Added Porridge ${tag} to Eaten`,
+  );
+  const [logged] = await eaten();
+  expect([logged.food_id, logged.grams]).toEqual([porridge.id, 300]);
+  expect(logged.time).toMatch(/^\d{2}:\d{2}$/u);
+  await page.locator("#toast").getByRole("button", { name: "Undo" }).click();
+  await expect.poll(eaten).toEqual([]);
+});
+
+test('"Not today" and "Never suggest" hide a suggestion with Undo; Profile lists the never suggested', async ({
+  page,
+  request,
+}, testInfo) => {
+  const { tag } = unique(1221, testInfo);
+  const { pid } = await porridgeDays(page, request, tag);
+  const name = `Porridge ${tag}`;
+  const row = suggestions(page).getByRole("link", { name: starts(name) });
+  const hidden = async () =>
+    (
+      await (
+        await request.get(`/api/profiles/${pid}/suggestions/hidden`)
+      ).json()
+    ).map((f) => f.name);
+  const undo = page.locator("#toast").getByRole("button", { name: "Undo" });
+  await page.goto("/#/foods");
+
+  for (const [action, toast, never] of [
+    ["Not today", `Won't suggest ${name} today`, []],
+    ["Never suggest", `Won't suggest ${name}`, [name]],
+  ]) {
+    await page.getByRole("button", { name: `Why ${name}?` }).click();
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: action })
+      .click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.locator("#toast")).toContainText(toast);
+    await expect(row).toHaveCount(0);
+    expect(await hidden()).toEqual(never);
+    await undo.click();
+    await expect(row).toBeVisible();
+    expect(await hidden()).toEqual([]);
+  }
+
+  await page.getByRole("button", { name: `Why ${name}?` }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Never suggest" })
+    .click();
+  await expect(row).toHaveCount(0);
+  await page.goto("/#/profile");
+  const list = page.getByRole("list", { name: "Hidden suggestions" });
+  await expect(list.getByRole("listitem")).toHaveText([name]);
+  await list.getByRole("button", { name: `Suggest ${name} again` }).click();
+  await expect(page.locator("#toast")).toContainText(
+    `Suggesting ${name} again`,
+  );
+  await expect(list).toHaveCount(0);
+  expect(await hidden()).toEqual([]);
+  await undo.click();
+  await expect(list.getByRole("listitem")).toHaveText([name]);
+  expect(await hidden()).toEqual([name]);
+});
+
+test("failed suggestions leave the rest of the Add screen", async ({
+  page,
+}, testInfo) => {
+  const { day } = unique(1218, testInfo);
+  await page.route("**/foods/suggestions?*", (route) =>
+    route.fulfill({ status: 500, json: { error: "Boom" } }),
+  );
+  await page.goto(`/#/add/${day}/Eaten`);
+  await expect(
+    page.getByRole("searchbox", { name: "Search foods" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: starts("Water") }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: starts("One-off item") }),
+  ).toBeVisible();
+});
+
+test("without suggestions, the first list with anything opens", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { day, tag } = unique(1196, testInfo);
+  const pid = await ownProfile(page, request, `Empty ${tag}`);
+  const liked = await food(request, { name: `Liked ${tag}` });
+  await request.post(`/api/profiles/${pid}/foods/favorites`, {
+    data: { food_id: liked.id },
+  });
+  await page.goto(`/#/add/${day}/Eaten`);
+  await expect(fold(page, "Favourites")).toHaveAttribute("open", "");
+  await expect(fold(page, "Recent")).not.toHaveAttribute("open", "");
+  await expect(page.getByRole("heading", { name: "Suggestions" })).toHaveCount(
+    0,
+  );
+  await expect(
+    fold(page, "Favourites").getByRole("button", {
+      name: starts(`Liked ${tag}`),
+    }),
+  ).toBeVisible();
 });

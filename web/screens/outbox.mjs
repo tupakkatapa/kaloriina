@@ -5,8 +5,8 @@ import { flush, profileId } from "../api.mjs";
 import { dateTimeAt } from "../dates.mjs";
 import { go, href, leaving } from "../nav.mjs";
 import {
-  ATTEMPTS_MAX,
   items,
+  MAX_ATTEMPTS,
   next,
   remove,
   retry,
@@ -58,19 +58,19 @@ function row(item) {
       ),
     }),
     // Failed on server errors only (not a refusal): it may go through now.
-    item.failed && item.attempts >= ATTEMPTS_MAX
+    item.failed && item.attempts >= MAX_ATTEMPTS
       ? h(
           "button",
           {
             type: "button",
             class: "button",
-            "aria-label": `Try again ${item.label}`,
+            "aria-label": `Retry ${item.label}`,
             onclick: busy(async () => {
               retry(item.key);
               await flush();
             }),
           },
-          "Try again",
+          "Retry",
         )
       : null,
     h(

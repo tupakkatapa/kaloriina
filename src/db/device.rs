@@ -1,19 +1,17 @@
 //! Health Connect device data: days and the device's raw
 //! workouts, replaced a window at a time; the activities promoted from them
-//! (`sync_workouts`); and the sync's status row in `sync_state`.
+//! (`device_sessions`); and the sync's status row in `sync_state`.
 
-use super::derived::{days_between, distance_derive, nights_derive, resting_derive, shift};
-use super::health_record::{BMR, raw_prune};
+use super::device_sessions::{import_workouts, synced_workout_list};
 use super::prelude::*;
-use super::scale::{health_readings_delete, health_readings_replace};
-use super::sync_workouts::{import_workouts, promote, refresh_synced, synced_workout_list};
+use super::scale::health_readings_delete;
 use jiff::Timestamp;
 
 use crate::model::{
     ActivitySource, DayResting, DeviceDay, DeviceDays, DeviceSession, GOOGLE_HEALTH,
-    HEALTH_CONNECT, HealthCounts, HealthPost, HealthResult, HealthStatus, IMPORT_KEY_PREFIX,
-    ImportCounts, ImportedWorkout, NAPS_MAX, Nap, NapIn, NapInput, NapSource, Provenance, Resting,
-    ShownDay, SleepStage, StageSource, awake_tail_cut, span_minutes,
+    HEALTH_CONNECT, HealthStatus, IMPORT_KEY_PREFIX, ImportCounts, ImportedWorkout, NAPS_MAX, Nap,
+    NapIn, NapInput, NapSource, Provenance, Resting, ShownDay, SleepStage, StageSource,
+    awake_tail_cut, span_minutes,
 };
 
 pub fn health_status(conn: &Connection, pid: ProfileId) -> Result<HealthStatus, Error> {
@@ -68,9 +66,18 @@ pub(super) const DAY_COLUMNS: &[&str] = &[
     "light_min",
     "sleep_avg_hr",
 ];
-const SPLIT: (&[&str], &[&str]) = DAY_COLUMNS.split_at(12);
-pub(super) const DAY_VALUE_COLS: &[&str] = SPLIT.0.split_at(1).1;
+const SPLIT: (&[&str], &[&str]) = DAY_COLUMNS.split_at(column(DAY_COLUMNS, "in_bed_min"));
+pub(super) const DAY_VALUE_COLS: &[&str] = SPLIT.0.split_at(column(SPLIT.0, "active_kcal")).1;
 pub(super) const NIGHT_COLS: &[&str] = SPLIT.1;
+
+/// Where `name` is in `cols`; not there fails the build.
+const fn column(cols: &[&str], name: &str) -> usize {
+    let mut i = 0;
+    while !cols[i].eq_ignore_ascii_case(name) {
+        i += 1;
+    }
+    i
+}
 
 /// [`DAY_COLUMNS`] as SQL.
 fn day_cols() -> String {
@@ -78,7 +85,7 @@ fn day_cols() -> String {
 }
 
 /// A day's values in [`DAY_COLUMNS`]' order.
-fn day_values(d: &DeviceDay) -> [&dyn rusqlite::ToSql; 20] {
+fn day_values(d: &DeviceDay) -> [&dyn rusqlite::ToSql; DAY_COLUMNS.len()] {
     [
         &d.day,
         &d.active_kcal,
@@ -243,15 +250,7 @@ fn shown_naps(all: Vec<Nap>) -> Vec<Nap> {
             shown.push(n);
         }
         covered.extend(kept);
-        covered.sort_unstable();
-        let mut merged: Vec<(Timestamp, Timestamp)> = Vec::with_capacity(covered.len());
-        for (start, end) in covered {
-            match merged.last_mut() {
-                Some(last) if start <= last.1 => last.1 = last.1.max(end),
-                _ => merged.push((start, end)),
-            }
-        }
-        covered = merged;
+        covered = crate::model::sleep::merged(covered);
     }
     shown.sort_by(|a, b| (&a.day, &a.start_at).cmp(&(&b.day, &b.start_at)));
     shown
@@ -447,81 +446,6 @@ fn nap_row(r: &Row) -> rusqlite::Result<Nap> {
     })
 }
 
-/// Apply one sync in one transaction: the window's days and raw workouts
-/// are replaced by the POST's (a workout whose day moved goes too, by its
-/// key); its nights, naps, stage spans and resting energy are made from the
-/// raw records kept (the phone posts its pages first); the
-/// window's device sessions follow; every candidate is claimed or promoted;
-/// and the status row records it (beside its pages' outcome).
-pub fn device_replace(
-    conn: &mut Connection,
-    pid: ProfileId,
-    post: &HealthPost,
-    now: i64,
-    tz: &TimeZone,
-) -> Result<HealthCounts, Error> {
-    let tx = write(conn)?;
-    let window = params![pid, post.from, post.to];
-    tx.execute(
-        "DELETE FROM device_day WHERE profile_id = ? AND day BETWEEN ? AND ?",
-        window,
-    )?;
-    tx.execute(
-        "DELETE FROM device_session WHERE profile_id = ? AND day BETWEEN ? AND ?",
-        window,
-    )?;
-    device_insert(&tx, pid, &post.days, &post.sessions)?;
-    // A night's sessions may start the day before; resting is the day's own.
-    let before = shift(&post.from, -1).unwrap_or_else(|| post.from.clone());
-    for (kind, kept) in &post.read {
-        let from = if kind == BMR { &post.from } else { &before };
-        raw_prune(&tx, pid, kind, (from, &post.to), kept)?;
-    }
-    let days = days_between(&post.from, &post.to);
-    nights_derive(&tx, pid, &days, tz)?;
-    resting_derive(&tx, pid, &days)?;
-    distance_derive(&tx, pid, &days)?;
-    let nights: i64 = tx.query_row(
-        "SELECT count(*) FROM device_day
-         WHERE profile_id = ? AND day BETWEEN ? AND ? AND in_bed_min IS NOT NULL",
-        window,
-        |r| r.get(0),
-    )?;
-    health_readings_replace(&tx, pid, &post.from, &post.to, &post.body, now, tz)?;
-    let status = health_status(&tx, pid)?;
-    let previous_device = status.last_result.and_then(|r| r.device);
-    refresh_synced(
-        &tx,
-        pid,
-        &post.from,
-        &post.to,
-        post.device == previous_device,
-    )?;
-    promote(&tx, pid, status.workouts)?;
-    let counts = HealthCounts {
-        days: post.days.len() as u64,
-        sessions: post.sessions.len() as u64,
-        nights: u64::try_from(nights).unwrap_or(0),
-        skipped: post.skipped,
-    };
-    let result = HealthResult {
-        counts,
-        from: post.from.clone(),
-        to: post.to.clone(),
-        device: post.device.clone(),
-        previous_device,
-    };
-    tx.execute(
-        // The records outcome stays this sync's; the next page starts over.
-        "INSERT INTO sync_state (profile_id, source, last_seen, last_result) VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT (profile_id, source) DO UPDATE SET last_seen = ?3, last_result = ?4,
-             records_result = json_set(records_result, '$.closed', json('true'))",
-        params![pid, HEALTH_CONNECT, now, json(&result)],
-    )?;
-    tx.commit()?;
-    Ok(counts)
-}
-
 /// What shows of `pid`'s days in `[from, to]` (either end open), oldest
 /// first: each value the device's, else the import's; the night the
 /// device's when it has one, else the import's.
@@ -546,7 +470,7 @@ fn shown_days(
 
 /// Fill the profile's gaps from an export, in one transaction. Its days
 /// are kept as the import's own (`import_day`, merged per column:
-/// [`import_insert`]), and show wherever the device has nothing; a night
+/// [`google_days_put`]), and show wherever the device has nothing; a night
 /// imported again replaces its spans; naps beyond [`NAPS_MAX`] a day are
 /// skipped; workouts are added unless already there ([`import_workouts`]).
 /// Running it again changes nothing. Days counts those whose shown values
@@ -570,7 +494,7 @@ pub fn device_fill(
             .collect(),
         None => BTreeMap::new(),
     };
-    import_insert(&tx, pid, days)?;
+    google_days_put(&tx, pid, days)?;
     let nights: BTreeSet<&str> = days
         .iter()
         .filter(|d| d.in_bed_min.is_some())
@@ -618,7 +542,7 @@ pub fn device_fill(
 /// import: each value a later export has replaces the stored one, one it
 /// lacks is kept (a Takeout in parts, the browser's batches); the night is
 /// one group: the same night merges the same way, another one replaces it.
-pub(super) fn import_insert(
+pub(super) fn google_days_put(
     tx: &Connection,
     pid: ProfileId,
     days: &[DeviceDay],
@@ -648,7 +572,7 @@ pub(super) fn import_insert(
 }
 
 /// `pid`'s imported days, oldest first (exported as the import's own).
-pub(super) fn import_list(conn: &Connection, pid: ProfileId) -> Result<Vec<DeviceDay>, Error> {
+pub(super) fn google_days_list(conn: &Connection, pid: ProfileId) -> Result<Vec<DeviceDay>, Error> {
     Ok(conn
         .prepare_cached(&format!(
             "SELECT {} FROM import_day WHERE profile_id = ? ORDER BY day",

@@ -18,7 +18,7 @@ pub enum Conflict {
     ExerciseInUse,
     /// A session or plan used the workout, so it can't go: archive it.
     WorkoutInUse,
-    /// Something uses the food (an entry, recipe, meal, daily item or a
+    /// Something uses the food (an entry, recipe, daily item or a
     /// profile's water), so it can't go: archive it.
     FoodInUse,
     /// Base-set exercises are reference data: make your own to change one.
@@ -99,6 +99,10 @@ pub enum Error {
     Upstream(String),
     #[error("database schema v{found} is newer than this binary (v{supported}); upgrade kaloriina")]
     SchemaTooNew { found: u32, supported: usize },
+    #[error(
+        "database schema v{found} is older than this binary (v{supported}); start `kaloriina serve` on it once to upgrade it"
+    )]
+    SchemaTooOld { found: u32, supported: usize },
     /// A migration failed, or would leave rows pointing at missing ones;
     /// nothing was changed. Names the migration or the rows.
     #[error("{0}")]

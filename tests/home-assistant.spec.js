@@ -67,6 +67,19 @@ test("Connections sets the Home Assistant hook, tests it and removes it", async 
   await card.getByLabel("Home Assistant URL").fill("ftp://ha.lan");
   await card.getByRole("button", { name: "Save" }).click();
   await expect(card.getByRole("status")).toContainText("http://");
+  const address = card.getByLabel("Home Assistant URL");
+  await expect(address).toHaveAttribute("aria-invalid", "true");
+  await expect(address).toBeFocused();
+  // A new address needs its id again: the error moves to that field.
+  await address.fill("http://ha.lan");
+  await card.getByRole("button", { name: "Save" }).click();
+  await expect(card.getByRole("status")).toContainText("Webhook ID");
+  await expect(address).not.toHaveAttribute("aria-invalid", /.*/u);
+  await expect(card.getByLabel("Webhook ID")).toHaveAttribute(
+    "aria-invalid",
+    "true",
+  );
+  await expect(card.getByLabel("Webhook ID")).toBeFocused();
 
   await card.getByRole("button", { name: "Remove" }).click();
   expect(await answer(page, "Remove")).toBe("Remove the Home Assistant hook?");

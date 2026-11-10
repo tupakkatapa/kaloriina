@@ -119,31 +119,22 @@ public final class Batch {
         String name = title == null ? "" : title.toString().strip();
         int method = recordingMethod >= 0 && recordingMethod <= 3 ? recordingMethod : 0;
         sessions.add(
-                "{\"key\":"
-                        + Payload.quoted(key)
-                        + ",\"day\":"
-                        + Payload.quoted(day.toString())
-                        + ",\"start_at\":"
-                        + Payload.quoted(start.toString())
-                        + ",\"end_at\":"
-                        + Payload.quoted(end.toString())
-                        + ",\"type\":"
-                        + type
-                        + ",\"name\":"
-                        + Payload.quoted(name.isEmpty() ? Payload.typeName(type) : name)
-                        + ",\"kcal\":"
-                        + kcal
-                        + ",\"kcal_total\":"
-                        + kcalTotal
-                        + ",\"distance_m\":"
-                        + Payload.within(distanceM, 0, 1_000_000)
-                        + ",\"recording_method\":"
-                        + method
-                        + ",\"avg_hr\":"
-                        + (hr == null ? null : hr.avg())
-                        + ",\"max_hr\":"
-                        + (hr == null ? null : hr.max())
-                        + "}");
+                new Payload.Json()
+                        .begin()
+                        .put("key", key)
+                        .put("day", day)
+                        .put("start_at", start)
+                        .put("end_at", end)
+                        .put("type", type)
+                        .put("name", name.isEmpty() ? Payload.typeName(type) : name)
+                        .put("kcal", kcal)
+                        .put("kcal_total", kcalTotal)
+                        .put("distance_m", Payload.within(distanceM, 0, 1_000_000))
+                        .put("recording_method", method)
+                        .put("avg_hr", hr == null ? null : hr.avg())
+                        .put("max_hr", hr == null ? null : hr.max())
+                        .end()
+                        .toString());
     }
 
     /** A weighing; its day in the zone must be in the window to be sent. */

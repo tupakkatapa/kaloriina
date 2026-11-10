@@ -10,7 +10,9 @@
 //! the one it passes.
 
 use crate::model::{Sex, Target};
-use crate::nutrients::{IU_PER_UG, KCAL_PER_G_CARBS, KCAL_PER_G_FAT, KCAL_PER_G_PROTEIN};
+use crate::nutrients::{
+    IU_PER_UG, KCAL_PER_G_CARBS, KCAL_PER_G_FAT, KCAL_PER_G_PROTEIN, KJ_PER_KCAL,
+};
 
 /// What the recommendations depend on.
 #[derive(Debug, Clone, Copy)]
@@ -20,7 +22,7 @@ pub struct Person {
     pub weight_kg: f64,
 }
 
-const KCAL_PER_MJ: f64 = 239.006;
+const KCAL_PER_MJ: f64 = 1000.0 / KJ_PER_KCAL;
 
 /// Grams of a macronutrient that supply `share` of `kcal`.
 fn grams_of(share: f64, kcal: f64, kcal_per_g: f64) -> f64 {

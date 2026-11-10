@@ -16,9 +16,7 @@ final class Store implements Payload.Store {
     private static final String LAST_ERROR = "last_error";
     private static final String NOTE = "note";
     private static final String RESYNC_NEXT = "resync_next";
-
-    /** The key a run's end writes ({@link #ended}). */
-    static final String RUN_ENDED = "run_ended";
+    private static final String THEME = "theme";
 
     private final SharedPreferences prefs;
 
@@ -118,9 +116,13 @@ final class Store implements Payload.Store {
         prefs.edit().putString(RESYNC_NEXT, day).apply();
     }
 
-    /** A sync run that wasn't stopped ended at {@code at}: what a pull to refresh waits for. */
-    void ended(long at) {
-        prefs.edit().putLong(RUN_ENDED, at).apply();
+    /** The page's last theme ({@link Payload#theme}), for the next cold start; null before one. */
+    String theme() {
+        return prefs.getString(THEME, null);
+    }
+
+    void theme(String query) {
+        prefs.edit().putString(THEME, query).apply();
     }
 
     /** Call {@code listener} on the main thread whenever the status changes. */

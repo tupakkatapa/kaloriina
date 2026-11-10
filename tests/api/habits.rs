@@ -40,7 +40,7 @@ async fn trackers_follow_the_contract() {
         snus,
         json!({ "id": snus["id"], "name": "Snus", "unit": "pouches", "goal_value": null,
                 "goal_dir": "at_most",
-                "archived": false, "rev": 1 })
+                "archived": false, "rev": 1, "days": 0 })
     );
     let uri = format!("{HABITS}/{}", snus["id"]);
 
@@ -235,6 +235,15 @@ async fn day_counts_are_idempotent_totals() {
         Some(json!({ "amount": 999 })),
     )
     .await;
+    // Each tracker counts its logged days.
+    let (_, list) = call(&app, "GET", HABITS, None).await;
+    let days: Vec<_> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| &h["days"])
+        .collect();
+    assert_eq!(days, [&json!(2), &json!(1)], "{list}");
 
     // Out of range amounts and days are refused.
     for (day, body, field) in [
@@ -634,6 +643,53 @@ async fn caffeine_is_known_by_its_drinks_not_energy() {
     // A cola without its caffeine: 200 of 700 g drunk known, a floor.
     assert_eq!(caffeine("2026-10-05")["amount"], 80.0);
     assert_eq!(caffeine("2026-10-05")["known"], false);
+}
+
+/// A day not fully logged (a one-off item without kcal): every
+/// built-in's amount stands, as unknown.
+#[tokio::test]
+async fn a_day_not_fully_logged_leaves_its_builtins_unknown() {
+    let app = app();
+    let coffee = food_of(
+        &app,
+        "Coffee",
+        Value::Null,
+        json!({ "energy": 2, "caffeine": 40, "water": 99 }),
+    )
+    .await;
+    log_entry_on(&app, DAY, "Eaten", coffee, 400.0).await;
+    log_entry_on(&app, "2026-10-05", "Eaten", coffee, 400.0).await;
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/profiles/1/entries",
+        Some(json!({ "day": DAY, "group": "Eaten", "name": "Not fully logged" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let uri = format!("{HABITS}/days?from=2026-10-05&to={DAY}");
+    let (_, days) = call(&app, "GET", &uri, None).await;
+    let rows = |day: &str| -> Vec<Value> {
+        days.as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["day"] == day && r.get("habit").is_some())
+            .cloned()
+            .collect()
+    };
+    assert!(!rows(DAY).is_empty(), "{days}");
+    assert!(rows(DAY).iter().all(|r| r["known"] == false), "{days}");
+    let caffeine = |day: &str| {
+        rows(day)
+            .into_iter()
+            .find(|r| r["habit"] == "caffeine")
+            .unwrap()
+    };
+    assert_eq!(
+        (&caffeine(DAY)["amount"], &caffeine(DAY)["known"]),
+        (&json!(160.0), &json!(false))
+    );
+    assert_eq!(caffeine("2026-10-05")["known"], true);
 }
 
 /// One coverage model for the built-ins. A day of pizza

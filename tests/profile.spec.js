@@ -144,7 +144,7 @@ test("deleting a profile asks first", async ({ page, request }, testInfo) => {
   expect((await request.get(`/api/profiles/${id}`)).status()).toBe(404);
 });
 
-test("targets show each macro's share of the energy target, the rest on energy's row (U3-3)", async ({
+test("targets show each macro's share of the energy target, the rest on energy's row", async ({
   page,
 }) => {
   await page.route("**/api/profiles/*/targets", (route) =>
@@ -508,7 +508,7 @@ test("every goal lives on Targets", async ({ page, request }, testInfo) => {
   await expect(
     page.getByRole("link", { name: starts(`Export Goals ${tag}`) }),
   ).toContainText(
-    "Everything in this profile: Diary, Body, habits, activities and targets",
+    "Diary, Body, habits, activities and targets; photos and the Home Assistant hook stay here",
   );
   await page.getByRole("link", { name: /^Targets/u }).click();
   await expect(page.getByRole("heading", { name: "Targets" })).toBeVisible();
@@ -598,17 +598,19 @@ test("Targets' habit rows read as the habits do and line up at 320 px", async ({
   expect(xs).toHaveLength(1);
 });
 
-// The page's own colours and its form controls' (`color-scheme`).
+// The page's own colours, its form controls' (`color-scheme`) and the
+// system bars' (`theme-color`).
 const colours = (page) =>
   page.evaluate(() => {
     const css = getComputedStyle(document.documentElement);
     return {
       bg: css.getPropertyValue("--bg").trim(),
       scheme: css.colorScheme,
+      bars: document.querySelector('meta[name="theme-color"]')?.content ?? null,
     };
   });
-const LIGHT = { bg: "#f5f5f2", scheme: "light" };
-const DARK = { bg: "#121211", scheme: "dark" };
+const LIGHT = { bg: "#f5f5f2", scheme: "light", bars: "#f5f5f2" };
+const DARK = { bg: "#121211", scheme: "dark", bars: "#121211" };
 const theme = (page, name) =>
   page
     .getByRole("radiogroup", { name: "Theme" })
@@ -661,7 +663,7 @@ test("AMOLED is dark on black, from the first paint", async ({
   await page.emulateMedia({ colorScheme: "light" });
   await page.goto("/#/profile");
   await theme(page, "AMOLED");
-  const AMOLED = { bg: "#000000", scheme: "dark" };
+  const AMOLED = { bg: "#000000", scheme: "dark", bars: "#000000" };
   await expect.poll(() => colours(page)).toEqual(AMOLED);
 
   await page.reload();
@@ -695,6 +697,47 @@ test("a light theme overrides a dark system's; System follows it", async ({
   await expect.poll(() => colours(page)).toEqual(DARK);
   await page.emulateMedia({ colorScheme: "light" });
   await expect.poll(() => colours(page)).toEqual(LIGHT);
+});
+
+test.describe("in the Android app", () => {
+  test.use({ userAgent: "Mozilla/5.0 (Linux; Android 15) KaloriinaAndroid/1" });
+
+  // The app's WebView takes `kaloriina-app://` addresses itself, so the page
+  // never leaves (MainActivity's shouldOverrideUrlLoading): here, each is
+  // kept in `asked`.
+  test("a theme change tells the app the system bars' colours", async ({
+    page,
+    request,
+  }, testInfo) => {
+    const { tag } = unique(1263, testInfo);
+    await ownProfile(page, request, `Bars ${tag}`);
+    await page.addInitScript(() => {
+      window.asked = [];
+      navigation.addEventListener("navigate", (e) => {
+        if (!e.destination.url.startsWith("kaloriina-app:")) return;
+        window.asked.push(e.destination.url);
+        e.preventDefault();
+      });
+    });
+    await page.emulateMedia({ colorScheme: "light" });
+    await page.goto("/#/profile");
+    await expect.poll(() => colours(page)).toEqual(LIGHT);
+    const asked = () => page.evaluate(() => window.asked);
+    // The app reads the first paint's itself, once the page has loaded.
+    expect(await asked()).toEqual([]);
+
+    await theme(page, "AMOLED");
+    await theme(page, "Light");
+    await theme(page, "System");
+    await page.emulateMedia({ colorScheme: "dark" });
+    await expect
+      .poll(asked)
+      .toEqual([
+        "kaloriina-app://theme?bg=000000&dark=1",
+        "kaloriina-app://theme?bg=f5f5f2&dark=0",
+        "kaloriina-app://theme?bg=121211&dark=1",
+      ]);
+  });
 });
 
 test("Targets: bedtime as a clock, and needed energy for a goal weight by a date, offered not set", async ({

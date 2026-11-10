@@ -11,7 +11,8 @@ use jiff::{Timestamp, ToSpan};
 use serde_json::{Map, Value};
 
 use super::prelude::*;
-use super::{ActivityType, RecordsResult, checked_uid, sneaky};
+use super::sleep::tail_start;
+use super::{ActivityType, RecordsResult, checked_uid, day_minute, hh_mm, label};
 
 /// The `sync_state` source of the companion's status row.
 pub const HEALTH_CONNECT: &str = "health_connect";
@@ -78,18 +79,6 @@ pub struct DeviceDay {
     pub distance_m: Option<i64>,
 }
 
-/// "HH:MM", 00:00–23:59.
-fn is_clock(s: &str) -> bool {
-    let b = s.as_bytes();
-    b.len() == 5
-        && b[2] == b':'
-        && s[..2].parse::<u8>().is_ok_and(|h| h < 24)
-        && s[3..].parse::<u8>().is_ok_and(|m| m < 60)
-        && b.iter()
-            .enumerate()
-            .all(|(i, c)| i == 2 || c.is_ascii_digit())
-}
-
 impl DeviceDay {
     /// The day with every value out of bounds dropped (a bad sleep field
     /// drops the night, the stages go with it), and whether any was.
@@ -126,8 +115,8 @@ impl DeviceDay {
             && self
                 .asleep_min
                 .is_some_and(|a| (0..=self.in_bed_min.unwrap_or(0)).contains(&a))
-            && self.bedtime.as_deref().is_some_and(is_clock)
-            && self.wake_time.as_deref().is_some_and(is_clock);
+            && self.bedtime.as_deref().and_then(day_minute).is_some()
+            && self.wake_time.as_deref().and_then(day_minute).is_some();
         if !whole && night.contains(&true) {
             dropped = true;
             (self.in_bed_min, self.asleep_min) = (None, None);
@@ -325,6 +314,46 @@ pub struct ShownDay {
     pub total_asleep_min: Option<i64>,
     pub naps: usize,
     pub nap_in_bed_min: i64,
+}
+
+/// A best among the device days: the day and its value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DayBest {
+    pub day: String,
+    pub value: i64,
+}
+
+/// The best step day, the longest night (`asleep_min`) and the most sleep
+/// in a day (the naps' time asleep added: `total_asleep_min`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct DayRecords {
+    pub steps: Option<DayBest>,
+    pub night: Option<DayBest>,
+    pub sleep: Option<DayBest>,
+}
+
+impl DayRecords {
+    /// Among `days` (oldest first): a later day wins a tie, a record being
+    /// when you last reached it.
+    #[must_use]
+    pub fn of(days: &[ShownDay]) -> Self {
+        let best = |value: fn(&ShownDay) -> Option<i64>| {
+            days.iter()
+                .filter_map(|d| Some((value(d)?, d)))
+                .fold(None::<DayBest>, |b, (v, d)| match b {
+                    Some(b) if b.value > v => Some(b),
+                    _ => Some(DayBest {
+                        day: d.day.day.clone(),
+                        value: v,
+                    }),
+                })
+        };
+        Self {
+            steps: best(|d| d.day.steps),
+            night: best(|d| d.day.asleep_min),
+            sleep: best(|d| d.total_asleep_min),
+        }
+    }
 }
 
 text_enum! {
@@ -535,13 +564,12 @@ pub fn awake_tail_cut(day: &mut DeviceDay, stages: &mut Vec<SleepStage>) {
     ) else {
         return;
     };
-    let mut cut = last;
-    while let Some(&(a, _, _)) = spans
+    let awake: Vec<_> = spans
         .iter()
-        .find(|&&(a, b, awake)| awake && a > first && a < cut && b >= cut)
-    {
-        cut = a;
-    }
+        .filter(|s| s.2)
+        .map(|&(a, b, _)| (a, b))
+        .collect();
+    let cut = tail_start((first, last), &awake);
     let tail = (last.as_second() - cut.as_second() + 30).div_euclid(60);
     if tail == 0 {
         return;
@@ -556,11 +584,10 @@ pub fn awake_tail_cut(day: &mut DeviceDay, stages: &mut Vec<SleepStage>) {
         *in_bed = (*in_bed - tail).max(day.asleep_min.unwrap_or(0));
     }
     if let Some(wake) = day.wake_time.as_mut()
-        && let Some((h, m)) = wake.split_once(':')
-        && let (Ok(h), Ok(m)) = (h.parse::<i64>(), m.parse::<i64>())
+        && let Some(at) = day_minute(wake)
     {
-        let at = (h * 60 + m - tail).rem_euclid(1440);
-        *wake = format!("{:02}:{:02}", at / 60, at % 60);
+        let at = (at - tail).rem_euclid(1440);
+        *wake = hh_mm(at);
     }
 }
 
@@ -748,15 +775,6 @@ fn day_field(obj: &Map<String, Value>, field: &str) -> Result<Date, Error> {
         .filter(|d| is_date(d))
         .and_then(|d| d.parse().ok())
         .ok_or_else(|| Error::invalid_field(field, format!("{field} must be YYYY-MM-DD")))
-}
-
-/// A label as text: control characters dropped, trimmed, at most `max`
-/// characters; `None` when nothing is left.
-fn label(s: &str, max: usize) -> Option<String> {
-    let s: String = s.chars().filter(|c| !sneaky(*c)).collect();
-    let s: String = s.trim().chars().take(max).collect();
-    let s = s.trim_end();
-    (!s.is_empty()).then(|| s.to_owned())
 }
 
 /// A Health Connect record id: 1–128 of `[A-Za-z0-9-]`.
@@ -1045,6 +1063,47 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn day_records_are_the_best_step_day_and_the_longest_sleep() {
+        let shown = |day: &str, steps, asleep_min, total_asleep_min| ShownDay {
+            day: DeviceDay {
+                day: day.to_owned(),
+                steps,
+                asleep_min,
+                ..DeviceDay::default()
+            },
+            total_asleep_min,
+            naps: 0,
+            nap_in_bed_min: 0,
+        };
+        let best = |day: &str, value| {
+            Some(DayBest {
+                day: day.to_owned(),
+                value,
+            })
+        };
+        let mut days = vec![
+            shown("2026-09-01", Some(9000), Some(480), Some(480)),
+            shown("2026-09-02", Some(15_000), None, None),
+            // A shorter night with a 90-minute nap is the most sleep.
+            shown("2026-09-03", None, Some(420), Some(510)),
+        ];
+        // The longest night is the night alone, never one lengthened by
+        // naps; the most sleep in a day adds them.
+        assert_eq!(
+            DayRecords::of(&days),
+            DayRecords {
+                steps: best("2026-09-02", 15_000),
+                night: best("2026-09-01", 480),
+                sleep: best("2026-09-03", 510),
+            }
+        );
+        // Later days win ties.
+        days.push(shown("2026-09-04", None, Some(480), None));
+        assert_eq!(DayRecords::of(&days).night, best("2026-09-04", 480));
+        assert_eq!(DayRecords::of(&[]), DayRecords::default());
+    }
+
     fn far() -> Date {
         jiff::civil::date(2100, 1, 1)
     }
@@ -1095,6 +1154,19 @@ mod tests {
         let (was, spans) = (day.clone(), stages.clone());
         awake_tail_cut(&mut day, &mut stages);
         assert_eq!((day, stages), (was, spans));
+        // A wake time that isn't one is left, not moved.
+        let mut day = DeviceDay {
+            wake_time: Some("25:00".to_owned()),
+            ..DeviceDay::default()
+        };
+        awake_tail_cut(
+            &mut day,
+            &mut vec![
+                span("2026-10-12T01:00:00Z", "2026-10-12T07:00:00Z", Light),
+                span("2026-10-12T07:00:00Z", "2026-10-12T08:00:00Z", Awake),
+            ],
+        );
+        assert_eq!(day.wake_time.as_deref(), Some("25:00"));
     }
 
     #[test]

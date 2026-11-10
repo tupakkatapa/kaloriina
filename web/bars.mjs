@@ -34,7 +34,7 @@ export function barStatus(
   { average = false } = {},
 ) {
   const goal = target.value;
-  const hint = shown.hint ? capitalized(shown.hint) : "Not known";
+  const hint = coverageWords(shown);
   if (judge(total, target) === "over") {
     const by = fmtUnit(key, total - target.max);
     const what = target.max > goal ? "the range" : "target";
@@ -69,26 +69,47 @@ function countdown(key, target, eaten, total, lower, average) {
   return `${now} · ${amount(value - total)} after planned`;
 }
 
+// An amount's coverage in words: "At least: only 45 % of the day's food
+// has a value for it"; "Not known" with nothing behind it.
+const coverageWords = (shown) =>
+  shown.hint
+    ? `At least: only ${shown.hint.replace(/^from /u, "")} has a value for it`
+    : "Not known";
+
 // A nutrient without a target: the amount eaten over an empty track, so
-// rows line up; under it "No target", or why the amount isn't known.
-const untargeted = (label, amount, shown, { compact, blank }) =>
-  h(
+// rows line up, the track's tip as a bar's when only some of the food
+// carried it; under it "No target", or why the amount isn't known.
+function untargeted(n, label, amount, eaten, shown, { compact, blank }) {
+  const status = shown.judged ? "No target" : coverageWords(shown);
+  const done =
+    shown.text === "–"
+      ? "not known"
+      : `${shown.lower ? "at least " : ""}${fmtNum(n.show(eaten ?? 0))} ${n.unit}`;
+  const track = h("div", {
+    class: "bar unfilled",
+    role: "img",
+    "aria-label": `${n.label}: ${done}, no target${shown.hint ? `, ${shown.hint}` : ""}`,
+  });
+  const tip = shown.hint
+    ? barTip(
+        track,
+        [
+          shown.text === "–" ? null : `Eaten ${shown.text}`,
+          coverageWords(shown),
+        ],
+        compact,
+        () => status,
+      )
+    : null;
+  return h(
     "div",
-    { class: "target" },
+    { class: tip ? "target tip-host" : "target" },
     h("div", { class: "target-label" }, h("span", {}, label), amount()),
-    h("div", { class: "bar unfilled", "aria-hidden": "true" }),
-    compact || blank
-      ? null
-      : h(
-          "small",
-          {},
-          shown.judged
-            ? "No target"
-            : shown.hint
-              ? capitalized(shown.hint)
-              : "Not known",
-        ),
+    track,
+    tip,
+    compact || blank ? null : h("small", {}, status),
   );
+}
 
 // A bar's words to a screen reader: eaten (or not known) of the goal, what
 // planned adds, and the amount's coverage.
@@ -142,7 +163,9 @@ const segmentWords = (key, eaten, total, shown, { planned, floor }) => [
 // A bar's tip of `lines` and, `compact`, the status line (`status()`) it
 // leaves out; its track then focusable. Null without any.
 function barTip(track, lines, compact, status) {
-  const words = [...lines, compact ? status() : null].filter(Boolean);
+  const words = [
+    ...new Set([...lines, compact ? status() : null].filter(Boolean)),
+  ];
   if (words.length === 0) return null;
   track.tabIndex = 0;
   return tipFor(
@@ -157,11 +180,11 @@ function barTip(track, lines, compact, status) {
 // where the nutrient came from). `compact` (a grid of them) leaves the
 // status line out: it stays in the bar's tip. `share` is how much of the
 // food behind `eaten` carried the nutrient (coverage, ADR 0030; `of` names
-// that food, "the day's" on any day): partial, the amount reads "≥"
-// and only what its floor proves is said (barStatus); none, "–" over an
-// empty track. `lower` forces "≥" (energy with some unknown). `blank` (a
-// day with nothing logged) says nothing under its track: nothing is
-// unknown about nothing.
+// that food, "the day's" on any day): partial, a floor, under KNOWN read
+// "≥", and only what it proves is said (barStatus); the tip says the
+// share. None, "–" over an empty track. `lower` forces "≥" (energy with
+// some unknown). `blank` (a day with nothing logged) says nothing under
+// its track: nothing is unknown about nothing.
 export function bar(
   key,
   target,
@@ -180,15 +203,16 @@ export function bar(
   const n = nutrient(key);
   const label = href ? h("a", { href }, n.label) : n.label;
   const shown = amountShown(key, eaten, share, { of, lower });
-  // The amount, its coverage on hover and to a screen reader.
+  // The amount, its coverage to a screen reader.
   const amount = (suffix = "") =>
     h(
       "span",
-      { title: shown.hint },
+      {},
       `${shown.text}${suffix}`,
       shown.hint ? h("span", { class: "sr-only" }, ` (${shown.hint})`) : null,
     );
-  if (!target) return untargeted(label, amount, shown, { compact, blank });
+  if (!target)
+    return untargeted(n, label, amount, eaten, shown, { compact, blank });
   const goal = target.value;
   // Nothing carried it: an empty track, as without a target.
   const unknown = shown.text === "–";
@@ -216,11 +240,14 @@ export function bar(
     },
     ...segments(key, target, eaten, total, shown, { planned, floor }),
   );
-  // The bar's tip: its segments' amounts, and the status line a compact
-  // bar leaves out.
+  // The bar's tip: its segments' amounts, the amount's coverage, and the
+  // status line a compact bar leaves out.
   const tip = barTip(
     track,
-    segmentWords(key, eaten, total, shown, { planned, floor }),
+    [
+      ...segmentWords(key, eaten, total, shown, { planned, floor }),
+      shown.hint ? coverageWords(shown) : null,
+    ],
     compact,
     status,
   );

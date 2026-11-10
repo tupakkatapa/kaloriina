@@ -1,7 +1,7 @@
 // One view of an amount of a food or recipe: logging it (`#/log`) and its
 // logged entry (`#/entry`) are the same screen, one column at every width.
 // They differ only in the line under the name, the entry's Group switch
-// and buttons (Delete, Log again, Save; to log: Copy food or recipe, Add to
+// and buttons (Delete, Log again, Log again today, Save; to log: Copy food or recipe, Add to
 // Eaten / Planned).
 
 import { expect, test } from "@playwright/test";
@@ -27,7 +27,15 @@ const outline = (page) =>
     );
 
 const LOG = ["Copy food", "Copy recipe", "Add to Eaten", "Add to Planned"];
-const ENTRY = ["Group", "Planned", "Eaten", "Delete", "Log again", "Save"];
+const ENTRY = [
+  "Group",
+  "Planned",
+  "Eaten",
+  "Delete",
+  "Log again",
+  "Log again today",
+  "Save",
+];
 const without = (list, drop) => list.filter((x) => !drop.includes(x));
 
 // Both screens of `id` logged as `e`: the same outline but for their own

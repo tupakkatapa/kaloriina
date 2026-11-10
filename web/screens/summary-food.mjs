@@ -1,10 +1,10 @@
-// Summary → Food: one chart, its tabs energy (eaten against burned and the
-// target) and each macro, the period's daily averages as the Diary's
-// nutrient card, a calendar of the days against a key target, and the
-// energy balance: what was eaten, burned and the gap a day, burned in its
-// parts.
+// Summary → Food: the energy balance (what was eaten, burned and the gap a
+// day, burned in its parts), one chart, its tabs energy (eaten against
+// burned and the target) and each macro, the period's daily averages as
+// the Diary's nutrient card, and a calendar of the days against a key
+// target.
 
-import { currentProfile, get, scoped } from "../api.mjs";
+import { currentProfile, get, meta, scoped } from "../api.mjs";
 import { bar, nutrientCard } from "../bars.mjs";
 import { calendarView } from "../calendar.mjs";
 import { cellAmount, quartiles } from "../calendar-grid.mjs";
@@ -13,16 +13,35 @@ import { coverage } from "../coverage.mjs";
 import { daysIn, pretty, shift, tileThrough, today } from "../dates.mjs";
 import {
   BURNED_FROM,
+  goalPaceText,
   maintenanceFrom,
   maintenanceText,
 } from "../energy-text.mjs";
 import { shade, standing, tally, verdictWords } from "../food-calendar.mjs";
-import { fmt, isNil, lower, NBSP, noun, plural, whole } from "../format.mjs";
-import { compare, periodWords, prepare, seriesOf } from "../insights.mjs";
+import {
+  fmt,
+  isNil,
+  lower,
+  NBSP,
+  noun,
+  pct,
+  plural,
+  whole,
+} from "../format.mjs";
+import {
+  compare,
+  gated,
+  periodWords,
+  prepare,
+  seriesOf,
+} from "../insights.mjs";
 import { href } from "../nav.mjs";
 import { goodSourceMin, nutrientWarnings } from "../nutrient-warnings.mjs";
+import { VERDICT_TONE } from "../nutrition-panel.mjs";
 import {
+  atLeastShown,
   carbsFloor,
+  countedDay,
   dailyMean,
   fmtUnit,
   foodDay,
@@ -36,6 +55,7 @@ import {
   appOf,
   bucketOf,
   energyPartly,
+  plan as energyPlan,
   energySeries,
   estimateKcal,
   gapOf,
@@ -44,8 +64,8 @@ import {
   maintenance as maintenanceOver,
   periodNumbers,
 } from "../series.mjs";
-import { choice, fill, h } from "../ui.mjs";
 import { tiles } from "../tiles.mjs";
+import { choice, fill, h } from "../ui.mjs";
 import { seriesChart } from "./summary-charts.mjs";
 import { highlightStack } from "./summary-highlights.mjs";
 
@@ -129,19 +149,39 @@ function foodCharts(p, days, targets, burned) {
 
 // The period's food and the period before's (for the Highlights), read
 // from the shared rows (web/series.mjs: one union fetch), maintenance at
-// the period's last day over (the balance's note), and the nutrient
-// warnings, which start as soon as the period's food is in.
+// the period's last day over (the balance's note), the nutrient
+// warnings, which start as soon as the period's food is in, and the
+// goal's pace (Targets' plan: a period holding today, with a goal weight
+// and a goal date still ahead).
 export async function load(p, sharing) {
   const shared = await sharing;
   const summarised = (from, to) =>
     shared.rows("days", from, to).then((days) => ({ days }));
   const data = await summarised(p.from, p.to);
-  const [before, warnings, maintenance] = await Promise.all([
+  const profile = currentProfile();
+  const goal = {
+    goalWeight: shared.targets.goal_weight?.value ?? null,
+    goalDate: profile?.goal_date ?? null,
+    today: today(),
+  };
+  const paced =
+    !isNil(goal.goalWeight) &&
+    goal.goalDate > goal.today &&
+    p.from <= goal.today &&
+    goal.today <= p.to;
+  const [before, warnings, maintenance, plan] = await Promise.all([
     summarised(p.before.from, p.before.to),
     foodWarnings(p, data, shared.targets),
     maintenanceOver({ from: p.through, to: p.through }, shared),
+    paced ? energyPlan(profile, shared.targets) : null,
   ]);
-  return { data, before, warnings, maintenance: maintenance.at(-1) ?? null };
+  return {
+    data,
+    before,
+    warnings,
+    maintenance: maintenance.at(-1) ?? null,
+    pace: plan && goalPaceText({ plan, ...goal }),
+  };
 }
 
 // The warnings shown at most: those that may reach the Highlights.
@@ -187,9 +227,10 @@ async function foodWarnings(p, all, targets) {
 }
 
 // `/summary`'s food days through `end` and their mean of each key
-// (dailyMean: the warnings' too): a water-only day is no food day.
+// (dailyMean: the warnings' too): a water-only day is no food day, one not
+// fully logged isn't counted.
 function through(data, end) {
-  const days = data.days.filter((d) => d.day <= end && foodDay(d));
+  const days = data.days.filter((d) => d.day <= end && countedDay(d));
   const keys = new Set(days.flatMap((d) => Object.keys(d.total)));
   const average = carbsFloor(
     Object.fromEntries([...keys].map((k) => [k, dailyMean(days, k)])),
@@ -205,7 +246,7 @@ const partlyOf = (d, key) =>
 // Food days as web/insights.mjs reads them: each key target a series over
 // the food days, with the days that are floors (`partly`).
 const foodSeries = (days) => {
-  const eaten = days.filter((x) => foodDay(x));
+  const eaten = days.filter((x) => countedDay(x));
   return Object.fromEntries(
     calendarMetrics().map(([key, label]) => [
       key,
@@ -246,7 +287,7 @@ const insightsContext = (p, data, before, shared, warnings) => ({
 
 export function render(
   p,
-  { data: all, before, warnings, maintenance },
+  { data: all, before, warnings, maintenance, pace },
   shared,
 ) {
   // The averages' days: through yesterday in a running period.
@@ -273,6 +314,9 @@ export function render(
   };
   pick(picked());
   return [
+    energyBalance(numbers, maintenance),
+    pace ? h("p", { class: "muted goal-pace" }, pace) : null,
+    foodQuality(prepare(ctx), data.days, before.days),
     slot,
     charts || calendar
       ? choice({
@@ -298,7 +342,6 @@ export function render(
             : "Nothing logged in this period.",
         ),
     calendar?.node,
-    energyBalance(numbers, maintenance),
   ];
 }
 
@@ -332,6 +375,80 @@ function dailyAverages(p, data, byMetric, sourcesOf) {
       ),
       tracked: (key) => carried(key) || Boolean(byMetric[key]),
     }),
+  );
+}
+
+// The ratings in order, and Healthy's change from the period before worth
+// a line, in points.
+const RATINGS = ["healthy", "ok", "unhealthy", "unrated"];
+const POINTS_BAR = 5;
+
+// A rating as the labels name it.
+const ratingName = (k) =>
+  k === "unrated"
+    ? "Not rated"
+    : (meta.labels?.find((l) => l.key === k)?.text ?? k);
+
+// Each rating's share of the energy over `days` (`/summary` days'
+// `ratings`), or null without any.
+function ratingShares(days) {
+  const by = Object.fromEntries(
+    RATINGS.map((k) => [
+      k,
+      days.reduce((t, d) => t + (d.ratings?.[k] ?? 0), 0),
+    ]),
+  );
+  const all = RATINGS.reduce((t, k) => t + by[k], 0);
+  return all > 0
+    ? Object.fromEntries(RATINGS.map((k) => [k, by[k] / all]))
+    : null;
+}
+
+// Food quality: the energy eaten over the counted food days (`days`,
+// through yesterday in a running period) by its foods' rating, one stacked
+// bar and its shares; and Healthy's change in points from the period
+// before's (`before`), past the Highlights' gate (`gated`, the prepared
+// `c`'s energy series) and POINTS_BAR.
+function foodQuality(c, days, before) {
+  const now = ratingShares(days);
+  if (!now) return null;
+  const was =
+    c && gated(c, c.series.energy, c.prev?.energy)
+      ? ratingShares(
+          before.filter((d) => d.day <= c.before.through && countedDay(d)),
+        )
+      : null;
+  const points = was && Math.round((now.healthy - was.healthy) * 100);
+  const share = (k) => pct(Math.round(now[k] * 100));
+  return h(
+    "div",
+    { class: "energy-split food-quality" },
+    h(
+      "div",
+      {
+        class: "bar split-bar quality-bar",
+        role: "img",
+        "aria-label": `Energy by rating: ${RATINGS.map((k) => `${ratingName(k)} ${share(k)}`).join(", ")}`,
+      },
+      RATINGS.map((k) =>
+        h("span", {
+          class: VERDICT_TONE[k] ?? "l-unknown",
+          style: { flexBasis: `${now[k] * 100}%` },
+        }),
+      ),
+    ),
+    h(
+      "p",
+      { class: "note muted" },
+      [
+        ...RATINGS.map((k) => `${ratingName(k)} ${share(k)}`),
+        Math.abs(points) >= POINTS_BAR
+          ? `${ratingName("healthy")} ${points > 0 ? "+" : "−"}${Math.abs(points)} points vs ${c.noun}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(" · "),
+    ),
   );
 }
 
@@ -457,9 +574,11 @@ function foodCalendar(p, days, byMetric, ctx) {
   const end = tileThrough(p.from, p.to, ctx.last);
   // A water-only day is no food day: nothing logged here.
   const eaten = days.filter((x) => foodDay(x));
-  const counted = eaten.filter((d) => d.day <= end);
-  // Today's still being logged: its amount shows, unjudged.
-  const done = (day) => day <= end;
+  const counted = eaten.filter((d) => d.day <= end && countedDay(d));
+  const partial = new Set(eaten.filter((d) => d.incomplete).map((d) => d.day));
+  // Today's still being logged, a day not fully logged never all of it:
+  // its amount shows, unjudged.
+  const done = (day) => day <= end && !partial.has(day);
   const prepared = prepare(ctx);
   const node = h("section", { class: "finder-section food-calendar stack" });
   const paint = (key) => {
@@ -467,13 +586,17 @@ function foodCalendar(p, days, byMetric, ctx) {
     const target = byMetric[key];
     const judged = !isNil(target?.value);
     const amounts = new Map(eaten.map((d) => [d.day, d.total[key] ?? 0]));
-    // A day leaving some of `key` out is a floor, "≥" as the Diary's
-    // (partlyOf), judged only as far as it proves.
+    // A day leaving some of `key` out is a floor (partlyOf), judged only
+    // as far as it proves; "≥" as the Diary's.
     const byDay = new Map(eaten.map((d) => [d.day, d]));
     const partly = new Set(
       eaten.filter((d) => partlyOf(d, key)).map((d) => d.day),
     );
-    const atLeast = (day) => (partly.has(day) ? `≥${NBSP}` : "");
+    const floorShown = (day) =>
+      key === "energy"
+        ? partly.has(day)
+        : atLeastShown(coverage([byDay.get(day)], key));
+    const atLeast = (day) => (floorShown(day) ? `≥${NBSP}` : "");
     const bounds = quartiles(counted.map((d) => d.total[key] ?? 0));
     const of = (day) => amounts.get(day) ?? 0;
     const t = tally(
@@ -504,6 +627,8 @@ function foodCalendar(p, days, byMetric, ctx) {
         if (!amounts.has(day)) return `${pretty(day)}: nothing logged`;
         const amount = of(day);
         const shown = `${atLeast(day)}${fmtUnit(key, amount)}`;
+        if (partial.has(day))
+          return `${pretty(day)}: ${shown}, not fully logged`;
         if (!done(day)) return `${pretty(day)}: ${shown} so far`;
         const verdict = verdictWords(amount, target, {
           floor: partly.has(day),

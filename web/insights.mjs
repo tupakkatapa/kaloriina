@@ -17,8 +17,9 @@
 // margin}.
 
 import { bh, mannWhitney, pairDays, Q } from "./correlate.mjs";
-import { daysIn, duration, shift, weekday } from "./dates.mjs";
-import { fmt, fmtNum, isNil, NBSP, noun, plural } from "./format.mjs";
+import { daysIn, duration, pretty, shift, weekday } from "./dates.mjs";
+import { standing } from "./food-calendar.mjs";
+import { fmt, fmtNum, isNil, NBSP, plural } from "./format.mjs";
 import {
   bmiClass,
   bodyFatTrend,
@@ -146,12 +147,22 @@ const enough = (s, days) =>
 // the previous period, when both windows clear the comparison gate: enough
 // samples and coverage, a finished week, a previous mean above 0. `c` is
 // prepared.
-export function compare(c, name) {
-  const a = c?.series[name];
-  const b = c?.prev?.[name];
-  if (!a || !b) return null;
-  if (c.kind === "week" && !c.finished) return null;
-  if (!enough(a, c.days) || !enough(b, c.before.days)) return null;
+export const compare = (c, name) =>
+  compareSeries(c, c?.series[name], c?.prev?.[name]);
+
+// Whether series `a` (the period's, clipped) and `b` (the period before's)
+// of the prepared `c` compare: enough samples and coverage each side, a
+// finished week, never across the start of a device's sync (`deviceFrom`).
+export const gated = (c, a, b) =>
+  Boolean(a && b && c?.before) &&
+  !(c.kind === "week" && !c.finished) &&
+  !(c.deviceFrom && c.deviceFrom > c.before.from) &&
+  enough(a, c.days) &&
+  enough(b, c.before.days);
+
+// `compare` of series `a` against `b`, past `gated`.
+function compareSeries(c, a, b) {
+  if (!gated(c, a, b)) return null;
   const now = mean(valuesOf(a));
   const then = mean(valuesOf(b));
   if (!(then > 0)) return null;
@@ -284,6 +295,25 @@ const energyWeekday = (c) => {
 
 // Whether a series' mean is a floor: any of its days leaves some out.
 const floored = (s) => s.samples.some((d) => s.partly?.has(d));
+
+// A tile's change from the period before, past `compare`'s gate (a floor
+// compares with nothing): its mean's relative change past MEAN_BAR, "+8 %
+// vs the month before", or its difference past an absolute `bar` in
+// `say`'s words, "+12 min vs …"; else null. `a` and `b` are series over
+// the prepared `c`'s period and the one before.
+export function versusBefore(c, a, b, { bar = null, say = null } = {}) {
+  if (!c?.before || !a || !b) return null;
+  const now = clip(a, c.from, c.through);
+  const was = clip(b, c.before.from, c.before.through);
+  const r = compareSeries(c, now, was);
+  if (!r || floored(now) || floored(was)) return null;
+  const diff = r.now - r.was;
+  const by =
+    bar === null ? Math.abs(r.change) / MEAN_BAR : Math.abs(diff) / bar;
+  if (by < 1) return null;
+  const amount = bar === null ? wholePct(r.change) : say(Math.abs(diff));
+  return `${diff > 0 ? "+" : "−"}${amount} vs ${c.noun}`;
+}
 
 // Protein up 12 % · 31 vs 30 days · from the month before: the series
 // named in `list`, each as its label, over its days (`sampled`: "known"
@@ -569,24 +599,15 @@ const alcoholStress = (c) => {
 // The first `k` days of `s`.
 const first = (s, k) => s.samples.toSorted().slice(0, k);
 
-// Whether activityChange compares `c`'s periods: both counted, a week
-// only once over. Device activities arriving mid-comparison are no change
-// in activity: only periods the sync covered from their start compare.
-const comparable = (c) =>
-  Boolean(c.series.activities && c.prev?.activities) &&
-  (c.kind !== "week" || c.finished) &&
-  !(c.deviceFrom && c.deviceFrom > c.before.from);
-
-// More activities · 2 more than the month before (finished, equal
-// lengths), "… than at this point the month before" (running: the first N
-// days of each, N clamped to the previous period's length), "0.5 more a
-// week …" (finished, unequal lengths).
-const activityChange = (c) => {
-  if (!comparable(c)) return null;
-  const a = c.series.activities;
-  const b = c.prev.activities;
+// The Activities tile's change: "+2 vs the month before" (finished, equal
+// lengths), "+2 vs this point the month before" (running: the first N days
+// of each, N clamped to the previous period's length), "+0.5 a week vs …"
+// (finished, unequal lengths); null under COUNT_BAR (PER_WEEK_BAR a week).
+export const activitiesVersus = (c) => {
+  const a = c?.series.activities;
+  const b = c?.prev?.activities;
+  if (!gated(c, a, b)) return null;
   const n = min(c.days, c.before.days);
-  if (n < MIN_SAMPLES) return null;
   const perWeek = c.finished && c.days !== c.before.days;
   const now = sum(valuesOf(a, perWeek ? a.samples : first(a, n)));
   const then = sum(valuesOf(b, perWeek ? b.samples : first(b, n)));
@@ -594,21 +615,8 @@ const activityChange = (c) => {
   const diff = perWeek
     ? (now * 7) / c.days - (then * 7) / c.before.days
     : now - then;
-  const bar = perWeek ? PER_WEEK_BAR : COUNT_BAR;
-  if (Math.abs(diff) < bar) return null;
-  // The word follows the number shown: 1.046 a week is "1 more activity".
-  const amount = Math.abs(diff);
-  return {
-    id: "change:activities",
-    tone: "fact",
-    headline: `${diff > 0 ? "More" : "Fewer"} activities`,
-    numbers: `${fmt(amount, 1)} ${diff > 0 ? "more" : "fewer"} ${noun(amount, "activity", "activities", 1)}${perWeek ? " a week" : ""} than ${c.finished ? "" : "at this point "}${c.noun} · ${c.when}`,
-    detail: perWeek
-      ? `${fmt((now * 7) / c.days, 1)} vs ${fmt((then * 7) / c.before.days, 1)} a week over ${plural(c.days, "day")} vs ${plural(c.before.days, "day")}.`
-      : `${fmt(now)} vs ${fmt(then)} over the first ${plural(n, "day")} of each.`,
-    margin: Math.abs(diff) / bar,
-    link: { to: "activities" },
-  };
+  if (Math.abs(diff) < (perWeek ? PER_WEEK_BAR : COUNT_BAR)) return null;
+  return `${diff > 0 ? "+" : "−"}${fmt(Math.abs(diff), 1)}${perWeek ? " a week" : ""} vs ${c.finished ? "" : "this point "}${c.noun}`;
 };
 
 // Most active Mon, Thu · 1.8× your daily average.
@@ -691,6 +699,86 @@ const hydrationLow = (c) => {
   };
 };
 
+// ---------------------------------------------------------------- wins
+
+// On target: ON_TARGET_RECENT of the last ON_TARGET_LAST food days while a
+// period runs, ON_TARGET_SHARE of a finished one's (MIN_SAMPLES or more);
+// a logging streak from STREAK_BAR days.
+const ON_TARGET_LAST = 7;
+const ON_TARGET_RECENT = 5;
+const ON_TARGET_SHARE = 0.7;
+const STREAK_BAR = 7;
+
+// Energy on target · 24 of 30 food days: a day on target as far as it is
+// proven (food-calendar.mjs standing: a floor day only when it proves it).
+const onTarget = (key) => (c) => {
+  const s = c.series[key];
+  const target = c.targets?.[key];
+  if (!s || isNil(target?.value)) return null;
+  const all = s.samples.toSorted();
+  const list = c.finished ? all : all.slice(-ON_TARGET_LAST);
+  if (list.length < (c.finished ? MIN_SAMPLES : ON_TARGET_LAST)) return null;
+  const on = list.filter(
+    (d) => standing(s.values.get(d) ?? 0, target, s.partly?.has(d)) === "on",
+  ).length;
+  const bar = c.finished ? ON_TARGET_SHARE * list.length : ON_TARGET_RECENT;
+  if (on < bar) return null;
+  return {
+    id: `win:target:${key}`,
+    tone: "win",
+    headline: `${s.label} on target`,
+    numbers: `${on} of ${c.finished ? "" : "the last "}${plural(list.length, "food day")} · ${c.when}`,
+    detail: `Days whose ${s.label.toLowerCase()} landed in your target, ${c.finished ? `of the food days logged; ${wholePct(ON_TARGET_SHARE)} is the bar` : `of your last ${ON_TARGET_LAST} food days; ${ON_TARGET_RECENT} is the bar`}. A day logged without all of it counts only where it proves it.`,
+    margin: on / bar,
+  };
+};
+
+// Logging streak · 12 days in a row · to Sep 14: the food days
+// logged in full back from yesterday (`c.last`), in a period holding it;
+// "≥" when it runs back to the first day loaded (the period before's).
+const loggingStreak = (c) => {
+  const s = c.series.energy;
+  if (!s || c.through !== c.last) return null;
+  const was = c.prev?.energy;
+  const logged = new Set([...s.samples, ...(was?.samples ?? [])]);
+  const start = was ? c.before.from : c.from;
+  let day = c.last;
+  let n = 0;
+  while (logged.has(day)) {
+    n += 1;
+    day = shift(day, -1);
+  }
+  if (n < STREAK_BAR) return null;
+  return {
+    id: "win:streak",
+    tone: "win",
+    headline: "Logging streak",
+    numbers: `${day < start ? `≥${NBSP}` : ""}${plural(n, "day")} in a row · to ${pretty(c.last, false)}`,
+    detail: `Days in a row with your food logged in full, up to yesterday; ${plural(STREAK_BAR, "day")} is the bar.`,
+    margin: n / STREAK_BAR,
+  };
+};
+
+// New best: Bench press · 80 kg × 5 · Sep 20: the latest of the records
+// (`c.bests` [{what, value, day}], as Records counts them: the latest day
+// to reach a best holds it) set in the period.
+const newBest = (c) => {
+  const set = (c.bests ?? [])
+    .filter((b) => b.day >= c.from && b.day <= c.through)
+    .toSorted((a, b) => (a.day < b.day ? 1 : a.day > b.day ? -1 : 0));
+  if (set.length === 0) return null;
+  const [best, ...more] = set;
+  return {
+    id: "win:best",
+    tone: "win",
+    headline: `New best: ${best.what}`,
+    numbers: `${best.value} · ${pretty(best.day, false)}`,
+    detail: `Your best yet, as Records counts it: the latest day to reach a best holds it.${more.length > 0 ? ` Also ${c.when}: ${more.map((b) => b.what).join(", ")}.` : ""}`,
+    margin: set.length,
+    link: { to: "records" },
+  };
+};
+
 // ----------------------------------------------------- food (ADR 0030)
 
 // Low and high nutrients and the vitamin D tip (web/nutrient-warnings.mjs),
@@ -708,6 +796,9 @@ export const RULES = {
     stepsEnergy,
     sleepEnergy,
     foodWarnings,
+    onTarget("energy"),
+    onTarget("protein"),
+    loggingStreak,
   ],
   body: [
     sleepCheckIn("mood"),
@@ -718,7 +809,7 @@ export const RULES = {
     bodyFatTrend,
   ],
   activity: [
-    activityChange,
+    newBest,
     activityWeekday,
     activityGap,
     activitySleep,
@@ -739,7 +830,7 @@ export const RULES = {
 
 // The tones in the order a stack reads them: what needs acting on first,
 // a plain fact last.
-const TONE_ORDER = ["warning", "tip", "correlation", "fact"];
+const TONE_ORDER = ["warning", "win", "tip", "correlation", "fact"];
 
 // By tone (TONE_ORDER), then the strongest (margins capped), ties in rule
 // order; `max` of them.
@@ -752,6 +843,18 @@ export const rank = (list, max = Infinity) =>
         b.margin - a.margin,
     )
     .slice(0, max);
+
+// `list` (ranked) with its strongest win among the first `shown` (ui.mjs
+// highlightList's): when one qualifies, it takes the last place shown.
+export function withWin(list, shown = 3) {
+  const i = list.findIndex((r) => r.tone === "win");
+  if (i < shown) return list;
+  return [
+    ...list.slice(0, shown - 1),
+    list[i],
+    ...list.slice(shown - 1).filter((r) => r !== list[i]),
+  ];
+}
 
 // A card's pair of series (`x`, `y`, read `lag` days apart) either way
 // round, or null. A built-in habit's series is its food series

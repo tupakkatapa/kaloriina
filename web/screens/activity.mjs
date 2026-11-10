@@ -3,8 +3,9 @@
 // and the way into the exercise library, with each exercise's page and
 // editor.
 
-import { activitySheet } from "../activity-sheet.mjs";
-import { api, createId, get, meta, scoped } from "../api.mjs";
+import { activitySheet, startLink } from "../activity-sheet.mjs";
+import { saveOnce } from "../actions.mjs";
+import { api, get, meta, offlineOr, scoped } from "../api.mjs";
 import { duration, pretty, today, weekStart } from "../dates.mjs";
 import { activeKcalText, activeMark } from "../energy-text.mjs";
 import { activeOf } from "../expenditure.mjs";
@@ -20,6 +21,7 @@ import {
   RECENT,
   recentRows,
   resultRow,
+  section,
   workoutEnergy,
 } from "../rows.mjs";
 import {
@@ -102,15 +104,6 @@ function facetPanel(onChange) {
   return { toggle, panel, paint, keep, active: () => chosen().length > 0 };
 }
 
-// A titled list.
-const section = (title, rows, none) =>
-  h(
-    "section",
-    { class: "finder-section" },
-    h("h2", {}, title),
-    rows.length > 0 ? h("ul", { class: "results card" }, rows) : empty(none),
-  );
-
 // A row of a list that opens `to`.
 const linkRow = (to, name) => resultRow({ href: to, name });
 
@@ -159,13 +152,38 @@ const workoutRow = (w, lib) =>
       .join(" · "),
   });
 
+// "Pull day · last done Mon, Nov 9 · Start": the workout to start again
+// when no run waits, today's planned one first, else the last done before
+// today (the lower id on a tie); null when there's none with steps.
+function startAgain(workouts, plans) {
+  const runnable = workouts.filter((w) => !w.archived && w.steps?.length);
+  const planned = plans
+    .map((p) => runnable.find((w) => w.id === p.workout_id))
+    .find(Boolean);
+  const [last] = runnable
+    .filter((w) => w.last_done && w.last_done < today())
+    .toSorted((a, b) => b.last_done.localeCompare(a.last_done) || a.id - b.id);
+  const w = planned ?? last;
+  if (!w) return null;
+  return h(
+    "p",
+    { class: "run-banner start-again" },
+    h(
+      "span",
+      {},
+      `${w.name} · ${planned ? "planned today" : `last done ${pretty(w.last_done)}`}`,
+    ),
+    startLink(w),
+  );
+}
+
 // The Activity tab: "Log an activity" in its header, this week in a line,
 // the device's activities waiting for Add or Dismiss (any day), the latest
-// RECENT activities (then All activities), your workouts (a run in progress, when each was
-// last done), then the exercise library and records, and archived
-// workouts.
+// RECENT activities (then All activities), your workouts (a run in progress,
+// else one to start again; when each was last done), then the exercise
+// library and records, and archived workouts.
 export async function activityTab() {
-  const [workouts, exercises, activities, latest, waiting, run] =
+  const [workouts, exercises, activities, latest, waiting, run, plans] =
     await Promise.all([
       get(scoped("/workouts")),
       get("/exercises"),
@@ -173,6 +191,7 @@ export async function activityTab() {
       get(scoped(`/activities?limit=${RECENT + 1}`)),
       get(scoped("/sync/health/workouts")),
       runBanner(),
+      get(scoped(`/plans?from=${today()}&to=${today()}`)).catch(offlineOr([])),
       loadResting(),
     ]);
   const lib = library(exercises);
@@ -190,17 +209,14 @@ export async function activityTab() {
     "section",
     {},
     titleBar("Activity", null, plus),
-    run,
+    run ?? startAgain(workouts, plans),
     h("p", { class: "week" }, weekLine(activities)),
-    waiting.length > 0
-      ? section(
-          `Waiting from Health Connect (${waiting.length})`,
-          waiting.map((p) =>
-            pendingRow(p, () => go(location.hash), { withDay: true }),
-          ),
-          "",
-        )
-      : null,
+    section(
+      `Waiting from Health Connect (${waiting.length})`,
+      waiting.map((p) =>
+        pendingRow(p, () => go(location.hash), { withDay: true }),
+      ),
+    ),
     section(
       "Activities",
       recentRows(
@@ -211,10 +227,8 @@ export async function activityTab() {
       ).filter(Boolean),
       "Nothing logged yet.",
     ),
-    h(
-      "section",
-      { class: "finder-section" },
-      h("h2", {}, "Workouts"),
+    section(
+      "Workouts",
       h(
         "ul",
         { class: "results card workouts" },
@@ -225,28 +239,21 @@ export async function activityTab() {
         }),
       ),
     ),
+    section("Exercises", [
+      menuRow({
+        href: href.exercises(),
+        name: `Exercise library · ${lib.roots.length}`,
+      }),
+      menuRow({
+        href: href.records(),
+        name: "Records",
+        detail: "Your bests: exercises, activities, steps and sleep",
+      }),
+    ]),
     section(
-      "Exercises",
-      [
-        menuRow({
-          href: href.exercises(),
-          name: `Exercise library · ${lib.roots.length}`,
-        }),
-        menuRow({
-          href: href.records(),
-          name: "Records",
-          detail: "Your bests: exercises, activities, steps and sleep",
-        }),
-      ],
-      "",
+      "Archived workouts",
+      workouts.filter((w) => w.archived).map((w) => workoutRow(w, lib)),
     ),
-    workouts.some((w) => w.archived)
-      ? section(
-          "Archived workouts",
-          workouts.filter((w) => w.archived).map((w) => workoutRow(w, lib)),
-          "",
-        )
-      : null,
   );
 }
 
@@ -340,13 +347,10 @@ export async function exerciseView(id) {
       { class: "traits" },
       rows.map(([k, v]) => [h("dt", {}, k), h("dd", {}, v)]),
     ),
-    family.length > 0
-      ? section(
-          "Variants",
-          family.map((v) => linkRow(href.exercise(v.id), v.name)),
-          "",
-        )
-      : null,
+    section(
+      "Variants",
+      family.map((v) => linkRow(href.exercise(v.id), v.name)),
+    ),
     h(
       "section",
       { class: "finder-section" },
@@ -393,15 +397,10 @@ export async function exerciseView(id) {
             "None yet: they come from workouts you finish or log, or a set you log here.",
           ),
     ),
-    usedIn.length > 0
-      ? section(
-          "Used in",
-          usedIn.map((w) =>
-            linkRow(href.workout(w.id, href.exercise(id)), w.name),
-          ),
-          "",
-        )
-      : null,
+    section(
+      "Used in",
+      usedIn.map((w) => linkRow(href.workout(w.id, href.exercise(id)), w.name)),
+    ),
   );
 }
 
@@ -481,11 +480,7 @@ export async function exerciseEditor(id) {
   const sides = pick("laterality", exercise.laterality);
   const load = pick("load", exercise.load);
   const back = isNew ? href.exercises() : href.exercise(id);
-  // A create carries its key: sent again after a lost answer it
-  // answers the exercise saved the first time, which then takes what the
-  // form holds now.
-  const key = createId();
-  let sent = false;
+  const send = saveOnce("/exercises");
   let form = null;
   const { node, form: f } = editor({
     title: isNew ? "New exercise" : exercise.name,
@@ -509,7 +504,7 @@ export async function exerciseEditor(id) {
         ),
       ),
     ],
-    save: async () => {
+    save: () => {
       const data = new FormData(form);
       const body = {
         name: name.value,
@@ -521,18 +516,7 @@ export async function exerciseEditor(id) {
         if (x.many) body[x.key] = data.getAll(x.key);
         else body[x.key] = data.get(x.key) || null;
       }
-      if (!isNew) return api("PUT", `/exercises/${id}`, body);
-      const again = sent;
-      sent = true;
-      let made = await api("POST", "/exercises", { ...body, uid: key.get() });
-      if (again)
-        made = await api("PUT", `/exercises/${made.id}`, {
-          ...body,
-          rev: made.rev,
-        });
-      key.done();
-      sent = false;
-      return made;
+      return send(body, isNew ? null : id);
     },
     after: (saved) => href.exercise(saved.id),
     remove: isNew

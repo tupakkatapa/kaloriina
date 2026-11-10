@@ -450,7 +450,7 @@ async fn insight_prefs_hide_pin_and_clear() {
         );
     }
     let (status, e) = call(&app, "PUT", &uri("x"), Some(json!({ "state": "starred" }))).await;
-    assert!(status.is_client_error(), "{e}");
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{e}");
     let (status, _) = call(&app, "DELETE", &uri("low-fibre"), None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let (status, e) = call(&app, "DELETE", &uri("low-fibre"), None).await;
@@ -484,4 +484,68 @@ async fn meta_serves_short_labels_and_the_recommended_bmi() {
         meta["limits"]["recommended_bmi"],
         json!([[18.0, 18.5, 25.0], [65.0, 22.0, 27.0]])
     );
+}
+
+/// A summary day's eaten energy by its food's (or recipe's) verdict
+/// (`ratings`): one-off items, imported history and foods without a verdict
+/// are unrated; planned food isn't eaten; a day without energy has none.
+#[tokio::test]
+async fn summary_days_split_their_energy_by_rating() {
+    let app = app_with_history_energy();
+    let chicken = create_food(
+        &app,
+        "Chicken breast",
+        json!({ "energy": 110, "protein": 23, "fat": 1.5, "saturated": 0.4,
+                "sugars": 0, "sodium": 60 }),
+    )
+    .await;
+    let candy = create_food(
+        &app,
+        "Candy",
+        json!({ "energy": 400, "sugars": 60, "fat": 20, "saturated": 12,
+                "sodium": 400 }),
+    )
+    .await;
+    for (id, verdict) in [(chicken, "healthy"), (candy, "unhealthy")] {
+        let (_, food) = call(&app, "GET", &format!("/api/foods/{id}"), None).await;
+        assert_eq!(food["labels"]["verdict"], verdict, "{food}");
+    }
+    log_entry(&app, "Eaten", chicken, 200.0).await; // 220 kcal
+    log_entry(&app, "Eaten", candy, 50.0).await; // 200 kcal
+    log_entry(&app, "Planned", candy, 100.0).await;
+    let (status, one_off) = call(
+        &app,
+        "POST",
+        "/api/profiles/1/entries",
+        Some(json!({ "day": DAY, "group": "Eaten", "name": "Lunch out", "energy": 650.0 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{one_off}");
+    let water = create_food(&app, "Still water", json!({ "sodium": 1.0 })).await;
+    log_entry_on(&app, "2026-10-05", "Eaten", water, 500.0).await;
+    let (status, summary) = call(
+        &app,
+        "GET",
+        &format!("/api/profiles/1/summary?{FROM_TO}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{summary}");
+    let days = summary["days"].as_array().unwrap();
+    let of = |d: &str| days.iter().find(|x| x["day"] == d).unwrap();
+    // 300 kcal of history, 650 of the one-off item.
+    assert_eq!(
+        of(DAY)["ratings"],
+        json!({ "healthy": 220.0, "ok": 0.0, "unhealthy": 200.0, "unrated": 950.0 }),
+        "{summary}"
+    );
+    assert!(of("2026-10-05").get("ratings").is_none(), "{summary}");
+}
+
+/// A diary with 300 kcal of imported history on DAY.
+fn app_with_history_energy() -> Router {
+    let mut conn = open(FsPath::new(":memory:")).unwrap();
+    let summary = format!("Date,Group,Energy (kcal),Completed\n{DAY},Consumed,300,true\n");
+    common::import_summary(&mut conn, ME, summary.as_bytes()).unwrap();
+    app_from(conn, NO_OFF)
 }

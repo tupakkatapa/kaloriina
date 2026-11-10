@@ -6,7 +6,7 @@ import { readJson, writeJson } from "./prefs.mjs";
 
 const KEY = "outbox";
 // Tries before an item is marked failed (kept until discarded).
-export const ATTEMPTS_MAX = 5;
+export const MAX_ATTEMPTS = 5;
 
 // Only writes that are safe to send twice may wait: creates carrying a
 // `uid` (a series' tick among them), the per-day PUTs and DELETEs (last
@@ -145,20 +145,20 @@ const update = (key, fn) =>
 export const remove = (key) => update(key, () => []);
 
 // A server error (500, …) on a replay: it may work later, so it's counted,
-// and failed once there have been ATTEMPTS_MAX. The next try waits
+// and failed once there have been MAX_ATTEMPTS. The next try waits
 // BACKOFF_MS · 2^attempts before (capped at an hour, ±20 % so tabs and
 // devices don't retry in step): an outage spends one try, not all five.
 const BACKOFF_MS = 30_000;
-const BACKOFF_MAX_MS = 3_600_000;
+const MAX_BACKOFF_MS = 3_600_000;
 export const attempted = (key, reason) =>
   update(key, (x) => {
-    const wait = Math.min(BACKOFF_MS * 2 ** x.attempts, BACKOFF_MAX_MS);
+    const wait = Math.min(BACKOFF_MS * 2 ** x.attempts, MAX_BACKOFF_MS);
     const attempts = x.attempts + 1;
     return [
       {
         ...x,
         attempts,
-        failed: attempts >= ATTEMPTS_MAX ? reason : null,
+        failed: attempts >= MAX_ATTEMPTS ? reason : null,
         nextAt: Date.now() + wait * (0.8 + 0.4 * Math.random()),
       },
     ];
@@ -168,7 +168,7 @@ export const attempted = (key, reason) =>
 export const failed = (key, reason) =>
   update(key, (x) => [{ ...x, failed: reason }]);
 
-// Try again: a failed item waits as new (attempts 0).
+// Retry: a failed item waits as new (attempts 0).
 export const retry = (key) =>
   update(key, (x) => [{ ...x, attempts: 0, failed: null, nextAt: 0 }]);
 

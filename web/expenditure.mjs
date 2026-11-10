@@ -40,7 +40,7 @@ const MAX_GAIN_PER_WEEK = 0.005;
 // 1,000–1,200 kcal for women and 1,200–1,500 for men.
 export const FLOOR = { female: 1200, male: 1500 };
 // A goal weight this close is reached.
-const REACHED_KG = 0.1;
+export const REACHED_KG = 0.1;
 // Recomposition: weight within this of the goal while fat is to go.
 const RECOMP_KG = 1;
 const RECOMP_CUT = 0.1;
@@ -234,7 +234,10 @@ export function burnedDay({ deviceDay, bmr, intake, activities }) {
 // activities done, `bmr` a `bmrOf` for the period. [{day, kcal, source}].
 // Callers go through `burnedOver`, which never asks for a day not yet over.
 export function burnedDays({ from, to, days, deviceDays, activities, bmr }) {
-  const eaten = new Map(days.map((d) => [d.day, d.total.energy ?? 0]));
+  // A day not fully logged takes TEF as one with nothing logged.
+  const eaten = new Map(
+    days.filter((d) => !d.incomplete).map((d) => [d.day, d.total.energy ?? 0]),
+  );
   const device = new Map(deviceDays.map((d) => [d.day, d]));
   const done = new Map();
   for (const a of activities) {
@@ -382,7 +385,8 @@ export const offered = (target, current) =>
 // latest muscle %) beside exactly one of goal weight and body fat plans by
 // `composition`; alone or with both, it isn't planned (said in `clamps`).
 // Returns {target, perDay, weeklyKg, goalKg, split: {fat, lean} | null, recomp,
-// protein, muscle: {kg, day} | null, clamps}.
+// protein, muscle: {kg, day} | null, clamps}; by weight, also `limited`: a
+// guard slowed or raised it.
 export function needed(goals) {
   const { goalWeight, goalBf, goalMuscle = null } = goals;
   if (!isNil(goalMuscle) && isNil(goalWeight) !== isNil(goalBf))
@@ -424,6 +428,7 @@ function byWeight({
         : "Three goals: planned from goal weight and body fat, not muscle.",
     );
   const floored = flooring(bmr, sex, clamps);
+  const asked = clamps.length;
   if (split && Math.abs(change) <= RECOMP_KG && split.fat < 0) {
     // Of lean mass: a recomposition has a body-fat reading (`split`).
     const protein = PROTEIN_PER_LEAN_KG * weight * (1 - bf / 100);
@@ -454,8 +459,9 @@ function byWeight({
     weight,
     clamps,
   );
+  const target = floored(round10(maintenance + perDay));
   return {
-    target: floored(round10(maintenance + perDay)),
+    target,
     perDay,
     weeklyKg,
     goalKg: goalKg ?? null,
@@ -463,6 +469,7 @@ function byWeight({
     recomp: false,
     protein: null,
     muscle: null,
+    limited: clamps.length > asked,
     clamps,
   };
 }

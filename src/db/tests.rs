@@ -105,12 +105,7 @@ fn seeding_an_unchanged_base_set_writes_nothing() {
 const ME: ProfileId = ProfileId(1);
 
 fn memory() -> Connection {
-    let mut conn = Connection::open_in_memory().expect("in-memory db");
-    migrate(&mut conn).expect("migrate");
-    conn.pragma_update(None, "foreign_keys", "ON")
-        .expect("pragma");
-    register_functions(&conn).expect("functions");
-    conn
+    open_memory(false).expect("in-memory db")
 }
 
 #[test]
@@ -164,7 +159,7 @@ fn query(q: &str) -> FoodQuery<'_> {
 /// Log `grams` of `food`.
 fn log(
     conn: &mut Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     day: &str,
     group: &str,
     food: &Food,
@@ -177,7 +172,7 @@ fn log(
         amount: gram_amount(grams),
     };
     let at = Slot {
-        profile,
+        profile: pid,
         day,
         group,
         uid: None,
@@ -579,10 +574,6 @@ fn child_rows_are_found_by_index() {
             "SELECT grams FROM recipe_item WHERE recipe_id = 1",
             "recipe_item_recipe",
         ),
-        (
-            "SELECT grams FROM meal_item WHERE meal_id = 1",
-            "meal_item_meal",
-        ),
     ] {
         let plan: String = conn
             .query_row(&format!("EXPLAIN QUERY PLAN {sql}"), [], |r| r.get(3))
@@ -709,7 +700,7 @@ fn upgrade_from_v1_keeps_everything() {
     assert_eq!(recipe.food.cooked_g, Some(300.0));
     assert_eq!(recipe.items.len(), 1);
     assert_close!(recipe.food.per100.get("energy").unwrap(), 76.0);
-    assert_eq!(meal_get(&conn, 1).unwrap().unwrap().items.len(), 1);
+    assert_eq!(converted(&conn, "Breakfast").items.len(), 1);
     let day = entry_list_for_day(&conn, ME, "2026-01-02").unwrap();
     assert_eq!(day.len(), 2);
     assert!(
@@ -883,30 +874,6 @@ fn newer_schema_is_refused() {
     conn.pragma_update(None, "user_version", 99).unwrap();
     let err = migrate(&mut conn).unwrap_err();
     assert!(err.to_string().contains("newer than this binary"), "{err}");
-}
-
-#[test]
-fn recipe_per100_uses_cooked_weight() {
-    let parts = [
-        (nut(&[("protein", 10.0)]), 200.0),
-        (nut(&[("protein", 0.0)]), 200.0),
-    ];
-    assert_eq!(recipe_per100(&parts, None), nut(&[("protein", 5.0)]));
-    assert_eq!(
-        recipe_per100(&parts, Some(200.0)),
-        nut(&[("protein", 10.0)])
-    );
-    assert_eq!(recipe_per100(&[], None), Nutrients::default());
-    // The weight cooking takes or gives is water.
-    let soup = [
-        (nut(&[("water", 100.0)]), 900.0),
-        (nut(&[("water", 0.0), ("protein", 25.0)]), 100.0),
-    ];
-    let water = |cooked| recipe_per100(&soup, Some(cooked)).get("water");
-    assert_eq!(water(800.0), Some(87.5), "700 g of water in 800 g");
-    assert_eq!(water(1000.0), Some(90.0));
-    assert_eq!(water(50.0), Some(0.0), "never below none");
-    assert_eq!(recipe_per100(&parts, Some(100.0)).get("water"), None);
 }
 
 #[test]
@@ -1207,6 +1174,18 @@ fn at_version(version: u32) -> Connection {
     conn
 }
 
+/// The recipe migration 71 made of the meal named `name`.
+fn converted(conn: &Connection, name: &str) -> Recipe {
+    let id: i64 = conn
+        .query_row(
+            "SELECT max(id) FROM food WHERE kind = 'recipe' AND name = ?",
+            [name],
+            |r| r.get(0),
+        )
+        .unwrap();
+    recipe_get(conn, id).unwrap().unwrap()
+}
+
 /// `conn` with `fixture` added, migrated to the current schema and opened
 /// as the app opens it.
 fn upgraded(mut conn: Connection, fixture: &str) -> Connection {
@@ -1229,6 +1208,40 @@ fn an_upgrade_brings_entries_to_their_foods_values() {
                VALUES (990, 1, '2025-01-01', 'Eaten', 990, 'Oats', 50, '50 g', '{"energy":190.0}');"#,
     );
     assert_eq!(stored(&conn, 990).1, Some(200.0));
+}
+
+#[test]
+fn a_day_not_fully_logged_becomes_a_one_off_item() {
+    let conn = upgraded(
+        at_version(73),
+        "INSERT INTO day_incomplete (profile_id, day) VALUES (1, '2026-10-06');",
+    );
+    let day = entry_list_for_day(&conn, ME, "2026-10-06").unwrap();
+    let e = &day[0];
+    assert_eq!(
+        (
+            day.len(),
+            e.group.as_str(),
+            e.name.as_str(),
+            e.food_id,
+            &e.nutrients,
+            e.time.as_deref(),
+            e.uid.as_str(),
+        ),
+        (
+            1,
+            "Eaten",
+            "Not fully logged",
+            None,
+            &None,
+            None,
+            "incomplete-2026-10-06"
+        )
+    );
+    assert_eq!(
+        unsized_days(&conn, ME, "2026-10-01", "2026-10-31").unwrap(),
+        BTreeSet::from(["2026-10-06".to_owned()])
+    );
 }
 
 #[test]
@@ -1406,8 +1419,9 @@ fn upgrade_from_v19_keeps_workouts_sessions_and_recipes() {
 #[test]
 fn upgrade_from_v20_rebuilds_food_and_adds_day_tables() {
     // A database as release 20 left it: foods with a barcode, a Fineli id
-    // and a moved-on rev, a recipe, a meal, a favourite, a logged and an
-    // imported entry. Food 9 is the newest and used by nothing.
+    // and a moved-on rev, a recipe, a meal (a recipe since 71), a favourite,
+    // a logged and an imported entry. Food 9 is the newest and used by
+    // nothing.
     let mut conn = upgraded(
         at_version(20),
         r#"INSERT INTO food (id, name, source, per100, barcode, rev) VALUES (1, 'Oats', 'custom', '{"energy":380.0}', '6410000000001', 3);
@@ -1434,10 +1448,7 @@ fn upgrade_from_v20_rebuilds_food_and_adds_day_tables() {
     let porridge = recipe_get(&conn, 2).unwrap().unwrap();
     assert_eq!(porridge.items[0].name, "Oats");
     assert_eq!(porridge.food.servings.len(), 2);
-    assert_eq!(
-        meal_get(&conn, 1).unwrap().unwrap().items[0].name,
-        "Ruisleipä"
-    );
+    assert_eq!(converted(&conn, "Breakfast").items[0].name, "Ruisleipä");
     assert_eq!(favorite_list(&conn, ME).unwrap()[0].id, 2);
     assert_eq!(entry_get(&conn, ME, 1).unwrap().unwrap().food_id, Some(1));
     let dangling: i64 = conn
@@ -1463,7 +1474,8 @@ fn upgrade_from_v20_rebuilds_food_and_adds_day_tables() {
     assert_eq!(entries, 2);
 
     // AUTOINCREMENT: the newest food's id isn't handed out again (10 and 11 are
-    // the Water 25 seeds, there being no Fineli water, and 36's creatine).
+    // the Water 25 seeds, there being no Fineli water, and 36's creatine; 12
+    // the meal's recipe).
     let seq: i64 = conn
         .query_row(
             "SELECT seq FROM sqlite_sequence WHERE name = 'food'",
@@ -1471,9 +1483,9 @@ fn upgrade_from_v20_rebuilds_food_and_adds_day_tables() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(seq, 11);
-    conn.execute("DELETE FROM food WHERE id = 11", []).unwrap();
-    assert_eq!(food(&mut conn, "Rye", &[]), 12);
+    assert_eq!(seq, 12);
+    conn.execute("DELETE FROM food WHERE id = 12", []).unwrap();
+    assert_eq!(food(&mut conn, "Rye", &[]), 13);
 
     // The new tables are there and empty.
     for table in ["planned_workout", "day_note", "measurement"] {
@@ -2171,7 +2183,7 @@ fn upgrade_from_v36_keeps_items_as_grams() {
            INSERT INTO meal_item (meal_id, food_id, grams) VALUES (1, 500, 80);"#,
     );
     let recipe = recipe_get(&conn, 501).unwrap().unwrap().items;
-    let meal = meal_get(&conn, 1).unwrap().unwrap().items;
+    let meal = converted(&conn, "Breakfast").items;
     for item in [&recipe[0], &meal[0]] {
         assert_eq!(
             (item.grams, item.serving.as_deref(), item.quantity),
@@ -2380,7 +2392,7 @@ fn a6_after_v40(conn: &Connection) {
         (day.resting_hr, day.avg_hr, day.sleep_avg_hr),
         (Some(54), None, None)
     );
-    let imported = &device::import_list(conn, ME).unwrap()[0];
+    let imported = &device::google_days_list(conn, ME).unwrap()[0];
     assert_eq!((imported.resting_hr, imported.max_hr), (Some(55), None));
     assert!(sleep_stage_list(conn, ME, None, None).unwrap().is_empty());
     let span = |stage, source| SleepStage {
@@ -3003,6 +3015,44 @@ fn a_failing_migration_snapshots_once_and_names_itself() {
         .unwrap();
     drop(open(&path).unwrap());
     assert!(names_with(&dir, ".migrating-v").is_empty());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_failed_upgrade_used_since_gets_a_fresh_snapshot() {
+    // An upgrade fails, the binary is rolled back and the file used; the
+    // marked snapshot predates what was written since.
+    let (dir, path) = file_at(
+        "failed-used",
+        26,
+        "CREATE TABLE check_in (profile_id INTEGER, day TEXT);",
+    );
+    assert!(open(&path).is_err());
+    let marker = dir.join("k.db.migrating-v26");
+    let past = std::time::SystemTime::now() - std::time::Duration::from_hours(1);
+    for p in [&marker, &dir.join("k.db.pre-v26")] {
+        std::fs::File::options()
+            .write(true)
+            .open(p)
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+    }
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO day_note (profile_id, day, text) VALUES (1, '2026-10-02', 'Since');
+             DROP TABLE check_in;",
+        )
+        .unwrap();
+    drop(open(&path).unwrap());
+    let snapshots = names_with(&dir, ".pre-v26");
+    assert_eq!(snapshots.len(), 2, "{snapshots:?}");
+    let fresh = Connection::open(dir.join(&snapshots[1])).unwrap();
+    let notes: i64 = fresh
+        .query_row("SELECT count(*) FROM day_note", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(notes, 1, "the fresh copy has what was written since");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -3890,14 +3940,14 @@ fn import_parts_merge_per_column() {
     );
     // The same night again without heart rate (the browser's first batch).
     fill(&mut conn, &[gh_day("2026-10-05", |d| night(d, "23:00"))]);
-    let d = &device::import_list(&conn, ME).unwrap()[0];
+    let d = &device::google_days_list(&conn, ME).unwrap()[0];
     assert_eq!(
         (d.steps, d.avg_hr, d.in_bed_min, d.sleep_avg_hr),
         (Some(5000), Some(70), Some(480), Some(52))
     );
     // A newer version of the night replaces it whole.
     fill(&mut conn, &[gh_day("2026-10-05", |d| night(d, "23:05"))]);
-    let d = &device::import_list(&conn, ME).unwrap()[0];
+    let d = &device::google_days_list(&conn, ME).unwrap()[0];
     assert_eq!(
         (d.steps, d.bedtime.as_deref(), d.sleep_avg_hr),
         (Some(5000), Some("23:05"), None)
@@ -4257,7 +4307,7 @@ fn remove_import_leaves_device_data() {
         [("2026-10-05", Some(8000), None)]
     );
     assert_eq!(a.sessions.len(), 1);
-    assert!(device::import_list(&conn, ME).unwrap().is_empty());
+    assert!(device::google_days_list(&conn, ME).unwrap().is_empty());
     let naps = nap_list(&conn, ME, None, None).unwrap();
     assert_eq!(
         naps.iter().map(|n| n.source).collect::<Vec<_>>(),
@@ -4423,6 +4473,7 @@ fn v52_rebuilt(conn: &Connection) {
 /// Migration 52's servings: the ones the food still has stay, gone ones
 /// fall back to grams.
 fn v52_servings(conn: &Connection) {
+    // `table` with a filter; the meal is a recipe since migration 71.
     let items = |table: &str| -> Vec<(f64, Option<String>, Option<f64>)> {
         conn.prepare(&format!(
             "SELECT grams, serving, quantity FROM {table} ORDER BY grams DESC"
@@ -4434,11 +4485,11 @@ fn v52_servings(conn: &Connection) {
         .unwrap()
     };
     assert_eq!(
-        items("recipe_item"),
+        items("recipe_item WHERE recipe_id = 901"),
         [(80.0, Some("cup".into()), Some(1.0)), (40.0, None, None)]
     );
     assert_eq!(
-        items("meal_item"),
+        items("recipe_item WHERE recipe_id <> 901"),
         [(160.0, Some("cup".into()), Some(2.0)), (60.0, None, None)]
     );
     assert_eq!(
@@ -4885,7 +4936,7 @@ fn golden(path: &str, actual: &str) {
 }
 
 /// The migrations released so far, as the owner's database ran them.
-const RELEASED: usize = 69;
+const RELEASED: usize = 72;
 
 #[test]
 fn released_migrations_are_frozen() {
@@ -4981,15 +5032,91 @@ fn the_raw_archive_is_rebuilt_keeping_every_record() {
 }
 
 #[test]
+fn meals_become_recipes() {
+    // Breakfast: a serving-measured item and a recipe; Porridge 10 holds
+    // what recipe Porridge does (in another order), Porridge 12 doesn't;
+    // Empty has no items; Lunch 14 holds what archived recipe Lunch does.
+    let mut conn = at_version(70);
+    conn.execute_batch(&format!(
+        r#"INSERT INTO food (id, name, source, kind, per100) VALUES
+             (701, 'Oats', 'custom', 'food', '{{"energy":380.0}}'),
+             (702, 'Milk', 'custom', 'food', '{{"energy":60.0}}'),
+             (703, 'Porridge', 'custom', 'recipe', '{{}}');
+           INSERT INTO food (id, name, source, kind, per100, archived) VALUES
+             (704, 'Lunch', 'custom', 'recipe', '{{}}', 1);
+           INSERT INTO serving (food_id, label, grams) VALUES (701, 'Cup', 80);
+           INSERT INTO recipe_item (recipe_id, food_id, grams) VALUES
+             (703, 701, 40), (703, 702, 200), (704, 702, 300);
+           INSERT INTO meal (id, name) VALUES
+             (10, 'Porridge'), (11, 'Breakfast'), (12, 'Porridge'), (13, 'Empty'),
+             (14, 'Lunch');
+           INSERT INTO meal_item (meal_id, food_id, grams, serving, quantity) VALUES
+             (10, 702, 200, NULL, NULL), (10, 701, 40, NULL, NULL),
+             (11, 701, 160, 'Cup', 2), (11, 703, 240, NULL, NULL),
+             (12, 701, 40, NULL, NULL), (14, 702, 300, NULL, NULL);
+           INSERT INTO meta (key, value) VALUES ('label_rules_version', {});"#,
+        crate::model::LABEL_RULES_VERSION
+    ))
+    .unwrap();
+    migrate(&mut conn).unwrap();
+    register_functions(&conn).unwrap();
+    let ran = derived_current(&mut conn, None, 0);
+    assert!(ran.contains_key("label_rules_version"), "{ran:?}");
+    let tables = schema_names(&conn, "table");
+    assert!(!tables.iter().any(|t| t.starts_with("meal")), "{tables:?}");
+    let names: Vec<String> = conn
+        .prepare("SELECT name FROM food WHERE kind = 'recipe' ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        names,
+        ["Porridge", "Lunch", "Breakfast", "Porridge", "Lunch"]
+    );
+    assert!(!converted(&conn, "Lunch").food.archived);
+
+    let breakfast = converted(&conn, "Breakfast");
+    let items: Vec<_> = breakfast
+        .items
+        .iter()
+        .map(|i| (i.name.as_str(), i.grams, i.serving.as_deref(), i.quantity))
+        .collect();
+    assert_eq!(
+        items,
+        [
+            ("Oats", 160.0, Some("Cup"), Some(2.0)),
+            ("Porridge", 240.0, None, None)
+        ]
+    );
+    // 160 g of oats (608 kcal) and 240 g of porridge (272 kcal) in 400 g.
+    let food = &breakfast.food;
+    assert_close!(food.per100.get("energy").unwrap(), 220.0);
+    let whole = food.servings.iter().find(|s| s.label == WHOLE_RECIPE);
+    assert_eq!(whole.map(|s| s.grams), Some(400.0));
+    assert_eq!((food.source, food.drink), (Source::Custom, false));
+    let uids: i64 = conn
+        .query_row("SELECT count(uid) FROM food", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(uids, 0);
+    let own = converted(&conn, "Porridge");
+    assert_eq!((own.items.len(), own.items[0].grams), (1, 40.0));
+    assert_close!(own.food.per100.get("energy").unwrap(), 380.0);
+}
+
+#[test]
 fn upgrades_keep_every_row() {
     // The v27 and v40 fixtures' rows all survive to head, under
-    // the tables' later names; a migration that loses rows fails here even
-    // with `integrity_check` ok.
+    // the tables' later names (a meal is a recipe); a migration that loses
+    // rows fails here even with `integrity_check` ok.
     let renamed = [
         ("workout_session", "activity"),
         ("activity_session", "device_session"),
         ("activity_day", "device_day"),
         ("activity_import", "import_day"),
+        ("meal", "food"),
+        ("meal_item", "recipe_item"),
     ];
     let v27 = || {
         let conn = Connection::open_in_memory().unwrap();
@@ -5346,9 +5473,7 @@ fn a_scale_batch_grows_linearly() {
         })
     };
     let (small, large) = (replayed(200), replayed(800));
-    #[expect(clippy::cast_precision_loss, reason = "a ratio of counts")]
-    let ratio = large as f64 / small as f64;
-    assert!(ratio < 6.0, "{small} → {large} steps: ×{ratio:.1}");
+    assert!(large < 6 * small, "{small} → {large} steps");
 }
 
 #[test]
@@ -5374,9 +5499,7 @@ fn all_time_grows_linearly() {
         })
     };
     let (one, four) = (read(365), read(4 * 365));
-    #[expect(clippy::cast_precision_loss, reason = "a ratio of counts")]
-    let ratio = four as f64 / one as f64;
-    assert!(ratio <= 4.5, "{one} → {four} steps: ×{ratio:.1}");
+    assert!(2 * four <= 9 * one, "{one} → {four} steps");
 }
 
 #[test]
@@ -5413,4 +5536,165 @@ fn a_one_day_read_searches_by_day() {
         }
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+#[test]
+fn ratings_follow_an_imported_group_moved_to_planned() {
+    // An imported total belongs where its rows are now: moved to Planned,
+    // it is no longer eaten, for the ratings as for the totals.
+    let mut conn = memory();
+    let day = "2026-10-07";
+    let id = food(&mut conn, "Bread", &[("energy", 250.0)]);
+    let bread = food_get(&conn, id).unwrap().unwrap();
+    log(&mut conn, ME, day, "Eaten", &bread, 100.0);
+    imported_entries_replace(
+        &conn,
+        ME,
+        &[ImportedEntry {
+            day: day.into(),
+            group: "Breakfast".into(),
+            name: "Old soup".into(),
+            amount: "1 bowl".into(),
+        }],
+    )
+    .unwrap();
+    day_totals_replace(
+        &conn,
+        ME,
+        &[day.to_owned()],
+        &[DayTotal {
+            day: day.into(),
+            group: "Breakfast".into(),
+            nutrients: nut(&[("energy", 500.0)]),
+        }],
+    )
+    .unwrap();
+    let soup = entry_list_for_day(&conn, ME, day)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.name == "Old soup")
+        .unwrap();
+    let patch = crate::model::EntryPatch {
+        group: Some("Planned".into()),
+        ..Default::default()
+    };
+    entry_update(&mut conn, ME, soup.id.unwrap(), &patch).unwrap();
+    let eaten = eaten_days(&eaten_rows(&conn, ME, day, day).unwrap()).unwrap();
+    let r = day_ratings(&conn, ME, day, day).unwrap()[day];
+    assert_close!(
+        eaten[day].0.get("energy").unwrap(),
+        r.healthy + r.ok + r.unhealthy + r.unrated
+    );
+}
+
+#[test]
+fn an_export_is_one_read_snapshot() {
+    // Another process (an import) commits while the export reads: the file
+    // is the state before it or after it, never half of each.
+    let dir = std::env::temp_dir().join(format!("kaloriina-snapshot-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("k.db");
+    let mut reader = open(&path).unwrap();
+    let writer = std::cell::RefCell::new(Some(open(&path).unwrap()));
+    reader
+        .progress_handler(
+            1,
+            Some(move || {
+                if let Some(w) = writer.borrow_mut().take() {
+                    w.execute_batch(
+                        "UPDATE profile SET name = 'After' WHERE id = 1;
+                     INSERT INTO day_total (profile_id, day, grp, nutrients)
+                     VALUES (1, '2026-10-01', 'Breakfast', '{\"energy\": 100}');",
+                    )
+                    .unwrap();
+                }
+                false
+            }),
+        )
+        .unwrap();
+    let file = profile_export(&reader, ME).unwrap();
+    reader.progress_handler(1, None::<fn() -> bool>).unwrap();
+    let after = file.profile.name == "After";
+    assert_eq!(after, !file.day_totals.is_empty(), "{}", file.profile.name);
+    drop(reader);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_current_file_opens_while_another_process_writes() {
+    // A long import holds the write lock; a restarted server must not fail
+    // its start over a migration it doesn't need.
+    let (dir, path) = file_at("busy", 0, "");
+    drop(open(&path).unwrap());
+    let holder = Connection::open(&path).unwrap();
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let started = std::time::Instant::now();
+    let opened = open(&path);
+    assert!(opened.is_ok(), "{:?}", opened.err());
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    holder.execute_batch("ROLLBACK").unwrap();
+    drop(opened);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn every_reference_to_a_food_is_merged_or_goes_with_it() {
+    // A new table pointing at food must be repointed by food_merge, or
+    // named here as going with the merged-away food.
+    let conn = memory();
+    let mut refs: Vec<String> = conn
+        .prepare(
+            "SELECT m.name || '.' || f.\"from\" FROM sqlite_master m,
+                 pragma_foreign_key_list(m.name) f
+             WHERE m.type = 'table' AND f.\"table\" = 'food'",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    refs.sort();
+    let merged = [
+        "daily_item.food_id",
+        "entry.food_id",
+        "favorite.food_id",
+        "profile.water_food_id",
+        "recipe_item.food_id",
+        "suggestion_hidden.food_id",
+    ];
+    // Labels are made again for the kept food; servings move with the
+    // barcode; a recipe's own items are its own.
+    let goes_with_it = [
+        "food_label.food_id",
+        "recipe_item.recipe_id",
+        "serving.food_id",
+    ];
+    let mut known: Vec<&str> = merged.iter().chain(&goes_with_it).copied().collect();
+    known.sort_unstable();
+    assert_eq!(refs, known);
+}
+
+#[test]
+fn an_imported_food_is_matched_through_an_index() {
+    // A profile import matches each food by these columns: a scan per food
+    // holds the lock for seconds.
+    let conn = memory();
+    let plan: Vec<String> = conn
+        .prepare(
+            "EXPLAIN QUERY PLAN SELECT id, per100 FROM food
+             WHERE source = ? AND kind = ? AND name = ? AND brand IS ? ORDER BY id",
+        )
+        .unwrap()
+        .query_map(params!["custom", "food", "Oats", None::<String>], |r| {
+            r.get(3)
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(
+        plan.iter()
+            .any(|p| p.contains("food_match (source=? AND kind=? AND name=?)")),
+        "{plan:?}"
+    );
 }

@@ -16,11 +16,11 @@ const run = (locale, script) =>
     encoding: "utf8",
   }).trim();
 
-// The tile's number and the Highlight under it, as the Activity subtab
-// shows them: 9 workouts in September against 6 in August.
+// The tile's number and its comparison, as the Activity subtab shows
+// them: 9 workouts in September against 6 in August.
 const TRAINING = `
   import { fmt } from "${web}format.mjs";
-  import { highlights } from "${web}insights.mjs";
+  import { activitiesVersus, prepare } from "${web}insights.mjs";
   import { shift } from "${web}dates.mjs";
   const month = (from, n, on) => {
     const samples = Array.from({ length: n }, (_, i) => shift(from, i));
@@ -42,29 +42,21 @@ const TRAINING = `
     prev: { activities: month("2025-08-01", 31, ["04", "08", "13", "18", "22", "27"]) },
   };
   console.log(fmt(9 / (30 / 7), 1));
-  console.log(highlights("activity", ctx).map((r) => r.numbers).join("\\n"));
+  console.log(activitiesVersus(prepare(ctx)));
 `;
 
-test("fi-FI: the tile and its Highlight share the decimal mark", () => {
-  const [tile, ...lines] = run("fi_FI", TRAINING).split("\n");
-  assert.equal(tile, "2,1");
-  assert.ok(
-    lines.some((l) =>
-      l.startsWith("0,7 more activities a week than the month before · "),
-    ),
-    lines.join(" | "),
-  );
+test("fi-FI: the tile and its comparison share the decimal mark", () => {
+  assert.deepEqual(run("fi_FI", TRAINING).split("\n"), [
+    "2,1",
+    "+0,7 a week vs the month before",
+  ]);
 });
 
 test("en-US: the same screen reads with points", () => {
-  const [tile, ...lines] = run("en_US", TRAINING).split("\n");
-  assert.equal(tile, "2.1");
-  assert.ok(
-    lines.some((l) =>
-      l.startsWith("0.7 more activities a week than the month before · "),
-    ),
-    lines.join(" | "),
-  );
+  assert.deepEqual(run("en_US", TRAINING).split("\n"), [
+    "2.1",
+    "+0.7 a week vs the month before",
+  ]);
 });
 
 // US units read in the device's locale too: a Finnish phone set to US
@@ -171,7 +163,7 @@ const HOURS = `
   console.log(duration(45));
 `;
 
-test("duration: thousands of hours grouped in the device's locale (UX11-15)", () => {
+test("duration: thousands of hours grouped in the device's locale", () => {
   const s = " ";
   assert.deepEqual(run("en_US", HOURS).split("\n"), [
     `1,044${s}h 39${s}min`,
@@ -193,7 +185,7 @@ const HYDRATION_US = `
   console.log(hydrationText({ water: 92.5, alcohol: 40 }, { grams: 330, unit: "ml" }));
 `;
 
-test("hydration note: fl oz under US units (QUAL11-19)", () => {
+test("hydration note: fl oz under US units", () => {
   const s = " ";
   assert.deepEqual(run("en_US", HYDRATION_US).split("\n"), [
     `Hydration: 1.3${s}fl oz per 100${s}g`,

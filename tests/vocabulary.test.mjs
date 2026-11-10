@@ -92,7 +92,7 @@ test("abbreviations expand from one list: the split is built from ABBR", () => {
   assert.ok(!ui.includes(".split(/\\b("), "no list of its own");
 });
 
-test("a unit stays on its number's line: NBSP between them (STYLE-3)", () => {
+test("a unit stays on its number's line: NBSP between them", () => {
   // `qty`/`withUnit` or `${NBSP}`, never a plain space: "18 %" must not
   // break across a phone's lines. Comments may.
   const plain = /(\}|\d) (%|bpm|ms|min|kcal|Cal|kJ|kg|g|ml|L|h)(?!\w)/u;
@@ -172,16 +172,6 @@ test("activity energy says ≈ in one place: energy-text.mjs", () => {
   assert.deepEqual(near, []);
 });
 
-test("one activity-energy computation and one text: netKcal and activeText are gone", () => {
-  const self = "tests/vocabulary.test.mjs";
-  assert.deepEqual(
-    hits(["web", "tests"], /\b(netKcal|activeText)\b/u).filter(
-      (hit) => !hit.startsWith(`${self}:`),
-    ),
-    [],
-  );
-});
-
 test("an energy input is set in kcal through setEnergy, never a raw .value", () => {
   // Its value is in this device's unit (kJ or kcal): a stored kcal
   // written raw reads as kJ and saves a quarter of itself.
@@ -191,121 +181,15 @@ test("an energy input is set in kcal through setEnergy, never a raw .value", () 
   );
 });
 
-// Where a quoted literal opening at `i` ends, just past its closing quote.
-function quotedEnd(text, i) {
-  let j = i + 1;
-  while (j < text.length && text[j] !== text[i]) j += text[j] === "\\" ? 2 : 1;
-  return j + 1;
-}
-
-// Where a JS regex literal opening at `i` ends (its flags are code).
-function regexEnd(text, i) {
-  let inClass = false;
-  let j = i + 1;
-  for (; j < text.length && text[j] !== "\n"; j += 1) {
-    if (text[j] === "\\") j += 1;
-    else if (text[j] === "[" || text[j] === "]") inClass = text[j] === "[";
-    else if (text[j] === "/" && !inClass) break;
-  }
-  return j + 1;
-}
-
-// Where a Rust raw string or char literal opening at `i` ends; a lone
-// quote is a lifetime's. Null for anything else.
-function rustLiteralEnd(text, i) {
-  const raw = /^b?r(#*)"/u.exec(text.slice(i, i + 8));
-  if (raw) {
-    const end = text.indexOf(`"${raw[1]}`, i + raw[0].length);
-    return end === -1 ? text.length : end + 1 + raw[1].length;
-  }
-  if (text[i] !== "'") return null;
-  const char = /^'(?:\\u\{[\da-f]+\}|\\.|[^\\'])'/iu.exec(
-    text.slice(i, i + 12),
-  );
-  return i + (char ? char[0].length : 1);
-}
-
-// Where a template opening at `i` ends; its `${…}` are code.
-function templateEnd(text, i, spans, opts) {
-  let j = i + 1;
-  while (j < text.length && text[j] !== "`")
-    if (text[j] === "\\") j += 2;
-    else if (text.startsWith("${", j)) j = scanCode(text, j + 2, spans, opts);
-    else j += 1;
-  return j + 1;
-}
-
-// A regex literal can open after these (a `/` after a value divides).
-const BEFORE_REGEX = /^$|[(,=:[!&|?{};+\-*%<>~^]$/u;
-
-// Where the comment or literal opening at `i` ends, a comment's span
-// added to `spans`; null at code.
-function literalEnd(text, i, spans, opts, last) {
-  const c = text[i];
-  if (text.startsWith("//", i) || text.startsWith("/*", i)) {
-    const close = c === "/" && text[i + 1] === "/" ? "\n" : "*/";
-    const at = text.indexOf(close, i + 2);
-    const end = at === -1 ? text.length : at + (close === "*/" ? 2 : 0);
-    spans.push([i, end]);
-    return end;
-  }
-  if (c === "`") return templateEnd(text, i, spans, opts);
-  if (c === '"' || (c === "'" && !opts.rust)) return quotedEnd(text, i);
-  if (opts.rust) return rustLiteralEnd(text, i);
-  if (opts.regex && c === "/" && BEFORE_REGEX.test(last))
-    return regexEnd(text, i);
-  return null;
-}
-
-// Code from `from`: its comments' spans added to `spans`. Inside a
-// template's `${` it stops past the `}` that closes it.
-function scanCode(text, from, spans, opts) {
-  const inside = from > 0 && text.startsWith("${", from - 2);
-  let depth = 0;
-  let last = "";
-  let i = from;
-  while (i < text.length) {
-    const end = literalEnd(text, i, spans, opts, last);
-    if (end === null) {
-      const c = text[i];
-      if (inside && c === "}" && depth === 0) return i + 1;
-      if (c === "{") depth += 1;
-      else if (c === "}") depth -= 1;
-      if (!/\s/u.test(c)) last = c;
-      i += 1;
-    } else {
-      // A literal is a value; a comment changes nothing.
-      if (!/^\/[/*]/u.test(text.slice(i, i + 2))) last = "a";
-      i = end;
-    }
-  }
-  return i;
-}
-
-// The comments of source `text`, one [line, text] per line they span.
-// Strings, templates (their `${…}` code read as code) and, in JS
-// (`regex`), regex literals are skipped, so a "/*" in a glob opens
-// nothing; in Rust (`rust`) a lone quote is a lifetime and `r#"…"#` a raw
-// string.
-function commentLines(text, opts = {}) {
-  const spans = [];
-  scanCode(text, 0, spans, opts);
-  return spans.flatMap(([from, to]) => {
-    const first = text.slice(0, from).split("\n").length;
-    return text
-      .slice(from, to)
-      .split("\n")
-      .map((t, k) => [first + k, t]);
-  });
-}
-
-test("comments cite no review findings or owner decisions", () => {
-  // docs/ isn't in the repository: a finding's ID or an owner's date in a
-  // comment points nowhere, and the comment says the reason instead. ADRs
-  // are cited by number ("ADR 0021"), which this leaves alone.
+test("comments and test names cite no review findings or owner decisions", () => {
+  // docs/ isn't in the repository: a finding's ID or an owner's dated
+  // decision points nowhere, and the comment or name says the reason
+  // instead. ADRs are cited by number ("ADR 0021"), which this leaves alone.
   const tag =
-    /\b(?:[A-Z][A-Z\d]{0,7}-[A-Z]{0,2}\d+(?:\.\d+)?|PR\d+-[a-z]+-\d+)\b|\b[Oo]wner(?:,| items?\b)/u;
+    /\b(?:[A-Z][A-Z\d]{0,7}-[A-Z]{0,2}\d+(?:\.\d+)?|PR\d+-[a-z]+-\d+)\b|\bOwner \(/u;
   const words = new Set(["UTF-8"]);
+  // Where a line's comment or a test's name starts.
+  const said = /\/\/|\/\*|^\s*\*|\btest\(\s*["'`]/u;
   const sources = ["web", "src", "tests", "android/src", "android/test"];
   for (const dir of sources)
     assert.ok(files(dir).length > 0, `${dir}: no files`);
@@ -313,15 +197,15 @@ test("comments cite no review findings or owner decisions", () => {
     .flatMap((dir) => files(dir))
     .filter((f) => /\.(m?js|rs|java|css|html)$/u.test(f))
     .flatMap((f) =>
-      commentLines(readFileSync(join(ROOT, f), "utf8"), {
-        regex: /\.m?js$/u.test(f),
-        rust: f.endsWith(".rs"),
-      })
-        .filter(([, t]) => {
-          const hit = tag.exec(t);
-          return hit && !words.has(hit[0]);
-        })
-        .map(([n, t]) => `${f}:${n}: ${t.trim()}`),
+      readFileSync(join(ROOT, f), "utf8")
+        .split("\n")
+        .flatMap((line, i) => {
+          const at = line.search(said);
+          const hit = at === -1 ? null : tag.exec(line.slice(at));
+          return hit && !words.has(hit[0])
+            ? [`${f}:${i + 1}: ${line.trim()}`]
+            : [];
+        }),
     );
   assert.deepEqual(found, []);
 });

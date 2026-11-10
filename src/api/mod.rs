@@ -40,9 +40,9 @@ mod prelude {
     pub(super) use crate::dri;
     pub(super) use crate::error::Error;
     pub(super) use crate::model::{
-        self, ActivityInput, EntryInput, EntryPatch, ExerciseInput, FoodInput, GROUPS, MealInput,
-        ProfileId, ProfileInput, RecipeInput, Source, Target, TargetsInput, WeightInput,
-        WorkoutInput, checked_barcode, is_date,
+        self, ActivityInput, EntryInput, EntryPatch, ExerciseInput, FoodInput, GROUPS, ProfileId,
+        ProfileInput, RecipeInput, Source, Target, TargetsInput, WeightInput, WorkoutInput,
+        checked_barcode, is_date,
     };
     pub(super) use crate::nutrients::{self, Nutrients, REGISTRY};
     pub(super) use crate::off::Lookup;
@@ -55,9 +55,6 @@ mod prelude {
 }
 
 use prelude::*;
-
-pub use backups::{newest_backup, stale_backup};
-pub(crate) use hooks::{HOOK_TIMEOUT, hook_client};
 
 mod activities;
 mod backups;
@@ -114,7 +111,7 @@ pub fn router(state: AppState) -> Router {
         .layer(map_response(build_header))
         .layer(from_fn(same_origin));
     // One INFO line per request: the method and the route's pattern
-    // (`/api/profiles/{pid}/day/{date}`), never the filled-in path or query:
+    // (`/api/profiles/{pid}/day/{day}`), never the filled-in path or query:
     // those carry diary dates, barcodes and search words.
     let trace = TraceLayer::new_for_http()
         .make_span_with(|req: &Request<Body>| {
@@ -224,9 +221,6 @@ impl Whole for FoodInput {
     const OPTIONAL: &'static [&'static str] = &["drink", "uid"];
 }
 impl Whole for RecipeInput {
-    const OPTIONAL: &'static [&'static str] = &["uid"];
-}
-impl Whole for MealInput {
     const OPTIONAL: &'static [&'static str] = &["uid"];
 }
 impl Whole for model::HabitInput {
@@ -616,7 +610,8 @@ fn bare_host(host: &str) -> String {
 /// `Sec-Fetch-Site` says so, or its `Origin` is opaque (`null`) or names
 /// another host than the request's. Clients that send neither header (the
 /// phone, openScale's sync, the CLI) pass. A proxy in front must pass
-/// `Host` through.
+/// `Host` through. Only the host is compared: behind a TLS proxy the server
+/// can't know its public scheme or port.
 async fn same_origin(req: Request<Body>, next: Next) -> Response {
     let read = matches!(*req.method(), Method::GET | Method::HEAD);
     if read || !cross_site(&req) {

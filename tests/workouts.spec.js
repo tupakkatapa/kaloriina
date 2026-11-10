@@ -1086,7 +1086,7 @@ test("a used workout archives instead of deleting, and warns its activities keep
   await expect(page).not.toHaveURL(new RegExp(`#/workout/${spare.id}/`, "u"));
 });
 
-test("Copy on a meal makes “name (copy)” and opens it", async ({
+test("Copy on a recipe makes “name (copy)” and opens it", async ({
   page,
   request,
 }, testInfo) => {
@@ -1096,15 +1096,15 @@ test("Copy on a meal makes “name (copy)” and opens it", async ({
       data: { name: `Oats ${tag}`, per100: { energy: 380 } },
     })
   ).json();
-  const meal = await (
-    await request.post("/api/meals", {
+  const recipe = await (
+    await request.post("/api/recipes", {
       data: {
         name: `Breakfast ${tag}`,
         items: [{ food_id: oats.id, grams: 60 }],
       },
     })
   ).json();
-  await page.goto(`/#/meal/${meal.id}`);
+  await page.goto(`/#/recipe/${recipe.id}`);
   await page.getByRole("button", { name: "Copy" }).click();
   await expect(page.locator("#toast")).toContainText(
     `Copied as Breakfast ${tag} (copy)`,
@@ -1283,6 +1283,112 @@ test("a waiting run is a Resume banner on the Diary and Activity", async ({
       Object.keys(localStorage).filter((k) => k.startsWith("run:")),
     ),
   ).toEqual([]);
+});
+
+// With no run waiting, Activity offers the workout to start again under
+// its title: the one planned today, else the last done before today.
+test("Start again names the last workout done before today and starts it", async ({
+  page,
+  request,
+}, testInfo) => {
+  const today = await fixedToday(page);
+  const { tag } = unique(1260, testInfo);
+  const id = await exerciseIds(request);
+  const pid = await ownProfile(page, request, `Again ${tag}`);
+  const steps = [{ kind: "exercise", exercise_id: id("Burpee"), reps: 10 }];
+  const [older, last, now] = await Promise.all(
+    ["Older", "Last", "Now"].map((n) =>
+      workout(request, { name: `${n} ${tag}`, steps }),
+    ),
+  );
+  for (const [w, n] of [
+    [older, -5],
+    [last, -2],
+    [now, 0],
+  ])
+    await session(request, pid, {
+      day: shift(today, n),
+      name: w.name,
+      workout_id: w.id,
+      minutes: 20,
+      kcal: 100,
+      sets: [],
+    });
+  await page.goto("/#/activity");
+  const again = page.locator(".start-again");
+  await expect(again).toHaveText(
+    new RegExp(`^Last ${tag} · last done \\w{3},\\s\\w{3}\\s\\d+Start$`, "u"),
+  );
+  await again.getByRole("link", { name: `Start Last ${tag}` }).click();
+  await expect(page).toHaveURL(new RegExp(`#/workout/${last.id}/run`, "u"));
+});
+
+test("Start again offers today's planned workout before the last done", async ({
+  page,
+  request,
+}, testInfo) => {
+  const today = await fixedToday(page);
+  const { tag } = unique(1261, testInfo);
+  const id = await exerciseIds(request);
+  const pid = await ownProfile(page, request, `Plan again ${tag}`);
+  const steps = [{ kind: "exercise", exercise_id: id("Burpee"), reps: 10 }];
+  const [done, planned] = await Promise.all(
+    ["Done", "Planned"].map((n) =>
+      workout(request, { name: `${n} ${tag}`, steps }),
+    ),
+  );
+  await session(request, pid, {
+    day: shift(today, -1),
+    name: done.name,
+    workout_id: done.id,
+    minutes: 20,
+    kcal: 100,
+    sets: [],
+  });
+  const plan = await request.post(`/api/profiles/${pid}/plans`, {
+    data: { day: today, workout_id: planned.id },
+  });
+  expect(plan.ok()).toBeTruthy();
+  await page.goto("/#/activity");
+  await expect(page.locator(".start-again")).toHaveText(
+    `Planned ${tag} · planned todayStart`,
+  );
+});
+
+test("Start again is absent with nothing done, and while a run waits", async ({
+  page,
+  request,
+}, testInfo) => {
+  const today = await fixedToday(page);
+  const { tag } = unique(1262, testInfo);
+  const id = await exerciseIds(request);
+  const pid = await ownProfile(page, request, `No again ${tag}`);
+  const w = await workout(request, {
+    name: `Kept ${tag}`,
+    steps: [
+      { kind: "exercise", exercise_id: id("Push-up"), reps: 5 },
+      { kind: "exercise", exercise_id: id("Pull-up"), reps: 5 },
+    ],
+  });
+  await page.goto("/#/activity");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Activity");
+  await expect(page.locator(".run-banner")).toHaveCount(0);
+
+  await session(request, pid, {
+    day: shift(today, -1),
+    name: w.name,
+    workout_id: w.id,
+    minutes: 20,
+    kcal: 100,
+    sets: [],
+  });
+  await page.goto(`/#/workout/${w.id}/run`);
+  await expect(page.locator(".run-where")).toHaveText("Step 1 of 2");
+  await page.locator('.tabs a[data-tab="activity"]').click();
+  await expect(page.locator(".run-banner")).toHaveText(
+    `Kept ${tag} in progressResume`,
+  );
+  await expect(page.locator(".start-again")).toHaveCount(0);
 });
 
 // ---------------------------------------------------- the workout view

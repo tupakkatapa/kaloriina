@@ -238,6 +238,25 @@ pub(super) const BASE_EXERCISES: &str = include_str!("../exercises.json");
 pub(super) fn seed_exercises(conn: &mut Connection) -> Result<(), Error> {
     let base: Vec<BaseExercise> =
         serde_json::from_str(BASE_EXERCISES).expect("exercises.json is valid (tested)");
+    // Read first: the write lock only when something changes, so a start
+    // beside a long import goes on.
+    let mut differs = conn.prepare(
+        "SELECT NOT EXISTS (SELECT 1 FROM exercise WHERE name = ?1)
+             OR EXISTS (SELECT 1 FROM exercise WHERE name = ?1 AND source = 'base'
+                 AND (traits IS NOT ?2
+                      OR variant_of IS NOT (SELECT id FROM exercise
+                                            WHERE name = ?3 AND source = 'base')))",
+    )?;
+    let mut stale = false;
+    for e in &base {
+        stale |= differs.query_row(params![e.name, json(&e.traits), e.variant_of], |r| {
+            r.get::<_, bool>(0)
+        })?;
+    }
+    drop(differs);
+    if !stale {
+        return Ok(());
+    }
     let tx = write(conn)?;
     for e in &base {
         let traits = json(&e.traits);

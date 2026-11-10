@@ -60,7 +60,7 @@ pub fn hook_set(conn: &mut Connection, pid: ProfileId, h: &CheckedHook) -> Resul
         (None, _) => {
             return Err(Error::invalid_field(
                 "webhook_id",
-                "webhook_id is needed for a new Home Assistant address",
+                "a new Home Assistant address needs its Webhook ID",
             ));
         }
     };

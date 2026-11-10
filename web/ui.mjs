@@ -77,7 +77,6 @@ export const CHEVRON_R = "M9 5l7 7-7 7";
 export const STAR =
   "M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z";
 export const GRIP = "M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01";
-export const COPY = "M9 9h11v11H9zM15 9V4H4v11h5";
 const PENCIL = "M4 20h4L19 9l-4-4L4 16zM14 6l4 4";
 export const RECALC = "M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5";
 export const SOUND = "M4 9v6h4l5 4V5L8 9zM16.5 8.5a5 5 0 0 1 0 7";
@@ -165,8 +164,9 @@ export function notify(
   toastTravels = travels;
   toastAt = location.hash;
   document.body.classList.add("toasting");
-  // Long enough to reach Undo; held while pointed at or focused.
-  toastWait = action ? 10_000 : 6000;
+  // Long enough to reach Undo; held while pointed at or focused. An error
+  // stays until closed: a phone can't hold it by pointing.
+  toastWait = error ? 0 : action ? 10_000 : 6000;
   const later = () => toastFor(toastWait);
   for (const [type, fn] of [
     ["mouseenter", () => toastFor(0)],
@@ -282,10 +282,11 @@ export function confirmDialog(
 }
 
 // A small form in a modal: `body` (its fields), Cancel and the primary
-// `submit`. `run(form)` does the work; the dialog closes with what it
-// returns, or `null` when cancelled (Esc too). A failure is told in the
-// dialog, at the field the server named, and the dialog stays.
-export function formDialog(title, { body, submit, run }) {
+// `submit`. `run(form)` does the work (`running` says so meanwhile); the
+// dialog closes with what it returns, or `null` when cancelled (Esc too).
+// A failure is told in the dialog, at the field the server named, and the
+// dialog stays.
+export function formDialog(title, { body, submit, run, running }) {
   return new Promise((resolve) => {
     let value = null;
     const status = h("div", { class: "status", role: "status" });
@@ -295,6 +296,7 @@ export function formDialog(title, { body, submit, run }) {
         class: "stack",
         onsubmit: busy(async (e) => {
           e.preventDefault();
+          if (running) fill(status, h("p", { class: "muted" }, running));
           try {
             value = await run(form);
             close();
@@ -691,6 +693,10 @@ const TONES = {
     "Tip",
     "M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z",
   ],
+  win: [
+    "Win",
+    "M12 2l3.1 6.3 6.9 1-5 4.9 1.2 6.8-6.2-3.2-6.2 3.2 1.2-6.8-5-4.9 6.9-1z",
+  ],
   warning: [
     "Warning",
     "M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01",
@@ -888,7 +894,19 @@ export const useNavigator = (n) => {
   nav = n;
 };
 
-// Every editor (food, recipe, meal, exercise, workout, activity, profile,
+// `at` (a field of `form`, or none) is the one marked invalid and focused;
+// a field folded away opens first.
+export function markInvalid(form, at) {
+  for (const el of form.querySelectorAll("[aria-invalid]"))
+    el.removeAttribute("aria-invalid");
+  if (!at) return;
+  for (let d = at.closest("details"); d; d = d.parentElement.closest("details"))
+    d.open = true;
+  at.setAttribute("aria-invalid", "true");
+  at.focus();
+}
+
+// Every editor (food, recipe, exercise, workout, activity, profile,
 // targets) works the same way:
 // - one form, its fields in `body`;
 // - one action bar: Delete, then `secondary` buttons, then Save (primary);
@@ -997,19 +1015,7 @@ export function editor({
     err,
     at = err.field && form.querySelector(`[name="${err.field}"]`),
   ) => {
-    for (const el of form.querySelectorAll("[aria-invalid]"))
-      el.removeAttribute("aria-invalid");
-    if (at) {
-      // A field folded away opens first.
-      for (
-        let d = at.closest("details");
-        d;
-        d = d.parentElement.closest("details")
-      )
-        d.open = true;
-      at.setAttribute("aria-invalid", "true");
-      at.focus();
-    }
+    markInvalid(form, at);
     fill(
       status,
       errorBox(err),

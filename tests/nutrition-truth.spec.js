@@ -36,7 +36,7 @@ async function eat(request, pid, day, foodId, grams) {
 const hydrationRow = (page) =>
   page.locator(".log-row", { has: page.locator(".hydration") });
 
-test("hydration: under its goal it never rounds up to it; a drink of unknown water makes it a floor; no water bar beside it (T2N-2, T2N-5, T2N-6)", async ({
+test("hydration: under its goal it never rounds up to it; a drink of unknown water makes it a floor; no water bar beside it", async ({
   page,
   request,
 }, testInfo) => {
@@ -75,7 +75,7 @@ test("hydration: under its goal it never rounds up to it; a drink of unknown wat
   );
 });
 
-test("energy: a floor says how much is left only as an upper bound (≤); a nutrient short of all its energy reads ≥ (T2N-7, T2N-9)", async ({
+test("energy: a floor says how much is left only as an upper bound (≤); a nutrient known at 98 % reads as it is", async ({
   page,
   request,
 }, testInfo) => {
@@ -109,24 +109,29 @@ test("energy: a floor says how much is left only as an upper bound (≤); a nutr
   await expect(energy.locator("small")).toHaveText(
     /^Minimum met · ≤\s42\skcal to go$/u,
   );
-  // Iron from 1,848 of 1,858 kcal: judged, but a floor all the same.
+  // Iron from 1,848 of 1,858 kcal: judged, a floor, but known enough
+  // (80 %) to read without "≥"; the share is still said.
   await page.locator("summary", { hasText: "Other nutrients" }).click();
   const iron = page.locator(".all-targets .target", { hasText: "Iron" });
-  await expect(iron.locator(".target-label")).toContainText(/≥\s13\smg/u);
+  await expect(iron.locator(".target-label")).toContainText(
+    /^Iron13\smg \/ 10\smg \(from 98\s%/u,
+  );
   await expect(iron.locator("small")).toHaveText("Target met");
 });
 
-test("food calendar: today shows what's eaten so far, unjudged; the energy chart names its target range (T2N-10, T2N-20)", async ({
+test("food calendar: today shows what's eaten so far, unjudged; the energy chart names its target range", async ({
   page,
 }) => {
-  const today = todayInApp();
+  // A Wednesday: the chart shows days through yesterday, so a Monday's
+  // week has none.
+  const real = todayInApp();
   const monday = shift(
-    today,
-    -((new Date(`${today}T12:00:00Z`).getUTCDay() + 6) % 7),
+    real,
+    -((new Date(`${real}T12:00:00Z`).getUTCDay() + 6) % 7),
   );
-  const days = [dayTotal(shift(today, -1), 1500), dayTotal(today, 667)].filter(
-    (d) => d.day >= monday,
-  );
+  const today = shift(monday, 2);
+  await page.clock.setSystemTime(new Date(`${today}T12:00:00+02:00`));
+  const days = [dayTotal(shift(today, -1), 1500), dayTotal(today, 667)];
   await page.route("**/api/profiles/*/summary?*", (route) =>
     route.fulfill({
       json: { from: monday, to: shift(monday, 6), average: {}, days },
@@ -150,7 +155,7 @@ test("food calendar: today shows what's eaten so far, unjudged; the energy chart
   ).toHaveAccessibleName(/and your eaten target range shaded\./u);
 });
 
-test("rows: a recipe's partial energy reads ≥, a drink's basis per 100 ml, a meal's partial energy ≥ (T2N-12, T2N-13)", async ({
+test("rows: a recipe's partial energy reads ≥, a drink's basis per 100 ml", async ({
   page,
   request,
 }, testInfo) => {
@@ -182,17 +187,6 @@ test("rows: a recipe's partial energy reads ≥, a drink's basis per 100 ml, a m
       },
     })
   ).json();
-  const meal = await request.post("/api/meals", {
-    data: {
-      name: `Pie meal ${tag}`,
-      items: [
-        { food_id: pie.id, grams: 100 },
-        { food_id: sauce.id, grams: 50 },
-      ],
-    },
-  });
-  expect(meal.ok()).toBeTruthy();
-
   await page.goto(`/#/add/${day}/Eaten`);
   const search = page.getByLabel("Search foods", { exact: true });
   await search.fill(tag);
@@ -202,13 +196,9 @@ test("rows: a recipe's partial energy reads ≥, a drink's basis per 100 ml, a m
   await expect(
     page.getByRole("button", { name: new RegExp(`^Soda ${tag}`, "u") }),
   ).toContainText(/42\skcal per 100\sml/u);
-  await search.fill("");
-  await expect(
-    page.getByRole("link", { name: new RegExp(`^Pie meal ${tag}`, "u") }),
-  ).toContainText(/2 items · ≥\s240\skcal/u);
 });
 
-test("a food's view: no verdict while a light isn't known, said why; the US label gives no protein %DV and a floor's %DV as one (T2N-4, T2N-18)", async ({
+test("a food's view: no verdict while a light isn't known, said why; the US label gives no protein %DV and a floor's %DV as one", async ({
   page,
   request,
 }, testInfo) => {

@@ -208,45 +208,28 @@ async fn takes_years_of_history_up_to_the_import_cap() {
 }
 
 /// The files are read off the database lock (only the write takes it): a
-/// read sent while a big upload is parsed answers at once. The upload's
-/// last line is bad, so it's all parse and no write.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_read_answers_while_an_upload_is_parsed() {
-    use std::fmt::Write;
-    let app = app();
-    let mut servings = String::from("Day,Group,Food Name,Amount\n");
-    // ~38 MB: over 300 ms to parse even in a release build (the package's
-    // check), still under the upload cap.
-    for i in 0..1_000_000 {
-        writeln!(servings, "2026-06-02,Consumed,Food {i},100.00 g").unwrap();
-    }
-    servings.push_str("not a date,Consumed,Bad,1 g\n");
-    let upload = {
-        let app = app.clone();
-        tokio::spawn(async move {
-            let started = std::time::Instant::now();
-            let (status, _) = import(&app, 1, json!({ "servings": servings })).await;
-            assert_eq!(status, StatusCode::BAD_REQUEST);
-            started.elapsed()
-        })
-    };
-    let mut slowest = std::time::Duration::ZERO;
-    while !upload.is_finished() {
-        let started = std::time::Instant::now();
-        let (status, _) = call(&app, "GET", "/api/profiles", None).await;
-        assert_eq!(status, StatusCode::OK);
-        slowest = slowest.max(started.elapsed());
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    }
-    let took = upload.await.unwrap();
-    assert!(
-        took > std::time::Duration::from_millis(300),
-        "too small to tell: {took:?}"
-    );
-    assert!(
-        slowest * 4 < took,
-        "a read waited {slowest:?} of the upload's {took:?}"
-    );
+/// bad file is refused while something else holds the lock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bad_upload_never_takes_the_database_lock() {
+    let state = kaloriina::AppState::new(open(FsPath::new(":memory:")).unwrap(), NO_OFF.to_owned());
+    let app = kaloriina::router(state.clone());
+    let (locked, release) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
+    let holder = std::thread::spawn(move || {
+        let _held = state.db.lock().unwrap();
+        locked.0.send(()).unwrap();
+        release.1.recv().ok();
+    });
+    locked.1.recv().unwrap();
+    let servings = "Day,Group,Food Name,Amount\nnot a date,Consumed,Bad,1 g\n";
+    let refused = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        import(&app, 1, json!({ "servings": servings })),
+    )
+    .await;
+    release.0.send(()).unwrap();
+    holder.join().unwrap();
+    let (status, res) = refused.expect("the refusal waited for the lock");
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{res}");
 }
 
 async fn match_rows(app: &Router, pid: i64, name: &str, food_id: i64) -> (StatusCode, Value) {

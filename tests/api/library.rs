@@ -304,6 +304,38 @@ fn fit_scores_cosine_and_the_energy_penalty() {
 // ---------------------------------------------- food usage and merging
 
 #[tokio::test]
+async fn merging_a_hidden_food_keeps_it_hidden() {
+    let app = app();
+    let a = create_food(&app, "Oats", json!({ "energy": 370 })).await;
+    let b = create_food(&app, "Porridge oats", json!({ "energy": 370 })).await;
+    let (status, _) = call(
+        &app,
+        "PUT",
+        &format!("/api/profiles/1/suggestions/hidden/{b}"),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, keep) = call(&app, "GET", &format!("/api/foods/{a}"), None).await;
+    let (status, merged) = call(
+        &app,
+        "POST",
+        &format!("/api/foods/{a}/merge"),
+        Some(json!({ "from": b, "rev": keep["rev"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{merged}");
+    let (_, hidden) = call(&app, "GET", "/api/profiles/1/suggestions/hidden", None).await;
+    let ids: Vec<&Value> = hidden
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| &h["id"])
+        .collect();
+    assert_eq!(ids, [&json!(a)], "{hidden}");
+}
+
+#[tokio::test]
 async fn usage_counts_what_a_merge_would_move() {
     let app = app();
     let (status, err) = call(&app, "GET", "/api/foods/999/usage", None).await;
@@ -315,14 +347,7 @@ async fn usage_counts_what_a_merge_would_move() {
     log_entry(&app, "Eaten", rye, 50.0).await;
     log_entry(&app, "Planned", rye, 50.0).await;
     recipe(&app, "Toast", &[(rye, 60.0)], json!({})).await;
-    let (status, _) = call(
-        &app,
-        "POST",
-        "/api/meals",
-        Some(json!({ "name": "Lunch", "items": [{ "food_id": rye, "grams": 80 }] })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED);
+    recipe(&app, "Lunch", &[(rye, 80.0)], json!({})).await;
     call(
         &app,
         "POST",
@@ -351,7 +376,7 @@ async fn usage_counts_what_a_merge_would_move() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         usage,
-        json!({ "entries": 3, "recipes": 1, "meals": 1, "favorites": 1, "daily_items": 1,
+        json!({ "entries": 3, "recipes": 2, "favorites": 1, "daily_items": 1,
                 "water": 1, "deletable": false })
     );
 }
@@ -438,7 +463,7 @@ async fn a_food_is_deleted_only_while_nothing_uses_it() {
 
 // ---------------------------------------------------------------- copy
 
-/// POST a copy of `what` (`foods`, `meals`, `workouts`) `id` with `body`.
+/// POST a copy of `what` (`foods`, `workouts`) `id` with `body`.
 async fn copy(app: &Router, what: &str, id: &Value, body: Value) -> Value {
     let (status, copy) = call(app, "POST", &format!("/api/{what}/{id}/copy"), Some(body)).await;
     assert_eq!(status, StatusCode::CREATED, "{what} {id}: {copy}");
@@ -455,11 +480,11 @@ fn but_identity(mut read: Value, also: &[&str]) -> Value {
     read
 }
 
-/// A copy of a saved food, recipe, meal or workout is everything it holds
+/// A copy of a saved food, recipe or workout is everything it holds
 /// under the name "… (copy)", yours and not archived: the server copies
 /// rows, so a field the client doesn't know travels too.
 #[tokio::test]
-async fn a_saved_food_recipe_meal_and_workout_copy_round_trip() {
+async fn a_saved_food_recipe_and_workout_copy_round_trip() {
     let app = app();
     let tablet = call(
         &app,
@@ -502,18 +527,21 @@ async fn a_saved_food_recipe_meal_and_workout_copy_round_trip() {
     let (_, pot) = call(&app, "GET", &format!("/api/recipes/{}", pot["id"]), None).await;
     assert_eq!(but_identity(pot, &[]), but_identity(porridge, &[]));
 
-    let (_, meal) = call(
+    // Items measured by a serving, and a recipe inside, travel as they are.
+    let (status, breakfast) = call(
         &app,
         "POST",
-        "/api/meals",
-        Some(json!({ "name": "Breakfast", "items": [
+        "/api/recipes",
+        Some(json!({ "name": "Breakfast", "cooked_g": null, "items": [
             { "food_id": porridge_id, "grams": 250.0 },
             { "food_id": tablet["id"], "serving": "poretabletti", "quantity": 2 }] })),
     )
     .await;
-    let lunch = copy(&app, "meals", &meal["id"], json!({})).await;
+    assert_eq!(status, StatusCode::CREATED, "{breakfast}");
+    let lunch = copy(&app, "foods", &breakfast["id"], json!({})).await;
     assert_eq!(lunch["name"], "Breakfast (copy)");
-    assert_eq!(but_identity(lunch, &[]), but_identity(meal, &[]));
+    let (_, lunch) = call(&app, "GET", &format!("/api/recipes/{}", lunch["id"]), None).await;
+    assert_eq!(but_identity(lunch, &[]), but_identity(breakfast, &[]));
 
     let (_, x) = call(
         &app,
@@ -555,7 +583,7 @@ async fn a_retried_copy_is_the_same_and_a_missing_one_404s() {
     let c = copy(&app, "foods", &tablet, json!({})).await;
     assert_eq!(a["id"], b["id"]);
     assert_ne!(a["id"], c["id"]);
-    for what in ["foods", "meals", "workouts"] {
+    for what in ["foods", "workouts"] {
         let (status, err) = call(
             &app,
             "POST",
@@ -679,13 +707,7 @@ async fn merging_moves_everything_onto_the_kept_food() {
         json!({}),
     )
     .await;
-    let (_, meal) = call(
-        &app,
-        "POST",
-        "/api/meals",
-        Some(json!({ "name": "Breakfast", "items": [{ "food_id": b, "grams": 300 }] })),
-    )
-    .await;
+    let breakfast = recipe(&app, "Breakfast", &[(b, 300.0)], json!({})).await;
 
     let uri = format!("/api/foods/{a}/merge");
     let (status, merged) = call(
@@ -741,13 +763,19 @@ async fn merging_moves_everything_onto_the_kept_food() {
     assert_eq!(latte_now["rev"], latte["rev"].as_i64().unwrap() + 1);
     let (_, outer_now) = call(&app, "GET", &format!("/api/recipes/{}", outer["id"]), None).await;
     assert_eq!(outer_now["per100"]["energy"], 50.0);
-    let (_, meal_now) = call(&app, "GET", &format!("/api/meals/{}", meal["id"]), None).await;
-    assert_eq!(meal_now["items"][0]["food_id"], a);
-    assert_eq!(meal_now["rev"], meal["rev"].as_i64().unwrap() + 1);
+    let (_, breakfast_now) = call(
+        &app,
+        "GET",
+        &format!("/api/recipes/{}", breakfast["id"]),
+        None,
+    )
+    .await;
+    assert_eq!(breakfast_now["items"][0]["food_id"], a);
+    assert_eq!(breakfast_now["rev"], breakfast["rev"].as_i64().unwrap() + 1);
     let (_, usage) = call(&app, "GET", &format!("/api/foods/{a}/usage"), None).await;
     assert_eq!(
         usage,
-        json!({ "entries": 1, "recipes": 1, "meals": 1, "favorites": 2, "daily_items": 0,
+        json!({ "entries": 1, "recipes": 2, "favorites": 2, "daily_items": 0,
                 "water": 0, "deletable": false })
     );
 
@@ -991,7 +1019,7 @@ async fn tablet_and_oats(app: &Router) -> (i64, i64) {
 }
 
 #[tokio::test]
-async fn recipe_and_meal_items_keep_their_serving_and_quantity() {
+async fn recipe_items_keep_their_serving_and_quantity() {
     let app = app();
     let (tablet, oats) = tablet_and_oats(&app).await;
     // Old clients send grams only; they still work.
@@ -1007,57 +1035,59 @@ async fn recipe_and_meal_items_keep_their_serving_and_quantity() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{recipe}");
-    let (status, meal) = call(
-        &app,
-        "POST",
-        "/api/meals",
-        Some(json!({ "name": "Morning", "items": items })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "{meal}");
-    for uri in [
-        format!("/api/recipes/{}", recipe["id"]),
-        format!("/api/meals/{}", meal["id"]),
-    ] {
-        let (_, read) = call(&app, "GET", &uri, None).await;
-        let i = &read["items"];
-        assert_eq!(
-            (&i[0]["grams"], &i[0]["serving"], &i[0]["quantity"]),
-            (&json!(8.6), &json!("poretabletti"), &json!(2.0)),
-            "{uri}: {i}"
-        );
-        assert_eq!(
-            i[0]["servings"],
-            json!([{ "label": "poretabletti", "grams": 4.3 }])
-        );
-        assert_eq!(
-            (&i[1]["grams"], &i[1]["serving"], &i[1]["quantity"]),
-            (&json!(60.0), &Value::Null, &Value::Null),
-            "{uri}: {i}"
-        );
-    }
-    // Grams stay the truth: 8.6 g of 20 kcal/100 g and 60 g of 380.
     let (_, read) = call(&app, "GET", &format!("/api/recipes/{}", recipe["id"]), None).await;
+    let i = &read["items"];
+    assert_eq!(
+        (&i[0]["grams"], &i[0]["serving"], &i[0]["quantity"]),
+        (&json!(8.6), &json!("poretabletti"), &json!(2.0)),
+        "{i}"
+    );
+    assert_eq!(
+        i[0]["servings"],
+        json!([{ "label": "poretabletti", "grams": 4.3 }])
+    );
+    assert_eq!(
+        (&i[1]["grams"], &i[1]["serving"], &i[1]["quantity"]),
+        (&json!(60.0), &Value::Null, &Value::Null),
+        "{i}"
+    );
+    // Grams stay the truth: 8.6 g of 20 kcal/100 g and 60 g of 380.
     let whole = 8.6 * 0.2 + 60.0 * 3.8;
     let per100 = read["per100"]["energy"].as_f64().unwrap();
     assert!((per100 - whole / 68.6 * 100.0).abs() < 0.01, "{per100}");
 
-    // A meal logs its servings as they were chosen, times the portions.
+    // Copies of entries log their servings as they were chosen.
+    let mut ids = Vec::new();
+    for item in items.as_array().unwrap() {
+        let mut body = json!({ "day": DAY, "group": "Eaten" });
+        body.as_object_mut()
+            .unwrap()
+            .extend(item.as_object().unwrap().clone());
+        let (status, logged) = call(&app, "POST", "/api/profiles/1/entries", Some(body)).await;
+        assert_eq!(status, StatusCode::CREATED, "{logged}");
+        ids.push(logged["entries"][0]["id"].clone());
+    }
     let (status, logged) = call(
         &app,
         "POST",
         "/api/profiles/1/entries",
-        Some(json!({ "day": DAY, "group": "Eaten", "meal_id": meal["id"], "portions": 2 })),
+        Some(json!({ "day": DAY, "group": "Eaten", "entry_ids": ids })),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{logged}");
-    let amounts: Vec<&str> = logged["entries"]
+    let amounts: Vec<(&str, &Value)> = logged["entries"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|e| e["amount"].as_str().unwrap())
+        .map(|e| (e["amount"].as_str().unwrap(), &e["serving"]))
         .collect();
-    assert_eq!(amounts, ["4 × poretabletti (17.2 g)", "120 g"]);
+    assert_eq!(
+        amounts,
+        [
+            ("2 × poretabletti (8.6 g)", &json!("poretabletti")),
+            ("60 g", &Value::Null)
+        ]
+    );
 }
 
 #[tokio::test]
@@ -1071,16 +1101,14 @@ async fn an_item_names_a_serving_its_food_has() {
         json!({ "food_id": tablet, "serving": "poretabletti" }),
         json!({ "food_id": tablet, "grams": 4.3, "serving": "poretabletti", "quantity": 1 }),
     ] {
-        for (uri, name) in [("/api/recipes", "R"), ("/api/meals", "M")] {
-            let (status, err) = call(
-                &app,
-                "POST",
-                uri,
-                Some(json!({ "name": name, "cooked_g": null, "items": [item] })),
-            )
-            .await;
-            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri} {item}: {err}");
-        }
+        let (status, err) = call(
+            &app,
+            "POST",
+            "/api/recipes",
+            Some(json!({ "name": "R", "cooked_g": null, "items": [item] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{item}: {err}");
     }
 }
 
@@ -1096,13 +1124,6 @@ async fn an_item_whose_serving_is_gone_reads_as_grams() {
         Some(json!({ "name": "Drink", "cooked_g": null, "items": item })),
     )
     .await;
-    let (_, meal) = call(
-        &app,
-        "POST",
-        "/api/meals",
-        Some(json!({ "name": "Morning", "items": item })),
-    )
-    .await;
     let (status, _) = put_with_rev(
         &app,
         &format!("/api/foods/{tablet}"),
@@ -1111,18 +1132,13 @@ async fn an_item_whose_serving_is_gone_reads_as_grams() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    for uri in [
-        format!("/api/recipes/{}", recipe["id"]),
-        format!("/api/meals/{}", meal["id"]),
-    ] {
-        let (_, read) = call(&app, "GET", &uri, None).await;
-        let i = &read["items"][0];
-        assert_eq!(
-            (&i["grams"], &i["serving"], &i["quantity"]),
-            (&json!(8.6), &Value::Null, &Value::Null),
-            "{uri}: {i}"
-        );
-    }
+    let (_, read) = call(&app, "GET", &format!("/api/recipes/{}", recipe["id"]), None).await;
+    let i = &read["items"][0];
+    assert_eq!(
+        (&i["grams"], &i["serving"], &i["quantity"]),
+        (&json!(8.6), &Value::Null, &Value::Null),
+        "{i}"
+    );
 }
 
 #[tokio::test]
@@ -1139,11 +1155,11 @@ async fn a_merged_items_serving_comes_along_unless_its_grams_are_summed() {
                      "items": [carton(0.1), { "food_id": a, "grams": 100 }] })),
     )
     .await;
-    let (_, meal) = call(
+    let (_, breakfast) = call(
         &app,
         "POST",
-        "/api/meals",
-        Some(json!({ "name": "Breakfast", "items": [carton(0.3)] })),
+        "/api/recipes",
+        Some(json!({ "name": "Breakfast", "cooked_g": null, "items": [carton(0.3)] })),
     )
     .await;
     let (status, _) = call(
@@ -1161,8 +1177,14 @@ async fn a_merged_items_serving_comes_along_unless_its_grams_are_summed() {
         (&json!(200.0), &Value::Null),
         "{i}"
     );
-    let (_, meal) = call(&app, "GET", &format!("/api/meals/{}", meal["id"]), None).await;
-    let i = &meal["items"][0];
+    let (_, breakfast) = call(
+        &app,
+        "GET",
+        &format!("/api/recipes/{}", breakfast["id"]),
+        None,
+    )
+    .await;
+    let i = &breakfast["items"][0];
     assert_eq!(
         (&i["food_id"], &i["serving"], &i["quantity"]),
         (&json!(a), &json!("Carton"), &json!(0.3)),
@@ -1497,13 +1519,6 @@ async fn every_library_put_field_is_required() {
     let workout = archived_workout(&app).await;
     let oats = create_food(&app, "Oats", json!({ "energy": 380 })).await;
     let (_, porridge) = porridge(&app, json!("Stir.")).await;
-    let (_, meal) = call(
-        &app,
-        "POST",
-        "/api/meals",
-        Some(json!({ "name": "Breakfast", "items": [{ "food_id": oats, "grams": 50 }] })),
-    )
-    .await;
     let (_, exercise) = call(
         &app,
         "POST",
@@ -1535,12 +1550,6 @@ async fn every_library_put_field_is_required() {
             "name", "cooked_g", "makes", "items", "servings", "archived", "notes", "category",
             "rev",
         ],
-    )
-    .await;
-    requires_every_field(
-        &app,
-        &format!("/api/meals/{}", meal["id"]),
-        &["name", "items", "rev"],
     )
     .await;
     requires_every_field(
@@ -1691,8 +1700,8 @@ async fn rename_bumps_session_rev() {
     );
 }
 
-/// A serving whose grams change, or that goes, unlinks the recipe and meal
-/// items measured by it: they keep their grams, so nothing they count moves
+/// A serving whose grams change, or that goes, unlinks the recipe items
+/// measured by it: they keep their grams, so nothing they count moves
 /// on the next unrelated save.
 #[tokio::test]
 async fn serving_change_clears_stale_items() {
@@ -1707,14 +1716,7 @@ async fn serving_change_clears_stale_items() {
     .await;
     let two = |label: &str| json!([{ "food_id": bread["id"], "serving": label, "quantity": 2 }]);
     let toast = recipe(&app, "Toast", &[], json!({ "items": two("Slice") })).await;
-    let (status, meal) = call(
-        &app,
-        "POST",
-        "/api/meals",
-        Some(json!({ "name": "Picnic", "items": two("Loaf") })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "{meal}");
+    let picnic = recipe(&app, "Picnic", &[], json!({ "items": two("Loaf") })).await;
     assert_eq!(
         (&toast["items"][0]["serving"], &toast["items"][0]["grams"]),
         (&json!("Slice"), &json!(80.0))
@@ -1730,10 +1732,10 @@ async fn serving_change_clears_stale_items() {
     assert_eq!(status, StatusCode::OK, "{res}");
     let recipe_uri = format!("/api/recipes/{}", toast["id"]);
     let (_, toast) = call(&app, "GET", &recipe_uri, None).await;
-    let (_, meal) = call(&app, "GET", &format!("/api/meals/{}", meal["id"]), None).await;
+    let (_, picnic) = call(&app, "GET", &format!("/api/recipes/{}", picnic["id"]), None).await;
     for (what, item, grams) in [
         ("changed grams", &toast["items"][0], 80.0),
-        ("gone", &meal["items"][0], 1000.0),
+        ("gone", &picnic["items"][0], 1000.0),
     ] {
         assert_eq!(
             (&item["serving"], &item["quantity"], &item["grams"]),

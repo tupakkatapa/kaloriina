@@ -1,14 +1,14 @@
 // Pull to refresh on a phone: from the very top of a screen, one finger
-// drawn down pulls a spinner after it, with resistance; let go past
-// THRESHOLD and `run` refreshes. Passive listeners, never
+// drawn down draws a line across the top after it, with resistance; let go
+// past THRESHOLD and `run` refreshes. Passive listeners, never
 // `preventDefault`ed, as swipe.mjs: scrolling stays the browser's (and
 // `overscroll-behavior-y` in style.css keeps Chrome's own pull, a reload,
 // out of it). The rules have no DOM, so node tests load them.
 
 import { ignored } from "./swipe.mjs";
 
-// How far the spinner travels (px) for a release to refresh, and the most
-// it ever travels.
+// How far a pull travels (px) for a release to refresh, and the most it
+// ever travels.
 export const THRESHOLD = 100;
 export const MAX = 150;
 // Moved this far, a drag's direction is known: a pull when down and this
@@ -28,7 +28,7 @@ export function heading(dx, dy) {
   return dy > 0 && dy >= RATIO * Math.abs(dx) ? "pull" : "other";
 }
 
-// The rubber band: the spinner follows the finger by half up to
+// The rubber band: the pull follows the finger by half up to
 // THRESHOLD, then ever more stiffly toward MAX, which it never reaches.
 export function stretch(dy) {
   const half = Math.max(dy, 0) / 2;
@@ -39,26 +39,28 @@ export function stretch(dy) {
 
 export const releases = (pull) => pull >= THRESHOLD;
 
+// The share of the screen's width the line spans: all of it at THRESHOLD.
+export const reach = (pull) => Math.min(pull / THRESHOLD, 1);
+
 // Listen on the page for the app's lifetime; `allowed()` says whether the
-// screen shown may refresh now, `run()` refreshes it. The spinner
-// (`#pull`, CSS) travels `--pull` px of `--pull-threshold`: `pulling`
-// follows the finger, `refreshing` spins until `run` ends.
+// screen shown may refresh now, `run()` refreshes it (and shows that it
+// does). The line (`#pull`, CSS) spans `--reach` of the width: `pulling`
+// follows the finger, `ready` once a release would refresh.
 export function installPull(run, allowed) {
-  document.documentElement.style.setProperty(
-    "--pull-threshold",
-    String(THRESHOLD),
-  );
-  const spinner = document.createElement("div");
-  spinner.id = "pull";
-  spinner.setAttribute("aria-hidden", "true");
-  document.body.append(spinner);
-  const show = (px) => spinner.style.setProperty("--pull", String(px));
+  const line = document.createElement("div");
+  line.id = "pull";
+  line.setAttribute("aria-hidden", "true");
+  document.body.append(line);
+  const show = (pull) => {
+    line.style.setProperty("--reach", String(reach(pull)));
+    line.classList.toggle("ready", releases(pull));
+  };
   let drag = null;
   let refreshing = false;
   const end = () => {
     drag = null;
-    spinner.classList.remove("pulling");
-    if (!refreshing) show(0);
+    line.classList.remove("pulling");
+    show(0);
   };
   const opts = { passive: true };
   document.addEventListener(
@@ -91,7 +93,7 @@ export function installPull(run, allowed) {
       if (drag.heading === "other") end();
       if (drag?.heading !== "pull") return;
       drag.pull = stretch(dy);
-      spinner.classList.add("pulling");
+      line.classList.add("pulling");
       show(drag.pull);
     },
     opts,
@@ -104,14 +106,10 @@ export function installPull(run, allowed) {
       refreshing = go;
       end();
       if (!go) return;
-      spinner.classList.add("refreshing");
-      show(THRESHOLD);
       try {
         await run();
       } finally {
         refreshing = false;
-        spinner.classList.remove("refreshing");
-        show(0);
       }
     },
     opts,

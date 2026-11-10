@@ -9,6 +9,7 @@ import {
   newProfile,
   ownProfile,
   save,
+  setTarget,
   settled,
   syncHealth,
   todayInApp,
@@ -92,7 +93,7 @@ test("Mifflin's line says Health Connect sent none only after a sync", async ({
   );
 });
 
-test("Recalculate says only what it still needs (UX11-N1.2)", async ({
+test("Recalculate says only what it still needs", async ({
   page,
   request,
 }, testInfo) => {
@@ -118,7 +119,7 @@ test("Recalculate says only what it still needs (UX11-N1.2)", async ({
   );
 });
 
-test("recommended carbohydrate never under 45 % of energy (TEST11-13)", async ({
+test("recommended carbohydrate never under 45 % of energy", async ({
   request,
 }, testInfo) => {
   const { tag } = unique(1137, testInfo);
@@ -183,6 +184,44 @@ test("Targets suggests a steps target from your last 28 days; Use saves it, or o
   await use.click();
   await expect(page.locator("#toast")).toContainText("Saved targets");
   await settled(page);
-  expect(await steps()).toBe(5000);
+  // The save before left the same toast up: wait on the stored target.
+  await expect.poll(steps).toBe(5000);
   await expect(offer).toHaveCount(0);
+});
+
+// The first number of `node`'s text: "≈ 2,140 kcal" is 2140.
+const kcalIn = async (node) =>
+  Number((await node.textContent()).match(/[\d,]+/u)[0].replaceAll(",", ""));
+
+test("Food says what the goal date needs a day, as Targets plans it", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { tag } = unique(1224, testInfo);
+  const pid = await ownProfile(page, request, `Pace ${tag}`);
+  const base = `/api/profiles/${pid}`;
+  const me = await (await request.get(base)).json();
+  const ahead = new Date(`${todayInApp()}T12:00:00Z`);
+  ahead.setUTCDate(ahead.getUTCDate() + 56);
+  const put = await request.put(base, {
+    data: { ...me, goal_date: ahead.toISOString().slice(0, 10) },
+  });
+  expect(put.ok()).toBeTruthy();
+  await setTarget(request, pid, "goal_weight", 58);
+  await page.goto("/#/targets");
+  const maintenance = await kcalIn(neededTiles(page).first());
+  const needed = await kcalIn(neededTiles(page).nth(1));
+  await page.goto("/#/summary/food/month");
+  const line = page.locator(".goal-pace");
+  await expect(line).toHaveText(
+    /^Your goal date needs a deficit ≈\s[\d,]+\skcal a day\.$/u,
+  );
+  // Maintenance is shown to 10 kcal: the gap to within that.
+  expect(
+    Math.abs((await kcalIn(line)) - (maintenance - needed)),
+  ).toBeLessThanOrEqual(10);
+  // A past month says nothing of today's pace.
+  await page.goto("/#/summary/food/month/2025-01-15");
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await expect(line).toHaveCount(0);
 });

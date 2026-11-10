@@ -1,7 +1,8 @@
 //! Foods (yours, Open Food Facts and Fineli), search with filters,
-//! favourites, recent foods, barcodes, recipes and meals.
+//! favourites, recent foods, barcodes and recipes.
 
 use super::prelude::*;
+use super::query_date;
 
 pub(super) fn routes() -> Router<AppState> {
     Router::new()
@@ -16,6 +17,13 @@ pub(super) fn routes() -> Router<AppState> {
         .route("/api/foods/barcode/{code}", post(barcode))
         .route("/api/profiles/{pid}/foods", get(search))
         .route("/api/profiles/{pid}/foods/recent", get(recent))
+        .route("/api/profiles/{pid}/foods/suggestions", get(suggestions))
+        .route("/api/profiles/{pid}/suggestions/hidden", get(hidden))
+        .route(
+            "/api/profiles/{pid}/suggestions/hidden/{food_id}",
+            axum::routing::put(hide).delete(show),
+        )
+        .route("/api/profiles/{pid}/foods/{id}/last", get(last))
         .route(
             "/api/profiles/{pid}/foods/favorites",
             get(favorites).post(favorite_add),
@@ -26,12 +34,6 @@ pub(super) fn routes() -> Router<AppState> {
         )
         .route("/api/recipes", post(recipe_create))
         .route("/api/recipes/{id}", get(recipe_read).put(recipe_update))
-        .route("/api/meals", get(meals).post(meal_create))
-        .route(
-            "/api/meals/{id}",
-            get(meal_read).put(meal_update).delete(meal_delete),
-        )
-        .route("/api/meals/{id}/copy", post(meal_copy))
 }
 
 #[derive(Deserialize)]
@@ -104,7 +106,7 @@ const SEARCH_CHARS_MAX: usize = 200;
 const SEARCH_WORDS_MAX: usize = 8;
 
 impl Search {
-    fn query(&self, profile: ProfileId) -> Result<db::FoodQuery<'_>, Error> {
+    fn query(&self, pid: ProfileId) -> Result<db::FoodQuery<'_>, Error> {
         if self.q.chars().count() > SEARCH_CHARS_MAX
             || self.q.split_whitespace().count() > SEARCH_WORDS_MAX
         {
@@ -152,7 +154,7 @@ impl Search {
             min: nutrient_rules("min", self.min.as_deref())?,
             max: nutrient_rules("max", self.max.as_deref())?,
             sort,
-            profile,
+            profile: pid,
             left: None,
             labels: Vec::new(),
         })
@@ -229,6 +231,81 @@ async fn recent(State(s): State<AppState>, Path(pid): Path<ProfileId>) -> Res<Ve
     Ok(Json(
         on_profile(&s, pid, move |conn| db::food_recent(conn, pid)).await?,
     ))
+}
+
+/// The amount of the profile's own last log of a food (`null`: never
+/// logged), what its next log starts from. 404 for an unknown food.
+async fn last(
+    State(s): State<AppState>,
+    Path((pid, id)): Path<(ProfileId, i64)>,
+) -> Res<Option<model::LastAmount>> {
+    Ok(Json(
+        on_profile(&s, pid, move |conn| {
+            db::food_get(conn, id)?.ok_or_else(|| Error::not_found("food", id))?;
+            db::food_last(conn, pid, id)
+        })
+        .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+struct Suggest {
+    /// The day logged to (`YYYY-MM-DD`).
+    day: Option<String>,
+    /// The time logged at ("HH:MM"); none: no time of day.
+    time: Option<String>,
+}
+
+/// What the profile likely logs next on `day` at `time`, best first; see
+/// `db::food_suggestions`.
+async fn suggestions(
+    State(s): State<AppState>,
+    Path(pid): Path<ProfileId>,
+    Query(q): Query<Suggest>,
+) -> Res<Vec<model::Suggestion>> {
+    let day = query_date(q.day.as_deref(), "day")?
+        .ok_or_else(|| Error::invalid_field("day", "day is required (YYYY-MM-DD)"))?
+        .to_owned();
+    if let Some(t) = &q.time {
+        model::checked_time(t)?;
+    }
+    Ok(Json(
+        on_profile(&s, pid, move |conn| {
+            db::food_suggestions(conn, pid, &day, q.time.as_deref())
+        })
+        .await?,
+    ))
+}
+
+/// The foods hidden from suggestions for good.
+async fn hidden(State(s): State<AppState>, Path(pid): Path<ProfileId>) -> Res<Vec<model::Food>> {
+    Ok(Json(
+        on_profile(&s, pid, move |conn| db::suggestion_hidden_list(conn, pid)).await?,
+    ))
+}
+
+/// Hide a food from suggestions through `until`, or for good without it.
+/// Repeating it changes nothing.
+async fn hide(
+    State(s): State<AppState>,
+    Path((pid, food_id)): Path<(ProfileId, i64)>,
+    Json(h): Json<model::HideInput>,
+) -> Result<StatusCode, Error> {
+    h.checked()?;
+    on_profile(&s, pid, move |conn| {
+        db::suggestion_hide(conn, pid, food_id, h.until.as_deref())
+    })
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Suggest a hidden food again; 204 when it wasn't hidden too.
+async fn show(
+    State(s): State<AppState>,
+    Path((pid, food_id)): Path<(ProfileId, i64)>,
+) -> Result<StatusCode, Error> {
+    on_profile(&s, pid, move |conn| db::suggestion_show(conn, pid, food_id)).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn favorites(State(s): State<AppState>, Path(pid): Path<ProfileId>) -> Res<Vec<model::Food>> {
@@ -409,50 +486,4 @@ async fn recipe_update(
     Ok(Json(
         on_db(&s, move |conn| db::recipe_save(conn, Some(id), &r)).await?,
     ))
-}
-
-async fn meals(State(s): State<AppState>) -> Res<Vec<model::Meal>> {
-    Ok(Json(on_db(&s, |conn| db::meal_list(conn)).await?))
-}
-
-async fn meal_read(State(s): State<AppState>, Path(id): Path<i64>) -> Res<model::Meal> {
-    Ok(Json(
-        on_db(&s, move |conn| {
-            db::meal_get(conn, id)?.ok_or_else(|| Error::not_found("meal", id))
-        })
-        .await?,
-    ))
-}
-
-async fn meal_create(State(s): State<AppState>, Json(m): Json<MealInput>) -> Created<model::Meal> {
-    let m = m.checked()?;
-    let meal = on_db(&s, move |conn| db::meal_save(conn, None, &m)).await?;
-    Ok(created(meal))
-}
-
-async fn meal_update(
-    State(s): State<AppState>,
-    Path(id): Path<i64>,
-    Replace(m): Replace<MealInput>,
-) -> Res<model::Meal> {
-    let m = m.checked()?;
-    Ok(Json(
-        on_db(&s, move |conn| db::meal_save(conn, Some(id), &m)).await?,
-    ))
-}
-
-/// A copy of a saved meal: 201 with it.
-async fn meal_copy(
-    State(s): State<AppState>,
-    Path(id): Path<i64>,
-    Json(c): Json<model::CopyInput>,
-) -> Created<model::Meal> {
-    let c = c.checked()?;
-    let copy = on_db(&s, move |conn| db::meal_copy(conn, id, c.uid.as_deref())).await?;
-    Ok(created(copy))
-}
-
-async fn meal_delete(State(s): State<AppState>, Path(id): Path<i64>) -> Result<StatusCode, Error> {
-    on_db(&s, move |conn| db::meal_delete(conn, id)).await?;
-    Ok(StatusCode::NO_CONTENT)
 }

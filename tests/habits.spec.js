@@ -300,12 +300,18 @@ test("Profile → Habits adds, edits, archives and deletes a tracker", async ({
   // Delete: the confirm says how many logged days go with it.
   await count(request, pid, saved.id, yesterday(), 3);
   await count(request, pid, saved.id, todayInApp(), 1);
+  // The editor counts them without every habit's history.
+  const histories = [];
+  page.on("request", (r) => {
+    if (r.url().includes("/habits/days")) histories.push(r.url());
+  });
   await page.getByRole("link", { name: /^Nicotine/u }).click();
   await page.getByRole("button", { name: "Delete" }).click();
   await expect(page.getByRole("dialog")).toContainText(
     "Its 2 logged days go with it.",
   );
   expect(await answer(page, "Delete")).toBe("Delete Nicotine?");
+  expect(histories).toEqual([]);
   await expect(page).toHaveURL(/#\/habits$/u);
   await expect(page.getByRole("link", { name: /^Nicotine/u })).toHaveCount(0);
   expect(await days(request, pid)).toEqual([]);
@@ -376,7 +382,7 @@ async function habitOf(page, name) {
 const cellOf = (scope, day) =>
   scope.locator(`.habit-cal td[data-day="${day}"]`);
 
-test("an unknown day is a floor, never a 0: means over the known days (AC2-1)", async ({
+test("an unknown day is a floor, never a 0: means over the known days", async ({
   page,
   request,
 }, testInfo) => {
@@ -707,6 +713,26 @@ test("Hydration: a spirit's alcohol takes its water back, never more; the calend
   await expect(hydration).toContainText(
     "Water in what you eat and drink (a drink without a water value, estimated), less alcohol's effect.",
   );
+});
+
+test("From food reads ≥ only under 80 % of the day's food known", async ({
+  page,
+  request,
+}, testInfo) => {
+  const { day, tag } = unique(1219, testInfo);
+  const pid = await ownProfile(page, request, `Known ${tag}`);
+  const next = new Date(Date.parse(day) + 864e5).toISOString().slice(0, 10);
+  // Sodium on 90 % of the first day's food, half the next's.
+  await eat(request, pid, day, { sodium: 400 }, 900, tag);
+  await eat(request, pid, day, {}, 100, tag);
+  await eat(request, pid, next, { sodium: 400 }, 500, `${tag}b`);
+  await eat(request, pid, next, {}, 500, `${tag}b`);
+  await page.goto(`/#/day/${day}`);
+  const text = totals(page).locator(".habit-builtins");
+  await expect(text).toContainText("Salt");
+  await expect(text).not.toContainText("≥");
+  await page.goto(`/#/day/${next}`);
+  await expect(text).toContainText(/Salt\s≥/u);
 });
 
 // From food is a line of parts: at a phone's widths it wraps between them

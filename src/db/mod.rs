@@ -8,24 +8,28 @@
 //!   importer's food vs your edit; a new profile's starting targets). A
 //!   planned workout is only ever inserted and deleted;
 //! - `save` creates (`id = None`) or replaces (`Some(id)`) a whole entity
-//!   with what it holds (recipes, meals, exercises, workouts, sessions);
+//!   with what it holds (recipes, exercises, workouts, activities, habits);
 //! - `upsert_<source>` adds or updates rows keyed by an outside id;
 //! - `replace` swaps a whole set (targets, imported days);
 //! - `set` writes one keyed value, the same every time (a favourite, a
 //!   day's weight);
+//! - `put` writes rows by key over what the key held, in the caller's
+//!   transaction (sleep stages, health records, imported days);
 //! - `delete` removes by id;
 //! - `log` writes diary entries.
 //!
+//! Helpers private to `db` may be verb-first (`insert_food`, `write_items`).
+//!
 //! Reads keyed by something other than id are `<resource>_by_<key>` or
 //! `<resource>_list_for_<key>`; `group_totals` aggregates a date range
-//! (`group_rows`, then `group_sums`) and `recipe_per100` is pure arithmetic.
+//! (`group_rows`, then `group_sums`).
 //!
 //! Transactions: functions taking `&mut Connection` open their own;
 //! functions taking `&Connection` run inside whatever the caller holds.
 //!
 //! Writes return the stored entity, read back in the same transaction.
-//! Updates of whole entities (foods, recipes, meals, exercises, workouts,
-//! profiles, sessions) name the `rev` they were made from; see [`bump_rev`].
+//! Updates of whole entities (foods, recipes, exercises, workouts,
+//! profiles, activities) name the `rev` they were made from; see [`bump_rev`].
 
 /// What the resource modules share: each starts with `use super::prelude::*`.
 mod prelude {
@@ -45,10 +49,9 @@ mod prelude {
     pub(super) use crate::model::{
         Activity, ActivityInput, ActivitySet, ActivitySource, ActivityType, Basis, Body, DayTotal,
         Entry, Exercise, ExerciseInput, ExerciseSource, ExerciseTraits, Food, FoodInput,
-        ImportedEntry, Item, Meal, MealInput, Measure, Measured, Profile, ProfileId, ProfileInput,
-        Recipe, RecipeInput, Serving, Sex, Side, Sort, Source, Step, SyncedWorkouts, Target,
-        WHOLE_RECIPE, Weight, WeightSource, Workout, WorkoutInput, exercise_steps, gram_amount,
-        step_fits,
+        ImportedEntry, Item, Measure, Measured, Profile, ProfileId, ProfileInput, Recipe,
+        RecipeInput, Serving, Sex, Side, Sort, Source, Step, SyncedWorkouts, Target, WHOLE_RECIPE,
+        Weight, WeightSource, Workout, WorkoutInput, exercise_steps, gram_amount, step_fits,
     };
     pub(super) use crate::model::{
         FoodKind, FoodScope, ItemInput, Macros, MergeInput, PORTION, SERVINGS_MAX, Usage,
@@ -153,8 +156,8 @@ sql_text!(
 
 /// Migrations after which recipes are recomputed from their ingredients
 /// (4: values; 20: the "Whole recipe" serving; 58: copied total carbs;
-/// 63: a cooked weight's change is water).
-const RECOMPUTE_RECIPES_AFTER: [u32; 4] = [4, 20, 58, 63];
+/// 63: a cooked weight's change is water; 71: meals made recipes).
+const RECOMPUTE_RECIPES_AFTER: [u32; 5] = [4, 20, 58, 63, 71];
 
 /// The migration after which drinks are derived again ([`rederive_drinks`]).
 const REDERIVE_DRINKS_AFTER: u32 = 65;
@@ -167,6 +170,9 @@ const REDERIVE_DRINKS_AFTER: u32 = 65;
 /// that only a successful migration removes, then the snapshots pruned to
 /// the newest two.
 pub fn open(path: &Path) -> Result<Connection, Error> {
+    if path == Path::new(":memory:") {
+        return open_memory(true);
+    }
     let mut conn = Connection::open(path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     // A concurrent `kaloriina import` may hold the write lock briefly.
@@ -187,6 +193,55 @@ pub fn open(path: &Path) -> Result<Connection, Error> {
     conn.pragma_update(None, "foreign_keys", "ON")?;
     register_functions(&conn)?;
     Ok(conn)
+}
+
+/// A new in-memory database at the head schema (`seeded`: with the base
+/// exercises, as [`open`] makes one), copied from one built once in this
+/// process: tests open hundreds, and migrating each takes a fifth of a
+/// second.
+fn open_memory(seeded: bool) -> Result<Connection, Error> {
+    static TEMPLATES: std::sync::Mutex<[Option<Connection>; 2]> =
+        std::sync::Mutex::new([None, None]);
+    let mut templates = TEMPLATES
+        .lock()
+        .map_err(|_| Error::Internal("an in-memory template failed to build".into()))?;
+    let slot = &mut templates[usize::from(seeded)];
+    if slot.is_none() {
+        let mut built = Connection::open_in_memory()?;
+        migrate(&mut built)?;
+        if seeded {
+            seed_exercises(&mut built)?;
+        }
+        *slot = Some(built);
+    }
+    let template = slot
+        .as_ref()
+        .ok_or_else(|| Error::Internal("no in-memory template".into()))?;
+    let mut conn = Connection::open_in_memory()?;
+    // Every page in one step: nothing else writes either database.
+    let copied = rusqlite::backup::Backup::new(template, &mut conn)?.step(-1)?;
+    if !matches!(copied, rusqlite::backup::StepResult::Done) {
+        return Err(Error::Internal("an in-memory copy stopped short".into()));
+    }
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    register_functions(&conn)?;
+    Ok(conn)
+}
+
+/// Open the database read-only, for a command that only reads: never
+/// migrated, so refused unless its schema is this binary's.
+///
+/// # Errors
+/// It can't be opened, or its schema is older or newer.
+pub fn open_read_only(path: &Path) -> Result<Connection, Error> {
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let found: u32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    let supported = MIGRATIONS.len();
+    match (found as usize).cmp(&supported) {
+        std::cmp::Ordering::Less => Err(Error::SchemaTooOld { found, supported }),
+        std::cmp::Ordering::Greater => Err(Error::SchemaTooNew { found, supported }),
+        std::cmp::Ordering::Equal => Ok(conn),
+    }
 }
 
 /// Rewrite the file when a quarter or more of it is free pages (a rebuilt
@@ -309,9 +364,9 @@ pub fn write(conn: &mut Connection) -> rusqlite::Result<Transaction<'_>> {
 /// never leaves a truncated snapshot behind.
 ///
 /// An existing `.pre-v<version>` is this file's copy, and reused, only when
-/// a failed migration left its marker or the copy is no older than the
-/// file and its WAL (a failing start restarted by systemd writes no second
-/// copy). Otherwise (a rolled-back file used since) this one gets a
+/// neither the file nor its WAL changed since the copy, or since the marker
+/// a failed migration left (a failing start restarted by systemd writes no
+/// second copy). Otherwise (a rolled-back file used since) this one gets a
 /// timestamped name beside it.
 fn snapshot_before_migrating(
     conn: &Connection,
@@ -323,13 +378,21 @@ fn snapshot_before_migrating(
     }
     let mut target = beside(path, &format!(".pre-v{version}"));
     if target.exists() {
-        let marked = beside(path, &format!(".migrating-v{version}")).exists();
-        let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
-        let copied = modified(&target);
-        let fresh = [path.to_owned(), beside(path, "-wal")]
-            .iter()
-            .all(|p| modified(p).is_none_or(|m| copied.is_some_and(|c| c >= m)));
-        if marked || fresh {
+        // A WAL holding no frames is one this open just made, not a write.
+        let changed = |p: &Path| {
+            std::fs::metadata(p)
+                .ok()
+                .filter(|m| m.len() > 0)
+                .and_then(|m| m.modified().ok())
+        };
+        let unchanged_since = |since: &Path| {
+            let since = std::fs::metadata(since).and_then(|m| m.modified()).ok();
+            [path.to_owned(), beside(path, "-wal")]
+                .iter()
+                .all(|p| changed(p).is_none_or(|m| since.is_some_and(|s| s >= m)))
+        };
+        let marker = beside(path, &format!(".migrating-v{version}"));
+        if unchanged_since(&target) || (marker.exists() && unchanged_since(&marker)) {
             tracing::info!(snapshot = %target.display(), "reusing the snapshot of this file");
             return Ok(Some((version, target)));
         }
@@ -389,8 +452,13 @@ fn migrate(conn: &mut Connection) -> Result<(), Error> {
     // would cascade into its children. The bundled SQLite enables them by
     // default, and the pragma is a no-op inside a transaction, so set it here.
     conn.pragma_update(None, "foreign_keys", "OFF")?;
-    // IMMEDIATE takes the write lock before reading the version, so a server
-    // and an import opening a fresh file at once can't both migrate it.
+    // A current file needs no lock: a start beside a long import goes on.
+    let current: u32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    if current as usize == MIGRATIONS.len() {
+        return Ok(());
+    }
+    // IMMEDIATE takes the write lock before reading the version again, so a
+    // server and an import opening a fresh file at once can't both migrate it.
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let version: u32 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
     if version as usize > MIGRATIONS.len() {
@@ -513,18 +581,44 @@ pub const DERIVED: &[Derived] = &[
         key: "copy_rule_version",
         version: 1,
         after: None,
-        refresh: Refresh::Plain(|tx| sync_workouts::copies_collapse(tx, None)),
+        refresh: Refresh::Plain(|tx| device_sessions::copies_collapse(tx, None)),
     },
 ];
+
+/// The `meta` key of the zone the zoned families were made in.
+const TIME_ZONE_KEY: &str = "time_zone";
+
+/// The IANA zone the stored days were made in, once a `serve` named one.
+///
+/// # Errors
+/// A read fails.
+pub fn stored_time_zone(conn: &Connection) -> Result<Option<String>, Error> {
+    Ok(conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = ?",
+            [TIME_ZONE_KEY],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+/// Whether family `key` counts its days in a zone.
+#[must_use]
+pub fn is_zoned(key: &str) -> bool {
+    DERIVED
+        .iter()
+        .any(|f| f.key == key && matches!(f.refresh, Refresh::Zoned(_)))
+}
 
 /// Bring the data derived from what is stored up to its rules
 /// ([`DERIVED`]): a family whose stored version isn't its rule's, or whose
 /// `after` made something this run, is made again and stamped, each in one
 /// transaction. `serve` runs it after `open` with its zone, every other
-/// command with `None` (the zoned families wait for the next `serve`). A
-/// family that fails is logged and left unstamped (the next start tries
-/// again); the others still run: only a failed migration stops a start.
-/// What ran, and how much each made.
+/// command with `None` (the zoned families wait for the next `serve`); a
+/// zone other than the one stored makes the zoned families again, and is
+/// stored once they all ran. A family that fails is logged and left
+/// unstamped (the next start tries again); the others still run: only a
+/// failed migration stops a start. What ran, and how much each made.
 pub fn derived_current(
     conn: &mut Connection,
     tz: Option<&TimeZone>,
@@ -540,8 +634,17 @@ fn derived_run(
     now: i64,
 ) -> BTreeMap<&'static str, usize> {
     let mut ran = BTreeMap::new();
+    let zone = tz.and_then(TimeZone::iana_name);
+    let stored = stored_time_zone(conn).unwrap_or_else(|e| {
+        tracing::error!(error = %e, "the stored time zone can't be read");
+        None
+    });
+    let rezone = zone.is_some() && stored.is_some() && stored.as_deref() != zone;
+    let mut zoned_failed = false;
     for f in families {
-        let moved = f.after.is_some_and(|a| ran.get(a).is_some_and(|&n| n > 0));
+        let zoned = matches!(f.refresh, Refresh::Zoned(_));
+        let moved =
+            (rezone && zoned) || f.after.is_some_and(|a| ran.get(a).is_some_and(|&n| n > 0));
         match derived_one(conn, f, tz, now, moved) {
             Ok(Some(made)) => {
                 tracing::info!(
@@ -553,14 +656,39 @@ fn derived_run(
                 ran.insert(f.key, made);
             }
             Ok(None) => {}
-            Err(e) => tracing::error!(
-                key = f.key,
-                error = %e,
-                "derived data not made again; the next start tries again"
-            ),
+            Err(e) => {
+                zoned_failed |= zoned;
+                tracing::error!(
+                    key = f.key,
+                    error = %e,
+                    "derived data not made again; the next start tries again"
+                );
+            }
         }
     }
+    if let Some(zone) = zone
+        && !zoned_failed
+    {
+        time_zone_store(conn, stored.as_deref(), zone);
+    }
     ran
+}
+
+/// Store `zone` as the one the zoned families were made in, when it isn't
+/// already; a failure is logged (the next start tries again).
+fn time_zone_store(conn: &Connection, stored: Option<&str>, zone: &str) {
+    if stored == Some(zone) {
+        return;
+    }
+    if let Some(from) = stored {
+        tracing::warn!(from, to = zone, "stored days made again in a new time zone");
+    }
+    if let Err(e) = conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+        params![TIME_ZONE_KEY, zone],
+    ) {
+        tracing::error!(error = %e, "the time zone isn't stored; the next start tries again");
+    }
 }
 
 /// One family: made again and stamped when due; `None` when not (or when
@@ -572,13 +700,20 @@ fn derived_one(
     now: i64,
     moved: bool,
 ) -> Result<Option<usize>, Error> {
+    let stamp = |c: &Connection| -> Result<Option<i64>, Error> {
+        Ok(
+            c.query_row("SELECT value FROM meta WHERE key = ?", [f.key], |r| {
+                r.get(0)
+            })
+            .optional()?,
+        )
+    };
+    // Read first: the write lock only when due.
+    if stamp(conn)? == Some(f.version) && !moved {
+        return Ok(None);
+    }
     let tx = write(conn)?;
-    let stored: Option<i64> = tx
-        .query_row("SELECT value FROM meta WHERE key = ?", [f.key], |r| {
-            r.get(0)
-        })
-        .optional()?;
-    if stored == Some(f.version) && !moved {
+    if stamp(&tx)? == Some(f.version) && !moved {
         return Ok(None);
     }
     let made = match (f.refresh, tz) {
@@ -645,8 +780,10 @@ fn from_json<T: serde::de::DeserializeOwned>(s: &str) -> rusqlite::Result<T> {
 }
 
 mod activities;
+mod cronometer;
 mod derived;
 mod device;
+mod device_sessions;
 mod diary;
 mod exercises;
 mod feedback;
@@ -654,13 +791,11 @@ mod foods;
 mod habits;
 mod health_record;
 mod hooks;
-mod import;
 mod migrations;
 mod photos;
 mod profiles;
 mod reports;
 mod scale;
-mod sync_workouts;
 mod targets;
 #[cfg(test)]
 mod tests;
@@ -720,6 +855,25 @@ mod derived_tests {
             assert_eq!(stamped(&conn, f.key), Some(f.version), "{}", f.key);
         }
         assert!(derived_current(&mut conn, Some(&TimeZone::UTC), 0).is_empty());
+    }
+
+    /// The zone the server's days were made in is stored; another zone
+    /// makes the zoned families again, a command without one keeps it.
+    #[test]
+    fn a_new_time_zone_remakes_the_zoned_families() {
+        let mut conn = memory();
+        let helsinki = TimeZone::get("Europe/Helsinki").unwrap();
+        let zoned: BTreeSet<&str> = ["night_rule_version", "weight_rule_version"].into();
+        derived_current(&mut conn, Some(&TimeZone::UTC), 0);
+        assert!(derived_current(&mut conn, Some(&TimeZone::UTC), 0).is_empty());
+        assert!(derived_current(&mut conn, None, 0).is_empty());
+        let ran = derived_current(&mut conn, Some(&helsinki), 0);
+        assert_eq!(ran.into_keys().collect::<BTreeSet<_>>(), zoned);
+        assert_eq!(
+            stored_time_zone(&conn).unwrap().as_deref(),
+            Some("Europe/Helsinki")
+        );
+        assert!(derived_current(&mut conn, Some(&helsinki), 0).is_empty());
     }
 
     /// A family stamped by an older rule runs again; one that made
@@ -895,7 +1049,7 @@ mod layering {
     fn the_syncs_kcal_sql_follows_provenance() {
         use crate::model::{KcalSource, Provenance};
         use std::collections::BTreeSet;
-        let text = include_str!("sync_workouts.rs");
+        let text = include_str!("device_sessions.rs");
         let mut named = BTreeSet::new();
         for (at, _) in text.match_indices("kcal_source IS ") {
             let rest = text[at + "kcal_source IS ".len()..].trim_start_matches("NOT ");
@@ -914,7 +1068,10 @@ mod layering {
 }
 
 pub use activities::*;
+pub use cronometer::*;
+pub use derived::{device_replace, records_put};
 pub use device::*;
+pub use device_sessions::*;
 pub use diary::*;
 pub use exercises::*;
 pub use feedback::*;
@@ -922,13 +1079,11 @@ pub use foods::*;
 pub use habits::*;
 pub use health_record::*;
 pub use hooks::*;
-pub use import::*;
 use migrations::MIGRATIONS;
 pub use photos::*;
 pub use profiles::*;
 pub use reports::*;
 pub use scale::*;
-pub use sync_workouts::*;
 pub use targets::*;
 pub use transfer::*;
 pub use workouts::*;

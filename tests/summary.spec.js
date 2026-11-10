@@ -234,7 +234,7 @@ test("one chart, its tabs Energy · Protein · Carbs · Fat; each target the eat
     }),
   );
   await page.goto("/#/summary/week/2031-03-05");
-  // Owner (2026-10-14): one chart card, its tabs the four.
+  // One chart card, its tabs the four.
   await expect(page.locator(".chart-section")).toHaveCount(1);
   const tabs = page.getByRole("radiogroup", { name: "Chart" });
   await expect(tabs.getByRole("radio")).toHaveText([
@@ -270,7 +270,7 @@ test("one chart, its tabs Energy · Protein · Carbs · Fat; each target the eat
       ]),
     ),
   );
-  // Owner (2026-10-14): a target is neutral and faint, dashed; every
+  // A target is neutral and faint, dashed; every
   // series' points the same neutral; each trend its own colour.
   expect(looks["target line"][1]).toBe(true);
   expect(looks["target line"][0]).not.toBe(looks["eaten trend"][0]);
@@ -301,7 +301,7 @@ test("one chart, its tabs Energy · Protein · Carbs · Fat; each target the eat
   }
 });
 
-test("the energy chart: one legend every period, a shape per series, a floor hollow, a field seen, round ticks (E3-6, U3-5, U3-6, E3-12)", async ({
+test("the energy chart: one legend every period, a shape per series, a floor hollow, a field seen, round ticks", async ({
   page,
 }) => {
   await page.route("**/api/profiles/*/summary?*", (route) =>
@@ -1507,7 +1507,7 @@ async function tipAt(img, i) {
 const targetsIn = (lines) =>
   lines.filter((l) => /^(?:target|goal)\b/iu.test(l));
 
-// Owner (2026-10-17): every chart names its target in a point's tooltip,
+// Every chart names its target in a point's tooltip,
 // once, as the bars do: a range, "≥" at least, "≤" at most.
 test("a food point's tooltip names its target once: a range, at least, at most", async ({
   page,

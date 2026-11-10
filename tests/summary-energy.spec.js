@@ -97,7 +97,7 @@ test("the balance names resting energy's sources over a period mixing them (owne
   );
 });
 
-test("a measured maintenance leads the balance; burned is second, named; Activity averages Food's days (UX11-5)", async ({
+test("the balance leads Food; a measured maintenance leads the balance; burned is second, named; Activity averages Food's days", async ({
   page,
   request,
 }, testInfo) => {
@@ -118,6 +118,8 @@ test("a measured maintenance leads the balance; burned is second, named; Activit
   // A phone: the line wraps between its parts, never inside one.
   await page.setViewportSize({ width: 393, height: 851 });
   await page.goto("/#/summary/food/month/2025-03-15");
+  // The balance leads Food.
+  await expect(page.locator("main h2").first()).toHaveText("Energy balance");
   await expect(balanceLine(page)).toHaveText(
     /^Eaten\s2,000 · Maintenance\s≈\s2,310 · Deficit\s≈\s310\skcal\sa\sday, from\syour\sweight\strend$/u,
   );
@@ -137,7 +139,7 @@ test("a measured maintenance leads the balance; burned is second, named; Activit
   );
 });
 
-test("a kJ device says the balance's estimates in 50 kJ steps (QUAL11-N2)", async ({
+test("a kJ device says the balance's estimates in 50 kJ steps", async ({
   page,
   request,
 }, testInfo) => {

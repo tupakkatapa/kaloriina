@@ -2,9 +2,9 @@
 //! rows matched to a food.
 
 use super::prelude::*;
-use crate::model::import::{MatchReport, NOT_GRAMS, Skipped, grams_in};
+use crate::model::cronometer::{MatchReport, NOT_GRAMS, Skipped, grams_in};
 
-/// Write a read Cronometer export (`crate::import::read`) in one
+/// Write a read Cronometer export (`crate::cronometer::read`) in one
 /// transaction: the imported history of every day it covers is replaced.
 /// A name matched to a food ([`imported_match`]) before is matched again.
 ///
@@ -12,9 +12,9 @@ use crate::model::import::{MatchReport, NOT_GRAMS, Skipped, grams_in};
 /// A write fails; nothing is written then.
 pub fn cronometer_apply(
     conn: &mut Connection,
-    profile: ProfileId,
-    parsed: crate::model::import::Parsed,
-) -> Result<crate::model::import::Report, Error> {
+    pid: ProfileId,
+    parsed: crate::model::cronometer::Parsed,
+) -> Result<crate::model::cronometer::Report, Error> {
     let tx = write(conn)?;
     let days: BTreeSet<&str> = parsed
         .servings
@@ -28,15 +28,15 @@ pub fn cronometer_apply(
                 .flat_map(|s| s.days.iter().map(String::as_str)),
         )
         .collect();
-    let matches = matches_undone(&tx, profile, &days)?;
+    let matches = matches_undone(&tx, pid, &days)?;
     if let Some(rows) = &parsed.servings {
-        imported_entries_replace(&tx, profile, rows)?;
+        imported_entries_replace(&tx, pid, rows)?;
     }
     if let Some(s) = &parsed.summary {
-        day_totals_replace(&tx, profile, &s.days, &s.rows)?;
+        day_totals_replace(&tx, pid, &s.days, &s.rows)?;
     }
     for (name, food_id) in matches {
-        match_rows(&tx, profile, &name, &written(food_get(&tx, food_id)?))?;
+        match_rows(&tx, pid, &name, &written(food_get(&tx, food_id)?))?;
     }
     tx.commit()?;
     Ok(parsed.report())
@@ -45,21 +45,21 @@ pub fn cronometer_apply(
 /// Replace imported entries for every day present in `rows`.
 pub fn imported_entries_replace(
     tx: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     rows: &[ImportedEntry],
 ) -> Result<(), Error> {
     let days: BTreeSet<&str> = rows.iter().map(|r| r.day.as_str()).collect();
     for day in days {
         tx.execute(
             "DELETE FROM entry WHERE src_grp IS NOT NULL AND profile_id = ? AND day = ?",
-            params![profile, day],
+            params![pid, day],
         )?;
     }
     for r in rows {
         tx.execute(
             "INSERT INTO entry (profile_id, day, grp, src_grp, name, amount)
              VALUES (?1, ?2, ?3, ?3, ?4, ?5)",
-            params![profile, r.day, r.group, r.name, r.amount],
+            params![pid, r.day, r.group, r.name, r.amount],
         )?;
     }
     Ok(())
@@ -68,20 +68,20 @@ pub fn imported_entries_replace(
 /// Replace imported group totals for every day in `days`.
 pub fn day_totals_replace(
     tx: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     days: &[String],
     rows: &[DayTotal],
 ) -> Result<(), Error> {
     for day in days {
         tx.execute(
             "DELETE FROM day_total WHERE profile_id = ? AND day = ?",
-            params![profile, day],
+            params![pid, day],
         )?;
     }
     for r in rows {
         tx.execute(
             "INSERT INTO day_total (profile_id, day, grp, nutrients) VALUES (?, ?, ?, ?)",
-            params![profile, r.day, r.group, json(&r.nutrients)],
+            params![pid, r.day, r.group, json(&r.nutrients)],
         )?;
     }
     Ok(())
@@ -98,21 +98,21 @@ pub fn day_totals_replace(
 /// 400 `food_id` for an unknown food.
 pub fn imported_match(
     conn: &mut Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     name: &str,
     food_id: i64,
 ) -> Result<MatchReport, Error> {
     let tx = write(conn)?;
     let food = food_get(&tx, food_id)?
         .ok_or_else(|| Error::invalid_field("food_id", format!("unknown food {food_id}")))?;
-    let report = match_rows(&tx, profile, name, &food)?;
+    let report = match_rows(&tx, pid, name, &food)?;
     tx.commit()?;
     Ok(report)
 }
 
 fn match_rows(
     tx: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     name: &str,
     food: &Food,
 ) -> Result<MatchReport, Error> {
@@ -122,7 +122,7 @@ fn match_rows(
             "SELECT id, day, src_grp, food_id, amount FROM entry
              WHERE profile_id = ? AND src_grp IS NOT NULL AND name = ? COLLATE NOCASE",
         )?
-        .query_map(params![profile, name], |r| {
+        .query_map(params![pid, name], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -133,7 +133,7 @@ fn match_rows(
             continue;
         }
         if matched.is_some() {
-            unmatch(tx, profile, id)?;
+            unmatch(tx, pid, id)?;
         }
         let Some(grams) = grams_in(&amount, food) else {
             not_grams += 1;
@@ -144,7 +144,7 @@ fn match_rows(
             "UPDATE entry SET food_id = ?, grams = ?, nutrients = ? WHERE id = ?",
             params![food.id, grams, json(&n), id],
         )?;
-        total_less(tx, profile, (&day, &group), &n, 1.0)?;
+        total_less(tx, pid, (&day, &group), &n, 1.0)?;
         report.matched += 1;
     }
     if not_grams > 0 {
@@ -160,7 +160,7 @@ fn match_rows(
 /// import is about to replace; what each matched name was matched to.
 fn matches_undone(
     tx: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     days: &BTreeSet<&str>,
 ) -> Result<BTreeMap<String, i64>, Error> {
     let rows: Vec<(i64, String, String, i64)> = tx
@@ -169,14 +169,12 @@ fn matches_undone(
              WHERE profile_id = ? AND src_grp IS NOT NULL AND food_id IS NOT NULL
              ORDER BY id",
         )?
-        .query_map([profile], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-        })?
+        .query_map([pid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
         .collect::<rusqlite::Result<_>>()?;
     let mut matches = BTreeMap::new();
     for (id, day, name, food_id) in rows {
         if days.contains(day.as_str()) {
-            unmatch(tx, profile, id)?;
+            unmatch(tx, pid, id)?;
         }
         matches.insert(name, food_id);
     }
@@ -185,13 +183,13 @@ fn matches_undone(
 
 /// A matched row back to imported history: its values go back into its
 /// group's total.
-fn unmatch(tx: &Connection, profile: ProfileId, id: i64) -> Result<(), Error> {
+fn unmatch(tx: &Connection, pid: ProfileId, id: i64) -> Result<(), Error> {
     let (day, group, text): (String, String, String) = tx.query_row(
         "SELECT day, src_grp, nutrients FROM entry WHERE id = ?",
         [id],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
-    total_less(tx, profile, (&day, &group), &from_json(&text)?, -1.0)?;
+    total_less(tx, pid, (&day, &group), &from_json(&text)?, -1.0)?;
     tx.execute(
         "UPDATE entry SET food_id = NULL, grams = NULL, nutrients = NULL WHERE id = ?",
         [id],
@@ -203,12 +201,12 @@ fn unmatch(tx: &Connection, profile: ProfileId, id: i64) -> Result<(), Error> {
 /// key by key where the total has one, never below 0.
 fn total_less(
     tx: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     (day, group): (&str, &str),
     n: &Nutrients,
     sign: f64,
 ) -> Result<(), Error> {
-    let at = params![profile, day, group];
+    let at = params![pid, day, group];
     let Some(text) = tx
         .query_row(
             "SELECT nutrients FROM day_total WHERE profile_id = ? AND day = ? AND grp = ?",
@@ -227,7 +225,7 @@ fn total_less(
     }
     tx.execute(
         "UPDATE day_total SET nutrients = ? WHERE profile_id = ? AND day = ? AND grp = ?",
-        params![json(&total), profile, day, group],
+        params![json(&total), pid, day, group],
     )?;
     Ok(())
 }

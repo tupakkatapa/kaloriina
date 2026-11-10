@@ -95,13 +95,11 @@ function warningOf(key, t, { days, tip, period, sources }) {
   if (n.goal === "at_least" && mean < LOW * t.value) {
     // Covered by the tip.
     if (key === "vitamin_d" && tip) return null;
-    // Foods without it count as 0: under full coverage, a floor.
-    const floor = coverage(days, key) < 1 ? "≥ " : "";
     return {
       id: `low:${key}`,
       tone: "warning",
       headline: n.ai ? `${label} below recommended` : `${label} intake low`,
-      numbers: `${floor}${fmtNum(n.show(mean))} of ${fmtUnit(key, t.value)} a day · ${period}`,
+      numbers: `${fmtNum(n.show(mean))} of ${fmtUnit(key, t.value)} a day · ${period}`,
       detail: withNames(
         `${n.ai ? `Under ${Math.round(LOW * 100)}${NBSP}% of the recommended amount (an adequate intake)` : `Under ${Math.round(LOW * 100)}${NBSP}% of your target`}: intake, not status. ${basis(days, key)}`,
         "Good sources:",
@@ -133,7 +131,7 @@ function warningOf(key, t, { days, tip, period, sources }) {
 // under MIN_DAYS logged or MIN_LOGGED of the elapsed days, and nothing of a
 // nutrient not known (see meanOf). An at-least nutrient under LOW of its target
 // warns ("Iron intake low": intake, not status; or for an adequate intake
-// "below recommended"; "≥" when short of full coverage, a floor); an at-most
+// "below recommended"; known, it reads as it is, as a bar does); an at-most
 // one over its max warns; about-goals never do. The winter vitamin D tip
 // replaces vitamin D's warning.
 export function nutrientWarnings({

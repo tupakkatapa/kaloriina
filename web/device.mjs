@@ -148,27 +148,28 @@ export const activityHeartText = ({ avg_hr, max_hr } = {}) =>
     ? null
     : `${avg_hr}${NBSP}bpm avg${isNil(max_hr) ? "" : `, ${max_hr}${NBSP}max`}`;
 
-const DAY_MIN = 1440;
+const DAY_MINUTES = 1440;
 // "HH:MM" → minutes after midnight, and back (any minutes, mod 1440).
 export const minutesOf = (hhmm) => {
   const [h, m] = hhmm.split(":").map(Number);
   return h * 60 + m;
 };
 export const hhmm = (min) => {
-  const m = ((Math.round(min) % DAY_MIN) + DAY_MIN) % DAY_MIN;
+  const m = ((Math.round(min) % DAY_MINUTES) + DAY_MINUTES) % DAY_MINUTES;
   return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
 };
 // The circular mean of clock times (minutes): 23:50 and 00:10 average
 // 00:00, never noon.
 const clockMean = (list) => {
-  const a = list.map((m) => (m / DAY_MIN) * 2 * Math.PI);
+  const a = list.map((m) => (m / DAY_MINUTES) * 2 * Math.PI);
   const sin = a.reduce((t, x) => t + Math.sin(x), 0);
   const cos = a.reduce((t, x) => t + Math.cos(x), 0);
-  return (Math.atan2(sin, cos) / (2 * Math.PI)) * DAY_MIN;
+  return (Math.atan2(sin, cos) / (2 * Math.PI)) * DAY_MINUTES;
 };
 // From `mean` to `m` the short way round, −720..720 minutes.
 const around = (m, mean) =>
-  ((((m - mean) % DAY_MIN) + DAY_MIN * 1.5) % DAY_MIN) - DAY_MIN / 2;
+  ((((m - mean) % DAY_MINUTES) + DAY_MINUTES * 1.5) % DAY_MINUTES) -
+  DAY_MINUTES / 2;
 
 // Nights the clock averages need.
 export const MIN_NIGHTS = 3;
@@ -225,20 +226,21 @@ export function sleepStats(days) {
 // the goal to an hour over, 4 an hour or more over; 0 without a night. Each
 // step starts at its bound, so a night at the goal shades as one that
 // reached it (its ✓ is "the goal or more").
-export const GOAL_STEP_MIN = 60;
+export const GOAL_STEP_MINUTES = 60;
 export const goalShade = (min, goal) =>
   min > 0
     ? 1 +
-      [goal - GOAL_STEP_MIN, goal, goal + GOAL_STEP_MIN].filter((b) => min >= b)
-        .length
+      [goal - GOAL_STEP_MINUTES, goal, goal + GOAL_STEP_MINUTES].filter(
+        (b) => min >= b,
+      ).length
     : 0;
 
 // How far a night's bedtime or wake-up may be from its target (minutes)
 // and still keep the schedule: the `bedtime`/`wake_time` targets' window.
-export const ON_SCHEDULE_MIN = 30;
+export const ON_SCHEDULE_MINUTES = 30;
 
 // Whether the night ending day `d` (an activity day) kept the schedule:
-// its bedtime and wake-up each within ON_SCHEDULE_MIN of `bedtime` and
+// its bedtime and wake-up each within ON_SCHEDULE_MINUTES of `bedtime` and
 // `wake` (target minutes, compared mod 1440; one not set isn't checked).
 // Null without a night or without either target.
 export function onSchedule(d, bedtime, wake) {
@@ -246,7 +248,7 @@ export function onSchedule(d, bedtime, wake) {
     return null;
   const kept = (clock, target) =>
     isNil(target) ||
-    Math.abs(around(minutesOf(clock), target)) <= ON_SCHEDULE_MIN;
+    Math.abs(around(minutesOf(clock), target)) <= ON_SCHEDULE_MINUTES;
   return kept(d.bedtime, bedtime) && kept(d.wake_time, wake);
 }
 

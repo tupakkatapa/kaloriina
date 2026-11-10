@@ -34,13 +34,16 @@ const loose = {
 const none = { text: "–", lower: false, judged: false, hint: null };
 const status = (...a) => plain(barStatus(...a));
 
-test("TFA-D1: an unjudged amount never reads 'Target met · null'", () => {
-  assert.equal(status("b5", atLeast, 6, 6, loose), "From 5 % of it");
+test("an unjudged amount never reads 'Target met · null'", () => {
+  assert.equal(
+    status("b5", atLeast, 6, 6, loose),
+    "At least: only 5 % of it has a value for it",
+  );
   assert.equal(status("b5", atLeast, 0, 0, none), "Not known");
   assert.doesNotMatch(status("b5", atLeast, 6, 6, none), /null/u);
 });
 
-test("TFA-F4: a floor in range proves the minimum, not the range", () => {
+test("a floor in range proves the minimum, not the range", () => {
   assert.equal(
     status("energy", about, 2043, 2043, floor, { average: true }),
     "Minimum met",
@@ -54,7 +57,7 @@ test("TFA-F4: a floor in range proves the minimum, not the range", () => {
   assert.equal(status("energy", about, 1503, 1503, floor), "≤ 497 kcal to go");
 });
 
-test("TFA-F6: an excess counts from the range's top", () => {
+test("an excess counts from the range's top", () => {
   assert.equal(
     status("energy", about, 2132, 2132, floor, { average: true }),
     "32 kcal over the range",

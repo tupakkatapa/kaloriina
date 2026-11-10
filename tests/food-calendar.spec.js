@@ -180,6 +180,36 @@ test("food calendar: the metric is kept on the device; no target shades by amoun
   ).toHaveText(["Energy", "Protein", "Carbs", "Fat"]);
 });
 
+test("food calendar: a day's protein reads ≥ only under 80 % known", async ({
+  page,
+}) => {
+  await mock(page);
+  const shares = { "2025-03-03": 0.9, "2025-03-04": 0.5 };
+  await page.route("**/api/profiles/*/summary?*", (route) =>
+    route.fulfill({
+      json: {
+        from: "2025-03-03",
+        to: "2025-03-09",
+        days_logged: DAYS.length,
+        average: {},
+        days: DAYS.map((d) =>
+          d.day in shares
+            ? { ...d, known: { protein: shares[d.day], dry: 400 } }
+            : d,
+        ),
+      },
+    }),
+  );
+  await page.goto("/#/summary/food/week/2025-03-03");
+  await metric(page, "Protein").click();
+  await expect(cell(page, "2025-03-03").locator(".cal-amount")).toHaveText(
+    "120",
+  );
+  await expect(cell(page, "2025-03-04").locator(".cal-amount")).toHaveText(
+    label("≥ 40"),
+  );
+});
+
 test("food calendar: kJ on a kJ device, and fits a phone", async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("energy-unit", "kJ"));
   await page.setViewportSize({ width: 320, height: 700 });

@@ -93,7 +93,7 @@ fn import_history(conn: &mut kaloriina::Connection) {
     for d in 0..365 {
         writeln!(csv, "{},Consumed,1800{}true", day(d), ",".repeat(61)).unwrap();
     }
-    kaloriina::import::import(
+    kaloriina::cronometer::import(
         conn,
         kaloriina::ProfileId(1),
         None::<&[u8]>,
@@ -144,6 +144,23 @@ async fn plan_and_target(app: &Router, foods: &[i64]) {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{targets}");
+}
+
+/// [`ENTRIES_PER_DAY`] foods eaten every day, each at a time of its own.
+async fn eaten(app: &Router, foods: &[i64]) {
+    for d in 0..DAYS {
+        for e in 0..ENTRIES_PER_DAY {
+            call(
+                app,
+                "POST",
+                "/api/profiles/1/entries",
+                Some(json!({ "day": day(d), "group": "Eaten",
+                             "food_id": foods[(d * 7 + e * 13) % FOODS], "grams": 120,
+                             "time": format!("{:02}:{:02}", 7 + e, (d * 7) % 60) })),
+            )
+            .await;
+        }
+    }
 }
 
 /// [`HABITS`] trackers, each counted every day.
@@ -467,16 +484,62 @@ async fn takeout_within_budget(app: &Router) -> bool {
     worst <= budget
 }
 
-/// A day's read while All time loads, again and again: it waits for All
-/// time's reads only, which hold the lock, not for its sums.
-/// Budget 30 ms.
+/// The profile exported and imported as another while the diary is read:
+/// the import holds the lock throughout, each food matched by index. A
+/// day's read waits at most 1.4 s behind it.
+async fn day_during_import_within_budget(app: &Router) -> bool {
+    let (status, mut export) = call(app, "GET", "/api/profiles/1/export", None).await;
+    assert_eq!(status, StatusCode::OK);
+    export["profile"]["name"] = json!("Imported");
+    let import = {
+        let app = app.clone();
+        tokio::spawn(async move {
+            let (status, res) = call(
+                &app,
+                "POST",
+                "/api/profiles/import?uid=bench-import",
+                Some(export),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{res}");
+        })
+    };
+    let mut waits = Vec::new();
+    let mut i = 0;
+    while !import.is_finished() {
+        let start = Instant::now();
+        let uri = format!("/api/profiles/1/day/{}", day(i % DAYS));
+        let (status, _) = call(app, "GET", &uri, None).await;
+        assert!(status.is_success(), "{uri}: {status}");
+        waits.push(start.elapsed());
+        i += 1;
+    }
+    import.await.unwrap();
+    let worst = waits.iter().max().copied().unwrap_or_default();
+    let budget = Duration::from_millis(1400);
+    let name = "day during import";
+    println!(
+        "{name:>17}: {} reads, max {worst:>9.2?}  (budget max {budget:?})",
+        waits.len()
+    );
+    worst <= budget
+}
+
+/// A day's read while All time loads (its stats and every day's energy),
+/// again and again: it waits for All time's reads only, each a part of the
+/// range under the lock, not for its sums. Budget 30 ms.
 async fn day_during_stats_within_budget(app: &Router) -> bool {
     let loads = {
         let app = app.clone();
         tokio::spawn(async move {
             for _ in 0..10 {
-                let (status, _) = call(&app, "GET", "/api/profiles/1/stats", None).await;
-                assert!(status.is_success(), "stats: {status}");
+                for uri in [
+                    "/api/profiles/1/stats",
+                    "/api/profiles/1/summary?from=2020-01-01&to=2026-12-31&keys=energy",
+                ] {
+                    let (status, _) = call(&app, "GET", uri, None).await;
+                    assert!(status.is_success(), "{uri}: {status}");
+                }
             }
         })
     };
@@ -561,6 +624,10 @@ fn read_uri(name: &str, i: usize, words: &[&str]) -> String {
         "search" => format!("/api/profiles/1/foods?q={}", words[i % words.len()]),
         "day" => format!("/api/profiles/1/day/{}", day(i % DAYS)),
         "recent" => "/api/profiles/1/foods/recent".to_owned(),
+        "suggestions" => format!(
+            "/api/profiles/1/foods/suggestions?day={}&time=08:00",
+            day(i % DAYS)
+        ),
         "summary (year)" => "/api/profiles/1/summary?from=2023-01-01&to=2023-12-28".to_owned(),
         "sources (year)" => {
             "/api/profiles/1/summary/foods?from=2023-01-01&to=2023-12-28&nutrient=sodium".to_owned()
@@ -618,18 +685,7 @@ async fn hot_reads_stay_within_budget() {
         .await;
         ids.push(f["id"].as_i64().unwrap_or_else(|| panic!("{f}")));
     }
-    for d in 0..DAYS {
-        for e in 0..ENTRIES_PER_DAY {
-            call(
-                &app,
-                "POST",
-                "/api/profiles/1/entries",
-                Some(json!({ "day": day(d), "group": "Eaten",
-                             "food_id": ids[(d * 7 + e * 13) % FOODS], "grams": 120 })),
-            )
-            .await;
-        }
-    }
+    eaten(&app, &ids).await;
     plan_and_target(&app, &ids).await;
     habits(&app).await;
     check_ins(&app).await;
@@ -646,6 +702,7 @@ async fn hot_reads_stay_within_budget() {
         ("search", 50),
         ("day", 150),
         ("recent", 150),
+        ("suggestions", 150),
         ("summary (year)", 150),
         ("activities", 150),
         ("sources (year)", 150),
@@ -692,6 +749,9 @@ async fn hot_reads_stay_within_budget() {
     }
     if !day_during_stats_within_budget(&app).await {
         over.push("day during all time");
+    }
+    if !day_during_import_within_budget(&app).await {
+        over.push("day during import");
     }
     assert!(over.is_empty(), "over budget: {over:?}");
 }

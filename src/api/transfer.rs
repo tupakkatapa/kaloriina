@@ -12,7 +12,7 @@ pub(super) fn routes() -> Router<AppState> {
         )
 }
 
-/// The profile as one JSON file (format v1), saved as
+/// The profile as one JSON file (format [`model::EXPORT_VERSION`]), saved as
 /// `kaloriina-<name>-<day>.json`: an ASCII `filename`, the name as spelt in
 /// `filename*`.
 async fn export(State(s): State<AppState>, Path(pid): Path<ProfileId>) -> Result<Response, Error> {

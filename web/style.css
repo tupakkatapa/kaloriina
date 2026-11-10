@@ -2,8 +2,8 @@
 
    Order: tokens, base, page layout, controls, forms and the editor shell,
    overlays (toast, dialog), shared pieces (headers, cards, lists, tables,
-   the offline pill), then each tab in tab order (Diary, Foods, Summary,
-   Workouts, Profile).
+   the offline pill), then each tab's own (Diary, Foods, Summary, Activity,
+   Profile).
    A section's desktop overrides (html.desktop, set by layout.js) sit at its
    end. Phone-narrow tweaks use a width query: they're about the space a
    row has, not the layout picked, so they hold in a forced desktop on a
@@ -339,7 +339,7 @@ html:not(.desktop) {
   content: "";
   position: fixed;
   z-index: var(--z-loading);
-  inset: 0 0 auto;
+  inset: env(safe-area-inset-top) 0 auto;
   height: 3px;
   background: var(--accent);
   transform-origin: left;
@@ -361,64 +361,33 @@ html:not(.desktop) {
     animation: none;
   }
 
-  /* The spinner still follows the finger, but doesn't turn or glide. */
+  /* The line still follows the finger, but doesn't glide back. */
   #pull {
-    rotate: none;
     transition: none;
-  }
-
-  #pull.refreshing {
-    animation: none;
   }
 }
 
-/* Pull to refresh's spinner: it comes down from the top as far as the pull
-   (`--pull`, px), its arc turning with it, then spins while the screen
-   refreshes. */
+/* Pull to refresh's line: where the loading bar runs, as wide as the pull
+   (`--reach` of the screen), in the accent once a release refreshes; then
+   the loading bar takes over. */
 #pull {
-  --size: 2.5rem;
   position: fixed;
-  z-index: var(--z-toast);
-  top: calc(env(safe-area-inset-top) - var(--size));
-  left: calc(50% - var(--size) / 2);
-  box-sizing: border-box;
-  width: var(--size);
-  height: var(--size);
-  border: 3px solid var(--line);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  background: var(--surface);
-  box-shadow: var(--shadow-lift);
+  z-index: var(--z-loading);
+  inset: env(safe-area-inset-top) 0 auto;
+  height: 3px;
+  background: var(--line);
   pointer-events: none;
-  opacity: calc(var(--pull, 0) / var(--pull-threshold));
-  translate: 0 calc(var(--pull, 0) * 1px);
-  rotate: calc(var(--pull, 0) * 5deg);
-  transition:
-    translate 0.2s,
-    opacity 0.2s;
+  transform-origin: left;
+  scale: var(--reach, 0) 1;
+  transition: scale 0.2s;
 }
 
 #pull.pulling {
   transition: none;
 }
 
-#pull.refreshing {
-  animation: pull-spin 0.8s linear infinite;
-}
-
-/* While it spins, the page moves down out from under it. */
-body:has(> #pull.refreshing) {
-  padding-top: calc(var(--s4) + var(--pull-threshold) * 1px);
-}
-
-@keyframes pull-spin {
-  from {
-    rotate: 0deg;
-  }
-
-  to {
-    rotate: 1turn;
-  }
+#pull.ready {
+  background: var(--accent);
 }
 
 /* The first thing a keyboard reaches; out of sight until then. */
@@ -470,7 +439,7 @@ body:has(> #pull.refreshing) {
 }
 
 /* Under 359 px (iPhone SE/mini at 320): five labels fit unclipped in a
-   smaller size with no inline padding ("Workouts" needs about 60 px). */
+   smaller size with no inline padding ("Summary" needs about 52 px). */
 @media (max-width: 22.4375rem) {
   html:not(.desktop) .tabs a {
     padding-inline: 0;
@@ -731,8 +700,8 @@ textarea:disabled {
   flex: 1 1 auto;
 }
 
-/* A row of actions under a screen's title (New food · New recipe · New
-   meal): equal widths, each its label at least; wrapped, a lone last one
+/* A row of actions under a screen's title (New food · New recipe): equal
+   widths, each its label at least; wrapped, a lone last one
    no wider than the two above it. */
 div.actions > * {
   flex: 1 1 0;
@@ -1950,6 +1919,11 @@ html.desktop .all-targets .category-group {
   background: var(--c);
 }
 
+/* Food quality: each rating its traffic light. */
+.quality-bar > span {
+  --c: var(--tl);
+}
+
 /* What no given macro explains: grey. */
 .split-bar > .k-unknown {
   --c: var(--muted);
@@ -2107,6 +2081,10 @@ html.desktop .all-targets .category-group {
   grid-column: 2;
   grid-row: 1 / span 2;
   white-space: nowrap;
+}
+
+.entry-main .kcal.estimate {
+  color: var(--accent);
 }
 
 /* A quiet line under the entry, the row's full width (a supplement with no
@@ -2668,6 +2646,11 @@ dialog.sheet .menu {
   gap: var(--s2);
 }
 
+/* A folded list's title reads as a section's heading. */
+.finder-fold > summary {
+  font-size: var(--t-lg);
+}
+
 .search-bar {
   display: grid;
   grid-template-columns: 1fr auto auto;
@@ -2739,7 +2722,7 @@ dialog.sheet .menu {
   font-size: var(--t-sm);
 }
 
-/* Items of a recipe or meal: food (opens it), its weight, remove; under
+/* Items of a recipe: food (opens it), its weight, remove; under
    them its amount (quantity and unit). A compound row: --s1 (see
    .habit-row). */
 .items li {
@@ -3097,6 +3080,11 @@ html.desktop .tile-value {
   --tone: var(--tone-warning);
 }
 
+/* A win is the traffic light's good news. */
+.tone-win {
+  --tone: var(--tl-low);
+}
+
 /* A subtab's Highlights: one stack of cards, each a row of its tone's icon,
    headline and numbers, opening to its detail. A fact is muted: no tone
    colour. */
@@ -3362,7 +3350,7 @@ html.desktop .cal-year {
   font-size: var(--t-sm);
 }
 
-/* --------------------------------------------------------- workouts */
+/* --------------------------------------------------------- activity */
 
 .facets select {
   flex: 1 1 9rem;

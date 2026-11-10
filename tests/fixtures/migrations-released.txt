@@ -1460,3 +1460,59 @@ ALTER TABLE device_session RENAME COLUMN kcal_total TO total_kcal;
 ALTER TABLE device_day ADD COLUMN distance_m INTEGER;
 ALTER TABLE import_day ADD COLUMN distance_m INTEGER;
 
+-- 70
+
+CREATE TABLE health_record_new (
+    profile_id INTEGER NOT NULL REFERENCES profile (id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    record_id TEXT NOT NULL,
+    start_at TEXT,
+    end_at TEXT,
+    day TEXT,
+    data TEXT NOT NULL CHECK (json_valid(data)),
+    received_at INTEGER NOT NULL,
+    UNIQUE (profile_id, source, kind, record_id)
+);
+INSERT INTO health_record_new
+    SELECT profile_id, source, kind, record_id, start_at, end_at, day, data, received_at
+    FROM health_record ORDER BY profile_id, source, kind, day, start_at, record_id;
+DROP TABLE health_record;
+ALTER TABLE health_record_new RENAME TO health_record;
+CREATE INDEX health_record_day ON health_record (profile_id, source, kind, day);
+
+-- 71
+
+INSERT INTO food (kind, source, name, uid, drink)
+    SELECT 'recipe', 'custom', m.name, 'meal:' || m.id, 0 FROM meal m
+    WHERE EXISTS (SELECT 1 FROM meal_item i WHERE i.meal_id = m.id)
+      AND NOT EXISTS (
+          SELECT 1 FROM food r
+          WHERE r.kind = 'recipe' AND NOT r.archived AND r.name = m.name
+            AND (SELECT count(*) FROM recipe_item WHERE recipe_id = r.id)
+                = (SELECT count(*) FROM meal_item WHERE meal_id = m.id)
+            AND NOT EXISTS (
+                SELECT 1 FROM meal_item i
+                WHERE i.meal_id = m.id
+                  AND (SELECT count(*) FROM meal_item t
+                       WHERE t.meal_id = m.id AND t.food_id = i.food_id AND t.grams = i.grams)
+                   <> (SELECT count(*) FROM recipe_item t
+                       WHERE t.recipe_id = r.id AND t.food_id = i.food_id AND t.grams = i.grams)))
+    ORDER BY m.id;
+INSERT INTO recipe_item (recipe_id, food_id, grams, serving, quantity)
+    SELECT f.id, i.food_id, i.grams, i.serving, i.quantity
+    FROM meal_item i JOIN food f ON f.uid = 'meal:' || i.meal_id
+    ORDER BY i.meal_id, i.rowid;
+UPDATE food SET uid = NULL WHERE uid LIKE 'meal:%';
+DROP TABLE meal_item;
+DROP TABLE meal;
+DELETE FROM meta WHERE key = 'label_rules_version';
+
+-- 72
+
+CREATE TABLE day_incomplete (
+    profile_id INTEGER NOT NULL REFERENCES profile (id) ON DELETE CASCADE,
+    day TEXT NOT NULL,
+    PRIMARY KEY (profile_id, day)
+);
+

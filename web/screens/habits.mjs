@@ -24,6 +24,7 @@ import {
 } from "../habits.mjs";
 import { href } from "../nav.mjs";
 import { foodRow, menuRow, searchFoods } from "../rows.mjs";
+import { tiles } from "../tiles.mjs";
 import {
   busy,
   choice,
@@ -38,7 +39,6 @@ import {
   picker,
   titleBar,
 } from "../ui.mjs";
-import { tiles } from "../tiles.mjs";
 
 // ----------------------------------------------------- Summary section
 
@@ -178,7 +178,7 @@ const partlyWords = (partial) =>
 // logged, then how many of them it's known on); days at the target, days
 // with any, the most in a day and days over the limit (a day's), each
 // "≥" while any day isn't known. At most 4: "days with any" goes first.
-function statTiles(s, kind) {
+function statTiles(s, kind, vs) {
   const { habit, limit } = s;
   const t = s.stats;
   // A built-in's name is a common noun ("No water"); a tracker's is yours.
@@ -202,8 +202,10 @@ function statTiles(s, kind) {
     "with any",
     `Days ${PERIOD[kind]} with any ${habit.name.toLowerCase()} logged.`,
   );
+  const mean = meanTile(habit, t, s.food);
+  if (mean) mean.vs = vs;
   const items = [
-    perDay ? meanTile(habit, t, s.food) : null,
+    perDay ? mean : null,
     t.reached === null
       ? null
       : count(
@@ -219,7 +221,7 @@ function statTiles(s, kind) {
             short: `${unit(t.total)} in total`,
             long: `Everything logged this week, added up.${partlyWords(t.partial)}`,
           }
-        : meanTile(habit, t, s.food),
+        : mean,
     any,
     {
       value: ge(habitAmountText(habit, t.peak.amount)),
@@ -255,8 +257,18 @@ const section = (...body) =>
 // The Summary's Habits section: one habit at a time, picked from `habits`
 // (the pick kept on this device; the first when the saved one is gone),
 // its numbers, a calendar of the period and its shade key. A pick repaints
-// the habit in place. `days`: the period's `/habits/days`.
-export function habitsSection({ habits, days, from, to, kind }) {
+// the habit in place. `days`: the period's `/habits/days`; `versus(habit)`
+// its mean's change from the period before (insights.mjs versusBefore),
+// `onPick(habit)` called on every paint.
+export function habitsSection({
+  habits,
+  days,
+  from,
+  to,
+  kind,
+  versus = () => null,
+  onPick = () => {},
+}) {
   if (habits.length === 0)
     return section(
       h(
@@ -276,7 +288,7 @@ export function habitsSection({ habits, days, from, to, kind }) {
     body.className = `stack habit habit-${habit.id}`;
     fill(
       body,
-      statTiles(s, kind),
+      statTiles(s, kind, versus(habit)),
       calendarView({
         kind,
         from,
@@ -287,6 +299,7 @@ export function habitsSection({ habits, days, from, to, kind }) {
       }),
       legend(s),
     );
+    onPick(habit);
   };
   paint();
   return section(
@@ -438,19 +451,16 @@ function waterFoodSection(water) {
 // its logged days.
 export async function habitEditor(id) {
   const isNew = id === "new";
-  const [list, logged] = await Promise.all([
-    get(scoped("/habits")),
-    isNew ? [] : get(scoped("/habits/days")),
-  ]);
+  const list = await get(scoped("/habits"));
   const x = isNew
-    ? { name: "", unit: "", goal_value: null, archived: false }
+    ? { name: "", unit: "", goal_value: null, archived: false, days: 0 }
     : list.find((t) => t.id === Number(id));
   if (!x)
     throw Object.assign(new Error("Not found"), {
       code: "not_found",
       resource: "habit",
     });
-  const days = logged.filter((d) => d.habit === String(x.id)).length;
+  const { days } = x;
   const name = nameInput({
     max: meta.limits.label,
     value: x.name,

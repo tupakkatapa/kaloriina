@@ -136,7 +136,7 @@ function lagged(x, y, n, lag, seed = 1) {
   return { [x]: series(xs), [y]: series(ys) };
 }
 
-test("a night-read outcome tests lag 1 only: the night after (IS-3)", () => {
+test("a night-read outcome tests lag 1 only: the night after", () => {
   // Sleep following the steps of the day before: found at lag 1, one test.
   const after = correlations(lagged("steps", "sleep", 60, 1), THROUGH);
   assert.deepEqual(
@@ -149,7 +149,7 @@ test("a night-read outcome tests lag 1 only: the night after (IS-3)", () => {
   assert.deepEqual(correlations(lagged("steps", "sleep", 60, 0), THROUGH), []);
 });
 
-test("contrast line: a night-read outcome says the night after its cause once (TEST-4)", () => {
+test("contrast line: a night-read outcome says the night after its cause once", () => {
   const found = correlations(lagged("steps", "sleep", 60, 1), THROUGH);
   assert.match(found[0].numbers, /the night after steps /u);
   assert.doesNotMatch(found[0].numbers, /after after/u);

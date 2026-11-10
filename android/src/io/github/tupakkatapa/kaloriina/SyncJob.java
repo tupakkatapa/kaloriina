@@ -61,6 +61,8 @@ import android.os.Build;
 import android.os.OutcomeReceiver;
 import android.os.PersistableBundle;
 
+import org.json.JSONObject;
+
 import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
@@ -237,10 +239,6 @@ public final class SyncJob extends JobService {
                 () -> {
                     boolean retry = run(days, stop::get);
                     runs.remove(id, stop);
-                    // A replaced run's end isn't the answer: its successor's is.
-                    if (!stop.get()) {
-                        new Store(this).ended(System.currentTimeMillis());
-                    }
                     jobFinished(params, retry);
                 });
         return true;
@@ -270,8 +268,9 @@ public final class SyncJob extends JobService {
             store.failed("Choose a profile in Settings");
             return false;
         }
-        if (!Net.isKaloriina(origin)) {
-            store.failed("Not on the home network");
+        String unreachable = Net.probe(origin);
+        if (unreachable != null) {
+            store.failed(unreachable);
             return false;
         }
         ZoneId zone = ZoneId.systemDefault();
@@ -310,7 +309,8 @@ public final class SyncJob extends JobService {
     private static Payload.Outcome post(String url, String body) {
         try {
             Net.Reply reply = Net.post(url, body, Net.POST_MS);
-            return Payload.outcome(reply.code, reply.json() ? reply.text() : null);
+            JSONObject answer = reply.object();
+            return Payload.outcome(reply.code, answer == null ? null : answer::opt);
         } catch (IOException e) {
             return Payload.UNREACHABLE;
         }

@@ -32,9 +32,9 @@ impl HookEvent {
     }
 }
 
-/// Whether a hook may call `ip`: never a link-local (cloud metadata) or
-/// unspecified address, where Home Assistant never lives. Loopback and
-/// the LAN stay open: they're its homes.
+/// Whether a hook may call `ip`: never a link-local or unspecified
+/// address, where Home Assistant never lives (the NixOS unit also denies
+/// link-local). Loopback and the LAN stay open: they're its homes.
 #[must_use]
 pub fn hook_may_reach(ip: IpAddr) -> bool {
     match ip.to_canonical() {
@@ -126,7 +126,7 @@ impl HookInput {
                 {
                     return Err(Error::invalid_field(
                         "webhook_id",
-                        format!("webhook_id must be 1–{HOOK_ID_MAX} letters, digits, - or _"),
+                        format!("the Webhook ID must be 1–{HOOK_ID_MAX} letters, digits, - or _"),
                     ));
                 }
                 Ok(id)

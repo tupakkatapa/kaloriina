@@ -483,7 +483,7 @@ test("no verdict while a value the score needs isn't known", () => {
 
 // Last: it sets a registry of its own.
 const us = (label, short = label) => ({ label, short, unit: "g", factor: 1 });
-test("energy split: labels are the registry's, as the label style says them (QUAL-7)", () => {
+test("energy split: labels are the registry's, as the label style says them", () => {
   setRegistry(
     [
       n("protein", "Protein", "g", "at_least"),
@@ -509,7 +509,7 @@ test("energy split: labels are the registry's, as the label style says them (QUA
 // With energy known, each part is a share of the energy, and what
 // no given macro explains is "Unknown"; never 69 % protein for a food
 // that is 55 % protein.
-test("energy split: shares of the energy, the rest unknown (UX11-6)", () => {
+test("energy split: shares of the energy, the rest unknown", () => {
   // Greek yoghurt: 109 kcal, 15 g protein, 3 g fat, carbs not given.
   const yoghurt = energySplit({ energy: 109, protein: 15, fat: 3 });
   assert.deepEqual(

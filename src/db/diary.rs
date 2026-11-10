@@ -1,13 +1,12 @@
 //! Diary entries, day notes and body measurements, and the totals behind
 //! days and summaries.
 
-use super::meal_get;
 use super::prelude::*;
 use crate::model::{
     BORNE, BodyPart, BodyValue, Borne, BuiltinValue, CheckIn, CheckInInput, Composition,
     DAILY_ITEMS_MAX, DRY, DayNote, DayView, EntryKey, EntryKind, EntryPatch, Facts, GROUPS, Group,
-    HabitValue, InsightPref, Known, Measurement, Nullable, PLANNED, Repeat, RepeatInput, Source,
-    borne_weight, dry_of, eaten, known_from, macro_dry, share,
+    HabitValue, InsightPref, Known, Measurement, Nullable, PLANNED, Ratings, Repeat, RepeatInput,
+    Source, borne_weight, dry_of, eaten, known_from, macro_dry, share,
 };
 use crate::nutrients::KNOWN;
 use std::collections::btree_map;
@@ -70,9 +69,9 @@ pub(super) fn entry_row(r: &Row) -> rusqlite::Result<Entry> {
     })
 }
 
-/// The entries an earlier write with `uid` logged (a food: one; a meal or
-/// copies: one per item, `uid:1`, `uid:2`, …), oldest first.
-fn logged_as(conn: &Connection, profile: ProfileId, uid: &str) -> Result<Vec<Entry>, Error> {
+/// The entries an earlier write with `uid` logged (a food: one; copies:
+/// one per item, `uid:1`, `uid:2`, …), oldest first.
+fn logged_as(conn: &Connection, pid: ProfileId, uid: &str) -> Result<Vec<Entry>, Error> {
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT {ENTRY_COLS} FROM entry
          WHERE profile_id = ?1
@@ -80,7 +79,7 @@ fn logged_as(conn: &Connection, profile: ProfileId, uid: &str) -> Result<Vec<Ent
          ORDER BY id"
     ))?;
     Ok(stmt
-        .query_map(params![profile, uid], entry_row)?
+        .query_map(params![pid, uid], entry_row)?
         .collect::<rusqlite::Result<_>>()?)
 }
 
@@ -220,53 +219,41 @@ pub fn entry_log(
     Ok(entry)
 }
 
-/// Log every item of a meal, times `portions`, as entries of their own.
-/// Like [`entry_log`], a `uid` logged before answers with those entries.
-pub fn entry_log_meal(
+/// Log a text entry: `name`, with its kcal and macros as far as known, no
+/// food behind it. Like [`entry_log`], a `uid` logged before answers with
+/// that entry.
+pub fn entry_text(
     conn: &mut Connection,
     at: &Slot,
-    meal_id: i64,
-    portions: f64,
-) -> Result<Vec<Entry>, Error> {
+    name: &str,
+    nutrients: Option<&Nutrients>,
+) -> Result<Entry, Error> {
     let tx = write(conn)?;
     if let Some(earlier) = at.logged_before(&tx)? {
-        return Ok(earlier);
+        return Ok(written(earlier.into_iter().next()));
     }
-    let meal = meal_get(&tx, meal_id)?
-        .ok_or_else(|| Error::invalid_field("meal_id", format!("unknown meal {meal_id}")))?;
-    let mut entries = Vec::new();
-    for (i, item) in meal.items.iter().enumerate() {
-        // Meal items reference foods by foreign key, so the food exists.
-        let food = written(food_get(&tx, item.food_id)?);
-        let grams = crate::model::grams(item.grams * portions)?;
-        // Logged as the item is measured: "4 × Slice (160 g)" or grams.
-        let quantity = item.quantity.map(|q| q * portions);
-        let amount = match (&item.serving, quantity) {
-            (Some(s), Some(q)) => serving_amount(q, s, grams),
-            _ => gram_amount(grams),
-        };
-        let m = Measured {
-            grams,
-            serving: item.serving.clone(),
-            quantity,
-            amount,
-        };
-        entries.push(food_entry(
-            &tx,
-            at,
-            &food,
-            &m,
-            at.item_uid(i).as_deref(),
-            None,
-        )?);
-    }
+    let entry = insert_entry(
+        &tx,
+        at,
+        &NewEntry {
+            food_id: None,
+            name,
+            grams: None,
+            amount: "",
+            nutrients,
+            serving: None,
+            quantity: None,
+            daily_item_id: None,
+        },
+        at.uid,
+    )?;
     tx.commit()?;
-    Ok(entries)
+    Ok(entry)
 }
 
 /// Log copies of entries of the profile, in the order given: each one's
 /// snapshot (food, name, amount and nutrients), not its time. Like
-/// [`entry_log_meal`], a `uid` logged before answers with those entries.
+/// [`entry_log`], a `uid` logged before answers with those entries.
 ///
 /// # Errors
 /// An id that isn't the profile's entry (400 `entry_ids`); imported history,
@@ -303,63 +290,125 @@ pub fn entry_copy(conn: &mut Connection, at: &Slot, ids: &[i64]) -> Result<Vec<E
     Ok(entries)
 }
 
-/// An entry of `profile`; another profile's entry reads as missing.
-pub fn entry_get(conn: &Connection, profile: ProfileId, id: i64) -> Result<Option<Entry>, Error> {
+/// An entry of `pid`; another profile's entry reads as missing.
+pub fn entry_get(conn: &Connection, pid: ProfileId, id: i64) -> Result<Option<Entry>, Error> {
     Ok(conn
         .query_row(
             &format!("SELECT {ENTRY_COLS} FROM entry WHERE id = ? AND profile_id = ?"),
-            params![id, profile],
+            params![id, pid],
             entry_row,
         )
         .optional()?)
+}
+
+/// Imported rows have no food or nutrients of their own (see
+/// `group_totals`), so they can only move.
+fn read_only() -> Error {
+    Error::conflict(
+        Conflict::ImportedReadOnly,
+        "imported entries can only move between groups",
+    )
+}
+
+/// Whether `patch` fits `entry`: imported rows only move; a text
+/// entry's name and kcal, its food found once, only on one (elsewhere
+/// ignored). A text entry's patch, checked.
+fn patch_fits(entry: &Entry, patch: &EntryPatch) -> Result<Option<EntryPatch>, Error> {
+    if entry.imported() {
+        return if patch.time == Nullable::Keep && patch.repeat == Nullable::Keep {
+            Ok(None)
+        } else {
+            Err(read_only())
+        };
+    }
+    if entry.food_id.is_some() {
+        return Ok(None);
+    }
+    if patch.food_id.is_none() {
+        if matches!(patch.repeat, Nullable::Set(_)) {
+            return Err(Error::invalid_field("repeat", "only a food repeats daily"));
+        }
+        if patch.re_measures() {
+            return Err(Error::invalid_field(
+                "grams",
+                "a text entry has no amount: find its food to give one",
+            ));
+        }
+    }
+    patch.clone().retexted().map(Some)
 }
 
 /// Change a logged entry (a checked patch): move it to another group,
 /// re-measure it, set or clear its time, repeat it daily or stop its
 /// series. A new amount rescales its values (the food's, which
 /// [`super::foods::entries_follow`] keeps them at; its servings measure it).
-/// Imported rows can only move.
+/// A text entry is renamed or its kcal changed, or with `food_id` and an
+/// amount becomes that food's entry, the same row; a food's entry keeps
+/// its food, name and values (`food_id`, `name` and `energy` on it are
+/// ignored). Imported rows can only move.
 ///
 /// # Errors
 /// 404, 409 `imported_read_only`, 409 `already_daily`, 400 at
-/// [`DAILY_ITEMS_MAX`], or a bad amount.
+/// [`DAILY_ITEMS_MAX`], a bad amount or food, or a text entry's bad name
+/// or energy, or amount or repeat without its food.
 pub fn entry_update(
     conn: &mut Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     id: i64,
     patch: &EntryPatch,
 ) -> Result<Entry, Error> {
     let tx = write(conn)?;
-    let entry = entry_get(&tx, profile, id)?.ok_or_else(|| Error::not_found("entry", id))?;
-    // Imported rows have no food or nutrients of their own (see
-    // `group_totals`), so they can only move.
-    let read_only = || {
-        Error::conflict(
-            Conflict::ImportedReadOnly,
-            "imported entries can only move between groups",
-        )
-    };
-    if entry.imported() && (patch.time != Nullable::Keep || patch.repeat != Nullable::Keep) {
-        return Err(read_only());
-    }
+    let entry = entry_get(&tx, pid, id)?.ok_or_else(|| Error::not_found("entry", id))?;
+    let retexted = patch_fits(&entry, patch)?;
+    let text = retexted.is_some();
+    let patch = retexted.as_ref().unwrap_or(patch);
+    let found =
+        match patch.food_id {
+            Some(food_id) if text => Some(food_get(&tx, food_id)?.ok_or_else(|| {
+                Error::invalid_field("food_id", format!("unknown food {food_id}"))
+            })?),
+            _ => None,
+        };
     let (measured, nutrients) = match (
+        &found,
         patch.re_measures(),
         entry.food_id,
         entry.grams,
         &entry.nutrients,
     ) {
-        (false, ..) => (None, entry.nutrients.clone()),
-        (true, Some(food_id), Some(old), Some(n)) => {
+        (Some(food), ..) => {
+            let m = patch.amount.of(food)?;
+            let n = food.per100.scale(m.grams / 100.0);
+            (Some(m), Some(n))
+        }
+        (None, false, ..) if text => {
+            let mut n = entry.nutrients.clone().unwrap_or_default();
+            for (key, v) in patch.text_values() {
+                match v {
+                    Nullable::Keep => {}
+                    Nullable::Clear => n = n.without(key),
+                    Nullable::Set(v) => n.insert(key, *v),
+                }
+            }
+            (None, (!n.is_empty()).then_some(n))
+        }
+        (None, false, ..) => (None, entry.nutrients.clone()),
+        (None, true, Some(food_id), Some(old), Some(n)) => {
             let m = patch.amount.of(&written(food_get(&tx, food_id)?))?;
             let n = n.scale(m.grams / old);
             (Some(m), Some(n))
         }
-        (true, ..) => return Err(read_only()),
+        (None, true, ..) => return Err(read_only()),
     };
     let group = patch.group.as_deref().unwrap_or(&entry.group);
+    let name = match (&found, &patch.name) {
+        (Some(food), _) => &food.name,
+        (None, Some(name)) if text => name,
+        _ => &entry.name,
+    };
     tx.execute(
         "UPDATE entry SET grp = ?, grams = ?, amount = ?, nutrients = ?, serving = ?,
-             quantity = ?, time = ?
+             quantity = ?, time = ?, food_id = ?, name = ?
          WHERE id = ?",
         params![
             group,
@@ -371,13 +420,15 @@ pub fn entry_update(
                 .map_or(entry.serving.as_ref(), |m| m.serving.as_ref()),
             measured.as_ref().map_or(entry.quantity, |m| m.quantity),
             untimed_if_planned(group, patch.time.clone().applied(entry.time)),
+            found.as_ref().map_or(entry.food_id, |f| Some(f.id)),
+            name,
             id
         ],
     )?;
-    let entry = written(entry_get(&tx, profile, id)?);
+    let entry = written(entry_get(&tx, pid, id)?);
     match (&patch.repeat, &entry.repeat) {
         (Nullable::Set(RepeatInput { start }), None) => {
-            repeat_start(&tx, profile, &entry, start.as_deref().unwrap_or(&entry.day))?;
+            repeat_start(&tx, pid, &entry, start.as_deref().unwrap_or(&entry.day))?;
         }
         (Nullable::Set(_), Some(_)) => {
             return Err(Error::conflict(
@@ -388,13 +439,13 @@ pub fn entry_update(
         (Nullable::Clear, Some(r)) => series_delete(&tx, r.id)?,
         _ => {}
     }
-    let entry = written(entry_get(&tx, profile, id)?);
+    let entry = written(entry_get(&tx, pid, id)?);
     tx.commit()?;
     Ok(entry)
 }
 
-pub fn entry_delete(conn: &Connection, profile: ProfileId, id: i64) -> Result<(), Error> {
-    let entry = entry_get(conn, profile, id)?.ok_or_else(|| Error::not_found("entry", id))?;
+pub fn entry_delete(conn: &Connection, pid: ProfileId, id: i64) -> Result<(), Error> {
+    let entry = entry_get(conn, pid, id)?.ok_or_else(|| Error::not_found("entry", id))?;
     // An imported row's nutrients live in its group's day total; deleting it
     // would leave that total behind. History goes a group at a time
     // ([`imported_group_delete`]).
@@ -413,18 +464,18 @@ pub fn entry_delete(conn: &Connection, profile: ProfileId, id: i64) -> Result<()
 /// a group with none, changes nothing.
 pub fn imported_group_delete(
     conn: &mut Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     day: &str,
     group: &str,
 ) -> Result<(), Error> {
     let tx = write(conn)?;
     tx.execute(
         "DELETE FROM entry WHERE profile_id = ? AND day = ? AND src_grp = ?",
-        params![profile, day, group],
+        params![pid, day, group],
     )?;
     tx.execute(
         "DELETE FROM day_total WHERE profile_id = ? AND day = ? AND grp = ?",
-        params![profile, day, group],
+        params![pid, day, group],
     )?;
     tx.commit()?;
     Ok(())
@@ -435,7 +486,7 @@ pub fn imported_group_delete(
 /// Planned's as added.
 pub fn entry_list_for_day(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     day: &str,
 ) -> Result<Vec<Entry>, Error> {
     let mut stmt = conn.prepare_cached(&format!(
@@ -445,50 +496,59 @@ pub fn entry_list_for_day(
                        ELSE coalesce(time, '99:99') END, id"
     ))?;
     Ok(stmt
-        .query_map(params![profile, day], entry_row)?
+        .query_map(params![pid, day], entry_row)?
         .collect::<rusqlite::Result<_>>()?)
 }
 
 /// One stored total: day, group and its nutrients as JSON, unparsed.
 pub type GroupRow = (String, String, String);
 
+/// The group an imported total (`day_total d`) belongs to: the one all
+/// its imported rows are in now; while they are split (or there are none),
+/// the one it was imported to.
+macro_rules! imported_group {
+    () => {
+        "coalesce((SELECT CASE WHEN count(DISTINCT e.grp) = 1 THEN min(e.grp) END
+                   FROM entry e
+                   WHERE e.profile_id = d.profile_id AND e.day = d.day
+                       AND e.src_grp = d.grp), d.grp)"
+    };
+}
+
 /// [`group_rows`]' query, columns `day, grp, nutrients`, then what
 /// [`eaten_rows`] reads: `recipe` (an entry's food, when a recipe),
-/// `imported` (an imported total), and the entry's grams and its food's
-/// drink flag, source, Fineli class and name (coverage, ADR 0030): `?1`
-/// from, `?2` to, `?3` the profile.
-pub const GROUP_ROWS: &str = "SELECT entry.day, entry.grp, entry.nutrients,
+/// `imported` (an imported total), the entry's grams and its food's
+/// drink flag, source, Fineli class and name (coverage, ADR 0030), and
+/// `text` (a text entry: no food): `?1` from, `?2` to, `?3` the profile.
+pub const GROUP_ROWS: &str = concat!(
+    "SELECT entry.day, entry.grp, entry.nutrients,
          CASE WHEN f.kind = 'recipe' THEN f.id END AS recipe,
          0 AS imported, coalesce(entry.grams, 0), coalesce(f.drink, 0),
-         coalesce(f.source, 'custom'), f.fineli_class, coalesce(f.name, entry.name)
+         coalesce(f.source, 'custom'), f.fineli_class, coalesce(f.name, entry.name),
+         entry.food_id IS NULL AS text
      FROM entry LEFT JOIN food f ON f.id = entry.food_id
      WHERE entry.profile_id = ?3 AND entry.day BETWEEN ?1 AND ?2
          AND entry.nutrients IS NOT NULL
      UNION ALL
-     -- An imported total belongs to the group all its imported rows are
-     -- in now; while they are split (or there are none) it stays where
-     -- it was imported.
-     SELECT d.day,
-         coalesce((SELECT CASE WHEN count(DISTINCT e.grp) = 1 THEN min(e.grp) END
-                   FROM entry e
-                   WHERE e.profile_id = d.profile_id AND e.day = d.day
-                       AND e.src_grp = d.grp), d.grp),
-         d.nutrients, NULL, 1, 0, 0, 'custom', NULL, ''
+     SELECT d.day, ",
+    imported_group!(),
+    ", d.nutrients, NULL, 1, 0, 0, 'custom', NULL, '', 0
      FROM day_total d
-     WHERE d.profile_id = ?3 AND d.day BETWEEN ?1 AND ?2";
+     WHERE d.profile_id = ?3 AND d.day BETWEEN ?1 AND ?2"
+);
 
 /// The stored totals behind days and groups in `[from, to]`: entry
 /// snapshots plus imported group totals. Kept as text so they can be parsed
 /// ([`group_sums`]) after the connection is released.
 pub fn group_rows(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     from: &str,
     to: &str,
 ) -> Result<Vec<GroupRow>, Error> {
     let mut stmt = conn.prepare_cached(GROUP_ROWS)?;
     Ok(stmt
-        .query_map(params![from, to, profile], |r| {
+        .query_map(params![from, to, pid], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?))
         })?
         .collect::<rusqlite::Result<_>>()?)
@@ -520,7 +580,8 @@ const IMPORT_KNOWN: [&str; 6] = ["energy", "protein", "carbs", "net_carbs", "fat
 /// weighs for each [`BORNE`] key where it doesn't carry it
 /// ([`borne_weight`]); a recipe's, as far as
 /// its own are (its [`Known`] shares, dry matter and [`Borne`] per
-/// 100 g); imported, only for [`IMPORT_KNOWN`].
+/// 100 g); imported, only for [`IMPORT_KNOWN`]; a text entry, only for its
+/// energy, over the dry matter it stands for ([`text_dry`]).
 #[derive(Debug, Clone)]
 pub enum RowBasis {
     Food {
@@ -529,6 +590,25 @@ pub enum RowBasis {
     },
     Recipe(std::sync::Arc<Cover>),
     Imported,
+    Text,
+}
+
+/// kcal a gram of dry matter, the mean of the macronutrients'.
+/// ponytail: Atwater's mean overstates the dry matter of fatty food; a
+/// typed dry weight on a text entry if it matters.
+const KCAL_PER_DRY_G: f64 = 4.0;
+
+/// The dry matter a text entry stands for: its macros', or its kcal's.
+#[must_use]
+pub fn text_dry(n: &Nutrients) -> f64 {
+    if ["protein", "carbs", "fat"]
+        .iter()
+        .any(|k| n.get(k).is_some())
+    {
+        macro_dry(n)
+    } else {
+        n.get("energy").unwrap_or(0.0) / KCAL_PER_DRY_G
+    }
 }
 
 /// A recipe's coverage as an entry of it reads it: its [`Known`] and
@@ -557,59 +637,71 @@ pub struct EatenRow {
 /// A read fails.
 pub fn eaten_rows(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     from: &str,
     to: &str,
 ) -> Result<Vec<EatenRow>, Error> {
-    type Read = (
-        String,
-        String,
-        String,
-        Option<i64>,
-        bool,
-        f64,
-        bool,
-        Source,
-        Option<String>,
-        String,
-    );
+    /// A row of [`GROUP_ROWS`].
+    struct Read {
+        day: String,
+        group: String,
+        text: String,
+        recipe: Option<i64>,
+        imported: bool,
+        grams: f64,
+        drink: bool,
+        source: Source,
+        class: Option<String>,
+        name: String,
+        typed: bool,
+    }
     let rows: Vec<Read> = conn
         .prepare_cached(GROUP_ROWS)?
-        .query_map(params![from, to, profile], |r| {
-            Ok((
-                r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
-                r.get(3)?,
-                r.get(4)?,
-                r.get(5)?,
-                r.get(6)?,
-                r.get(7)?,
-                r.get(8)?,
-                r.get(9)?,
-            ))
+        .query_map(params![from, to, pid], |r| {
+            Ok(Read {
+                day: r.get(0)?,
+                group: r.get(1)?,
+                text: r.get(2)?,
+                recipe: r.get(3)?,
+                imported: r.get(4)?,
+                grams: r.get(5)?,
+                drink: r.get(6)?,
+                source: r.get(7)?,
+                class: r.get(8)?,
+                name: r.get(9)?,
+                typed: r.get(10)?,
+            })
         })?
         .collect::<rusqlite::Result<_>>()?;
-    let (mut memo, mut wet) = (BTreeMap::new(), BTreeMap::new());
+    let mut memo = BTreeMap::new();
     let mut covers: BTreeMap<i64, std::sync::Arc<Cover>> = BTreeMap::new();
     let mut out = Vec::with_capacity(rows.len());
-    for (day, group, text, recipe, imported, grams, drink, source, class, name) in rows {
+    for Read {
+        day,
+        group,
+        text,
+        recipe,
+        imported,
+        grams,
+        drink,
+        source,
+        class,
+        name,
+        typed,
+    } in rows
+    {
         let basis = match recipe {
             _ if imported => RowBasis::Imported,
+            _ if typed => RowBasis::Text,
             // ponytail: the recipe's coverage as it is now, not as logged;
             // a `known` column on entry, set at log time, if that matters.
             Some(id) => RowBasis::Recipe(match covers.entry(id) {
                 btree_map::Entry::Occupied(e) => e.get().clone(),
-                btree_map::Entry::Vacant(e) => {
-                    let (known, borne) = super::recipe_cover_of(conn, id, &mut memo)?;
-                    let hydrates = super::recipe_hydration(conn, id, &mut wet)?;
-                    e.insert(std::sync::Arc::new(Cover {
-                        known,
-                        borne,
-                        hydrates,
-                    }))
-                    .clone()
-                }
+                btree_map::Entry::Vacant(e) => e
+                    .insert(std::sync::Arc::new(
+                        super::recipe_facts(conn, id, &mut memo)?.cover,
+                    ))
+                    .clone(),
             }),
             None => {
                 // The values decide nothing here: what the entry carries is
@@ -646,7 +738,7 @@ pub fn eaten_rows(
 /// A read fails.
 pub fn energy_unknown_days(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     from: &str,
     to: &str,
 ) -> Result<BTreeSet<String>, Error> {
@@ -657,8 +749,53 @@ pub fn energy_unknown_days(
                  AND grp != ?4
                  AND json_extract(coalesce(nutrients, '{}'), '$.energy') IS NULL",
         )?
-        .query_map(params![from, to, profile, PLANNED], |r| r.get(0))?
+        .query_map(params![from, to, pid, PLANNED], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?)
+}
+
+/// Each day's eaten energy in `[from, to]` by verdict ([`Ratings`]), as
+/// [`GROUP_ROWS`] reads it; a day without energy has none.
+///
+/// # Errors
+/// A read fails.
+pub fn day_ratings(
+    conn: &Connection,
+    pid: ProfileId,
+    from: &str,
+    to: &str,
+) -> Result<BTreeMap<String, Ratings>, Error> {
+    let rows: Vec<(String, Option<String>, f64)> = conn
+        .prepare_cached(concat!(
+            "SELECT e.day, (SELECT l.label FROM food_label l WHERE l.food_id = e.food_id
+                     AND l.label IN ('healthy', 'ok', 'unhealthy')),
+                 sum(coalesce(json_extract(e.nutrients, '$.energy'), 0))
+             FROM entry e
+             WHERE e.profile_id = ?3 AND e.day BETWEEN ?1 AND ?2
+                 AND e.nutrients IS NOT NULL AND e.grp != ?4
+             GROUP BY 1, 2
+             UNION ALL
+             SELECT d.day, NULL, sum(coalesce(json_extract(d.nutrients, '$.energy'), 0))
+             FROM day_total d
+             WHERE d.profile_id = ?3 AND d.day BETWEEN ?1 AND ?2 AND ",
+            imported_group!(),
+            " != ?4
+             GROUP BY 1"
+        ))?
+        .query_map(params![from, to, pid, PLANNED], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut out: BTreeMap<String, Ratings> = BTreeMap::new();
+    for (day, verdict, kcal) in rows.into_iter().filter(|r| r.2 > 0.0) {
+        let r = out.entry(day).or_default();
+        match verdict.as_deref() {
+            Some("healthy") => r.healthy += kcal,
+            Some("ok") => r.ok += kcal,
+            Some("unhealthy") => r.unhealthy += kcal,
+            _ => r.unrated += kcal,
+        }
+    }
+    Ok(out)
 }
 
 /// One total being added up: its values, the dry matter behind each key
@@ -683,6 +820,7 @@ impl Eaten {
             RowBasis::Food { drink, .. } => dry_of(n, grams, *drink),
             RowBasis::Recipe(cover) => cover.known.get(DRY).copied().unwrap_or(0.0) * grams / 100.0,
             RowBasis::Imported => macro_dry(n),
+            RowBasis::Text => text_dry(n),
         };
         let sum = match self.0.get_mut(day) {
             Some(d) => d,
@@ -690,7 +828,7 @@ impl Eaten {
         };
         sum.behind.add_behind(n, |key| {
             dry * match basis {
-                RowBasis::Food { .. } => 1.0,
+                RowBasis::Food { .. } | RowBasis::Text => 1.0,
                 RowBasis::Recipe(cover) => cover.known.get(key).copied().unwrap_or(1.0),
                 RowBasis::Imported => f64::from(u8::from(IMPORT_KNOWN.contains(&key))),
             }
@@ -711,8 +849,10 @@ impl Eaten {
                             .unwrap_or(if carries { 1.0 } else { 0.0 });
                     (w * share, w)
                 }
-                // An export can't vouch for it: the day isn't known.
+                // An export or a text can't vouch for it: the day isn't
+                // known.
                 RowBasis::Imported if !IMPORT_KNOWN.contains(key) => (0.0, f64::INFINITY),
+                RowBasis::Text => (0.0, f64::INFINITY),
                 RowBasis::Imported => (0.0, 0.0),
             };
             sum.borne[i].0 += with;
@@ -793,11 +933,31 @@ fn group_known(rows: &[EatenRow]) -> Result<BTreeMap<String, Known>, Error> {
 /// Totals per (day, group) in `[from, to]`.
 pub fn group_totals(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     from: &str,
     to: &str,
 ) -> Result<BTreeMap<(String, String), Nutrients>, Error> {
-    group_sums(group_rows(conn, profile, from, to)?)
+    group_sums(group_rows(conn, pid, from, to)?)
+}
+
+/// How far a day's `eaten` (of its `rows`) is known, and whether it is
+/// [`unsized_days`]' (then [`unvouched`]).
+fn day_known(
+    conn: &Connection,
+    pid: ProfileId,
+    day: &str,
+    rows: &[EatenRow],
+    eaten: &Nutrients,
+) -> Result<(Known, bool), Error> {
+    let mut known = eaten_days(rows)?
+        .remove(day)
+        .map(|(_, known)| known)
+        .unwrap_or_default();
+    let sizeless = !unsized_days(conn, pid, day, day)?.is_empty();
+    if sizeless {
+        unvouched(&mut known, eaten);
+    }
+    Ok((known, sizeless))
 }
 
 /// A day as the diary shows it ([`DayView`]): [`GROUPS`] first, then
@@ -809,12 +969,12 @@ pub fn group_totals(
 /// A read fails.
 pub fn day_view(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     day: &str,
     tz: &TimeZone,
 ) -> Result<DayView, Error> {
-    let entries = entry_list_for_day(conn, profile, day)?;
-    let mut totals = group_totals(conn, profile, day, day)?;
+    let entries = entry_list_for_day(conn, pid, day)?;
+    let mut totals = group_totals(conn, pid, day, day)?;
     let mut names: Vec<String> = GROUPS.iter().map(|&g| g.to_owned()).collect();
     for g in entries
         .iter()
@@ -826,8 +986,8 @@ pub fn day_view(
         }
     }
     names[GROUPS.len()..].sort();
-    let mut due = daily_due(conn, profile, day)?;
-    let rows = eaten_rows(conn, profile, day, day)?;
+    let mut due = daily_due(conn, pid, day)?;
+    let rows = eaten_rows(conn, pid, day, day)?;
     let mut known_by_group = group_known(&rows)?;
     let groups: Vec<Group> = names
         .into_iter()
@@ -854,42 +1014,38 @@ pub fn day_view(
         .collect();
     let total = Nutrients::sum(groups.iter().map(|g| &g.totals));
     let eaten_sum = Nutrients::sum(groups.iter().filter(|g| eaten(&g.name)).map(|g| &g.totals));
-    let known = eaten_days(&rows)?
-        .remove(day)
-        .map(|(_, known)| known)
-        .unwrap_or_default();
+    let (known, sizeless) = day_known(conn, pid, day, &rows, &eaten_sum)?;
     let d = Some(day);
-    let mut device_day = super::device_day_list(conn, profile, d, d)?;
+    let mut device_day = super::device_day_list(conn, pid, d, d)?;
     Ok(DayView {
         day: day.to_owned(),
         groups,
         total,
         eaten: eaten_sum,
         known,
-        targets: super::target_list(conn, profile)?,
-        activities: super::activity_list(conn, profile, d, d, None)?,
-        plans: super::plan_list(conn, profile, d, d)?,
-        weight: super::weight_list(conn, profile, d, d)?
-            .first()
-            .map(|w| w.kg),
-        weight_source: super::weight_source(conn, profile, day)?,
-        composition: super::scale_chosen(conn, profile, day, tz)?
+        incomplete: sizeless,
+        targets: super::target_list(conn, pid)?,
+        activities: super::activity_list(conn, pid, d, d, None)?,
+        plans: super::plan_list(conn, pid, d, d)?,
+        weight: super::weight_list(conn, pid, d, d)?.first().map(|w| w.kg),
+        weight_source: super::weight_source(conn, pid, day)?,
+        composition: super::scale_chosen(conn, pid, day, tz)?
             .filter(|r| r.body_fat.is_some() || r.water.is_some() || r.muscle.is_some())
             .map(|r| Composition {
                 body_fat: r.body_fat,
                 water: r.water,
                 muscle: r.muscle,
             }),
-        note: note_list(conn, profile, d, d)?.pop().map(|n| n.text),
-        check_in: check_in_list(conn, profile, d, d)?.pop(),
-        measurements: measurement_list(conn, profile, d, d)?
+        note: note_list(conn, pid, d, d)?.pop().map(|n| n.text),
+        check_in: check_in_list(conn, pid, d, d)?.pop(),
+        measurements: measurement_list(conn, pid, d, d)?
             .into_iter()
             .map(|m| BodyValue {
                 kind: m.kind,
                 value: m.value,
             })
             .collect(),
-        builtins: super::builtin_days(conn, profile, d, d)?
+        builtins: super::builtin_days(conn, pid, d, d)?
             .into_iter()
             .filter(|b| b.amount > 0.0)
             .map(|b| BuiltinValue {
@@ -898,7 +1054,7 @@ pub fn day_view(
                 known: b.known,
             })
             .collect(),
-        habits: super::habit_days(conn, profile, d, d)?
+        habits: super::habit_days(conn, pid, d, d)?
             .into_iter()
             .map(|h| HabitValue {
                 habit_id: h.habit_id,
@@ -909,10 +1065,10 @@ pub fn day_view(
         resting: device_day.resting.pop().map(|r| r.resting),
         // The naps the device-day read counted in its sleep: read once.
         naps: device_day.naps,
-        stages: super::day_stages(conn, profile, day)?,
-        photos: super::photo_list(conn, profile, day)?,
-        pending_activities: super::pending_activity_list(conn, profile, Some(day))?,
-        water_food_id: super::water_food_get(conn, profile)?.map(|f| f.id),
+        stages: super::day_stages(conn, pid, day)?,
+        photos: super::photo_list(conn, pid, day)?,
+        pending_activities: super::pending_activity_list(conn, pid, Some(day))?,
+        water_food_id: super::water_food_get(conn, pid)?.map(|f| f.id),
     })
 }
 
@@ -970,10 +1126,10 @@ fn series_where(
         .collect::<rusqlite::Result<_>>()?)
 }
 
-/// A series of `profile`; another profile's reads as missing (404 at
+/// A series of `pid`; another profile's reads as missing (404 at
 /// `key`).
-fn series_get(conn: &Connection, profile: ProfileId, id: i64, key: &str) -> Result<Series, Error> {
-    series_where(conn, "id = ?2", params![profile, id])?
+fn series_get(conn: &Connection, pid: ProfileId, id: i64, key: &str) -> Result<Series, Error> {
+    series_where(conn, "id = ?2", params![pid, id])?
         .pop()
         .ok_or_else(|| Error::not_found("entry", key))
 }
@@ -1019,8 +1175,8 @@ const DUE: &str = "start <= ?2
      AND NOT EXISTS (SELECT 1 FROM entry e WHERE e.daily_item_id = d.id AND e.day = ?2)";
 
 /// The series due on `day` as Planned entries, by series id (ADR 0023).
-pub fn daily_due(conn: &Connection, profile: ProfileId, day: &str) -> Result<Vec<Entry>, Error> {
-    series_where(conn, DUE, params![profile, day])?
+pub fn daily_due(conn: &Connection, pid: ProfileId, day: &str) -> Result<Vec<Entry>, Error> {
+    series_where(conn, DUE, params![pid, day])?
         .into_iter()
         .map(|s| due_entry(conn, s, day))
         .collect()
@@ -1029,33 +1185,25 @@ pub fn daily_due(conn: &Connection, profile: ProfileId, day: &str) -> Result<Vec
 /// What `key` addresses: an entry by id; a series' day, its tick when
 /// ticked, else the day while due. `None`: no such entry, or a day
 /// skipped, not started or of no series.
-pub fn entry_at(
-    conn: &Connection,
-    profile: ProfileId,
-    key: &EntryKey,
-) -> Result<Option<Entry>, Error> {
+pub fn entry_at(conn: &Connection, pid: ProfileId, key: &EntryKey) -> Result<Option<Entry>, Error> {
     let (item, day) = match key {
-        EntryKey::Id(id) => return entry_get(conn, profile, *id),
+        EntryKey::Id(id) => return entry_get(conn, pid, *id),
         EntryKey::Due { item, day } => (*item, day.as_str()),
     };
     let tick: Option<i64> = conn
         .query_row(
             "SELECT e.id FROM entry e WHERE e.profile_id = ? AND e.daily_item_id = ? AND e.day = ?",
-            params![profile, item, day],
+            params![pid, item, day],
             |r| r.get(0),
         )
         .optional()?;
     if let Some(id) = tick {
-        return entry_get(conn, profile, id);
+        return entry_get(conn, pid, id);
     }
-    series_where(
-        conn,
-        &format!("id = ?3 AND {DUE}"),
-        params![profile, day, item],
-    )?
-    .pop()
-    .map(|s| due_entry(conn, s, day))
-    .transpose()
+    series_where(conn, &format!("id = ?3 AND {DUE}"), params![pid, day, item])?
+        .pop()
+        .map(|s| due_entry(conn, s, day))
+        .transpose()
 }
 
 /// Repeat own `entry` daily from `start`: the series takes its food and
@@ -1063,15 +1211,10 @@ pub fn entry_at(
 ///
 /// # Errors
 /// 400 at [`DAILY_ITEMS_MAX`].
-fn repeat_start(
-    tx: &Connection,
-    profile: ProfileId,
-    entry: &Entry,
-    start: &str,
-) -> Result<(), Error> {
+fn repeat_start(tx: &Connection, pid: ProfileId, entry: &Entry, start: &str) -> Result<(), Error> {
     let full: bool = tx.query_row(
         "SELECT count(*) >= ?2 FROM daily_item WHERE profile_id = ?1",
-        params![profile, DAILY_ITEMS_MAX],
+        params![pid, DAILY_ITEMS_MAX],
         |r| r.get(0),
     )?;
     if full {
@@ -1083,7 +1226,7 @@ fn repeat_start(
         "INSERT INTO daily_item (profile_id, food_id, grams, serving, quantity, start)
          VALUES (?, ?, ?, ?, ?, ?)",
         params![
-            profile,
+            pid,
             entry.food_id,
             entry.grams,
             entry.serving,
@@ -1112,7 +1255,7 @@ fn series_delete(conn: &Connection, id: i64) -> Result<(), Error> {
 /// 404 (no such series), 400 `group` or `time`, or a bad amount.
 pub fn due_update(
     conn: &mut Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     item: i64,
     day: &str,
     patch: &EntryPatch,
@@ -1131,7 +1274,7 @@ pub fn due_update(
     }
     let key = EntryKey::due(item, day);
     let tx = write(conn)?;
-    let s = series_get(&tx, profile, item, &key)?;
+    let s = series_get(&tx, pid, item, &key)?;
     if patch.re_measures() {
         let m = patch.amount.of(&written(food_get(&tx, s.food_id)?))?;
         tx.execute(
@@ -1139,7 +1282,7 @@ pub fn due_update(
             params![m.grams, m.serving, m.quantity, item],
         )?;
     }
-    let mut entry = due_entry(&tx, series_get(&tx, profile, item, &key)?, day)?;
+    let mut entry = due_entry(&tx, series_get(&tx, pid, item, &key)?, day)?;
     if patch.repeat == Nullable::Clear {
         series_delete(&tx, item)?;
         entry.repeat = None;
@@ -1155,12 +1298,12 @@ pub fn due_update(
 /// 404: no such series.
 pub fn daily_skip(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     item: i64,
     day: &str,
     skipped: bool,
 ) -> Result<(), Error> {
-    series_get(conn, profile, item, &EntryKey::due(item, day))?;
+    series_get(conn, pid, item, &EntryKey::due(item, day))?;
     let sql = if skipped {
         "INSERT OR IGNORE INTO daily_skip (daily_item_id, day) VALUES (?, ?)"
     } else {
@@ -1213,7 +1356,7 @@ pub fn entry_log_daily(conn: &mut Connection, at: &Slot, item: i64) -> Result<En
 /// A profile's day notes in `[from, to]` (either end open), oldest first.
 pub fn note_list(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     from: Option<&str>,
     to: Option<&str>,
 ) -> Result<Vec<DayNote>, Error> {
@@ -1223,7 +1366,7 @@ pub fn note_list(
          ORDER BY day"
     ))?;
     Ok(stmt
-        .query_map(params![profile, from, to], |r| {
+        .query_map(params![pid, from, to], |r| {
             Ok(DayNote {
                 day: r.get(0)?,
                 text: r.get(1)?,
@@ -1236,14 +1379,14 @@ pub fn note_list(
 /// the same as once.
 pub fn note_set(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     day: &str,
     text: &str,
 ) -> Result<DayNote, Error> {
     conn.execute(
         "INSERT INTO day_note (profile_id, day, text) VALUES (?1, ?2, ?3)
          ON CONFLICT (profile_id, day) DO UPDATE SET text = ?3",
-        params![profile, day, text],
+        params![pid, day, text],
     )?;
     Ok(DayNote {
         day: day.to_owned(),
@@ -1251,10 +1394,10 @@ pub fn note_set(
     })
 }
 
-pub fn note_delete(conn: &Connection, profile: ProfileId, day: &str) -> Result<(), Error> {
+pub fn note_delete(conn: &Connection, pid: ProfileId, day: &str) -> Result<(), Error> {
     let n = conn.execute(
         "DELETE FROM day_note WHERE profile_id = ? AND day = ?",
-        params![profile, day],
+        params![pid, day],
     )?;
     if n == 0 {
         return Err(Error::not_found("note", day));
@@ -1262,16 +1405,48 @@ pub fn note_delete(conn: &Connection, profile: ProfileId, day: &str) -> Result<(
     Ok(())
 }
 
+// ------------------------------------------------ days not fully logged
+
+/// The days in `[from, to]` with an eaten text entry without energy: what
+/// it stands for has no size, so nothing of the day's food is vouched for.
+///
+/// # Errors
+/// A read fails.
+pub fn unsized_days(
+    conn: &Connection,
+    pid: ProfileId,
+    from: &str,
+    to: &str,
+) -> Result<BTreeSet<String>, Error> {
+    Ok(conn
+        .prepare_cached(
+            "SELECT DISTINCT day FROM entry
+             WHERE profile_id = ?3 AND day BETWEEN ?1 AND ?2 AND src_grp IS NULL
+                 AND food_id IS NULL AND grp != ?4
+                 AND json_extract(coalesce(nutrients, '{}'), '$.energy') IS NULL",
+        )?
+        .query_map(params![from, to, pid, PLANNED], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+/// An unsized day's [`Known`]: every key of its `total`, and each [`BORNE`]
+/// one, vouched for by none of its food.
+pub fn unvouched(known: &mut Known, total: &Nutrients) {
+    for key in total.keys().chain(BORNE) {
+        known.insert(key.to_owned(), 0.0);
+    }
+}
+
 // ------------------------------------------------- insight preferences
 
 /// A profile's insight preferences, by id; hidden ones past their day too
 /// (the client compares `until` with its own day).
-pub fn insight_pref_list(conn: &Connection, profile: ProfileId) -> Result<Vec<InsightPref>, Error> {
+pub fn insight_pref_list(conn: &Connection, pid: ProfileId) -> Result<Vec<InsightPref>, Error> {
     let mut stmt = conn.prepare_cached(
         "SELECT insight_id, state, until FROM insight_pref WHERE profile_id = ? ORDER BY insight_id",
     )?;
     Ok(stmt
-        .query_map([profile], |r| {
+        .query_map([pid], |r| {
             Ok(InsightPref {
                 id: r.get(0)?,
                 state: r.get(1)?,
@@ -1285,21 +1460,21 @@ pub fn insight_pref_list(conn: &Connection, profile: ProfileId) -> Result<Vec<In
 /// same twice is the same as once.
 pub fn insight_pref_set(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     pref: &InsightPref,
 ) -> Result<InsightPref, Error> {
     conn.execute(
         "INSERT INTO insight_pref (profile_id, insight_id, state, until) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT (profile_id, insight_id) DO UPDATE SET state = ?3, until = ?4",
-        params![profile, pref.id, pref.state, pref.until],
+        params![pid, pref.id, pref.state, pref.until],
     )?;
     Ok(pref.clone())
 }
 
-pub fn insight_pref_delete(conn: &Connection, profile: ProfileId, id: &str) -> Result<(), Error> {
+pub fn insight_pref_delete(conn: &Connection, pid: ProfileId, id: &str) -> Result<(), Error> {
     let n = conn.execute(
         "DELETE FROM insight_pref WHERE profile_id = ? AND insight_id = ?",
-        params![profile, id],
+        params![pid, id],
     )?;
     if n == 0 {
         return Err(Error::not_found("insight", id));
@@ -1312,7 +1487,7 @@ pub fn insight_pref_delete(conn: &Connection, profile: ProfileId, id: &str) -> R
 /// A profile's check-ins in `[from, to]` (either end open), oldest first.
 pub fn check_in_list(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     from: Option<&str>,
     to: Option<&str>,
 ) -> Result<Vec<CheckIn>, Error> {
@@ -1322,7 +1497,7 @@ pub fn check_in_list(
          ORDER BY day"
     ))?;
     Ok(stmt
-        .query_map(params![profile, from, to], |r| {
+        .query_map(params![pid, from, to], |r| {
             Ok(CheckIn {
                 day: r.get(0)?,
                 mood: r.get(1)?,
@@ -1338,7 +1513,7 @@ pub fn check_in_list(
 /// input, so the same twice is the same as once.
 pub fn check_in_set(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     day: &str,
     c: &CheckInInput,
 ) -> Result<CheckIn, Error> {
@@ -1347,7 +1522,7 @@ pub fn check_in_set(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT (profile_id, day) DO UPDATE
              SET mood = ?3, energy = ?4, stress = ?5, tags = ?6",
-        params![profile, day, c.mood, c.energy, c.stress, json(&c.tags)],
+        params![pid, day, c.mood, c.energy, c.stress, json(&c.tags)],
     )?;
     Ok(CheckIn {
         day: day.to_owned(),
@@ -1358,10 +1533,10 @@ pub fn check_in_set(
     })
 }
 
-pub fn check_in_delete(conn: &Connection, profile: ProfileId, day: &str) -> Result<(), Error> {
+pub fn check_in_delete(conn: &Connection, pid: ProfileId, day: &str) -> Result<(), Error> {
     let n = conn.execute(
         "DELETE FROM check_in WHERE profile_id = ? AND day = ?",
-        params![profile, day],
+        params![pid, day],
     )?;
     if n == 0 {
         return Err(Error::not_found("check_in", day));
@@ -1373,7 +1548,7 @@ pub fn check_in_delete(conn: &Connection, profile: ProfileId, day: &str) -> Resu
 /// in [`BodyPart`] order.
 pub fn measurement_list(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     from: Option<&str>,
     to: Option<&str>,
 ) -> Result<Vec<Measurement>, Error> {
@@ -1383,7 +1558,7 @@ pub fn measurement_list(
          ORDER BY day"
     ))?;
     let mut list: Vec<Measurement> = stmt
-        .query_map(params![profile, from, to], |r| {
+        .query_map(params![pid, from, to], |r| {
             Ok(Measurement {
                 day: r.get(0)?,
                 kind: named(r, 1, BodyPart::parse)?,
@@ -1398,7 +1573,7 @@ pub fn measurement_list(
 /// Write `day`'s measurement of `kind`, replacing the one it had.
 pub fn measurement_set(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     day: &str,
     kind: BodyPart,
     value: f64,
@@ -1406,7 +1581,7 @@ pub fn measurement_set(
     conn.execute(
         "INSERT INTO measurement (profile_id, day, kind, value) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT (profile_id, day, kind) DO UPDATE SET value = ?4",
-        params![profile, day, kind.as_str(), value],
+        params![pid, day, kind.as_str(), value],
     )?;
     Ok(Measurement {
         day: day.to_owned(),
@@ -1417,13 +1592,13 @@ pub fn measurement_set(
 
 pub fn measurement_delete(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     day: &str,
     kind: BodyPart,
 ) -> Result<(), Error> {
     let n = conn.execute(
         "DELETE FROM measurement WHERE profile_id = ? AND day = ? AND kind = ?",
-        params![profile, day, kind.as_str()],
+        params![pid, day, kind.as_str()],
     )?;
     if n == 0 {
         return Err(Error::not_found(

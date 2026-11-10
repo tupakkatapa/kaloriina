@@ -9,7 +9,8 @@ use crate::model::{
 };
 use crate::nutrients::Nutrients;
 
-const HABIT_COLS: &str = "id, name, unit, goal_value, goal_dir, archived, rev";
+const HABIT_COLS: &str = "id, name, unit, goal_value, goal_dir, archived, rev,
+    (SELECT count(*) FROM habit_day d WHERE d.habit_id = habit.id)";
 
 fn habit_row(r: &Row) -> rusqlite::Result<Habit> {
     let goal_value: Option<f64> = r.get(3)?;
@@ -22,24 +23,25 @@ fn habit_row(r: &Row) -> rusqlite::Result<Habit> {
         goal_dir,
         archived: r.get(5)?,
         rev: r.get(6)?,
+        days: r.get(7)?,
     })
 }
 
 /// A profile's trackers, archived included, oldest first.
-pub fn habit_list(conn: &Connection, profile: ProfileId) -> Result<Vec<Habit>, Error> {
+pub fn habit_list(conn: &Connection, pid: ProfileId) -> Result<Vec<Habit>, Error> {
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT {HABIT_COLS} FROM habit WHERE profile_id = ? ORDER BY id"
     ))?;
     Ok(stmt
-        .query_map([profile], habit_row)?
+        .query_map([pid], habit_row)?
         .collect::<rusqlite::Result<_>>()?)
 }
 
-/// Profile `profile`'s tracker `id`; another profile's is 404 too.
-fn habit_owned(conn: &Connection, profile: ProfileId, id: i64) -> Result<Habit, Error> {
+/// Profile `pid`'s tracker `id`; another profile's is 404 too.
+fn habit_owned(conn: &Connection, pid: ProfileId, id: i64) -> Result<Habit, Error> {
     conn.query_row(
         &format!("SELECT {HABIT_COLS} FROM habit WHERE id = ? AND profile_id = ?"),
-        params![id, profile],
+        params![id, pid],
         habit_row,
     )
     .optional()?
@@ -50,29 +52,29 @@ fn habit_owned(conn: &Connection, profile: ProfileId, id: i64) -> Result<Habit, 
 /// ignoring case; a profile has at most [`HABITS_MAX`].
 pub fn habit_save(
     conn: &mut Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     id: Option<i64>,
     input: &CheckedHabit,
 ) -> Result<Habit, Error> {
     let tx = write(conn)?;
     if let Some(id) = id {
-        habit_owned(&tx, profile, id)?;
+        habit_owned(&tx, pid, id)?;
     } else if let Some(uid) = &input.uid {
         let earlier: Option<i64> = tx
             .query_row(
                 "SELECT id FROM habit WHERE profile_id = ? AND uid = ?",
-                params![profile, uid],
+                params![pid, uid],
                 |r| r.get(0),
             )
             .optional()?;
         if let Some(earlier) = earlier {
-            return habit_owned(&tx, profile, earlier);
+            return habit_owned(&tx, pid, earlier);
         }
     }
     let taken: bool = tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM habit
              WHERE profile_id = ?1 AND name = ?2 COLLATE NOCASE AND id IS NOT ?3)",
-        params![profile, input.name, id],
+        params![pid, input.name, id],
         |r| r.get(0),
     )?;
     if taken {
@@ -99,7 +101,7 @@ pub fn habit_save(
     } else {
         let full: bool = tx.query_row(
             "SELECT count(*) >= ?2 FROM habit WHERE profile_id = ?1",
-            params![profile, HABITS_MAX],
+            params![pid, HABITS_MAX],
             |r| r.get(0),
         )?;
         if full {
@@ -111,7 +113,7 @@ pub fn habit_save(
             "INSERT INTO habit (profile_id, name, unit, goal_value, goal_dir, archived, uid)
              VALUES (?, ?, ?, ?, ?, ?, ?)",
             params![
-                profile,
+                pid,
                 input.name,
                 input.unit,
                 input.goal_value,
@@ -122,16 +124,16 @@ pub fn habit_save(
         )?;
         tx.last_insert_rowid()
     };
-    let habit = habit_owned(&tx, profile, id)?;
+    let habit = habit_owned(&tx, pid, id)?;
     tx.commit()?;
     Ok(habit)
 }
 
 /// Delete a tracker with its days.
-pub fn habit_delete(conn: &Connection, profile: ProfileId, id: i64) -> Result<(), Error> {
+pub fn habit_delete(conn: &Connection, pid: ProfileId, id: i64) -> Result<(), Error> {
     match conn.execute(
         "DELETE FROM habit WHERE id = ? AND profile_id = ?",
-        params![id, profile],
+        params![id, pid],
     )? {
         0 => Err(Error::not_found("habit", id)),
         _ => Ok(()),
@@ -142,12 +144,12 @@ pub fn habit_delete(conn: &Connection, profile: ProfileId, id: i64) -> Result<()
 /// same twice is the same as once.
 pub fn habit_day_set(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     id: i64,
     day: &str,
     amount: f64,
 ) -> Result<HabitDay, Error> {
-    habit_owned(conn, profile, id)?;
+    habit_owned(conn, pid, id)?;
     conn.execute(
         "INSERT INTO habit_day (habit_id, day, amount) VALUES (?1, ?2, ?3)
          ON CONFLICT (habit_id, day) DO UPDATE SET amount = ?3",
@@ -162,11 +164,11 @@ pub fn habit_day_set(
 
 pub fn habit_day_delete(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     id: i64,
     day: &str,
 ) -> Result<(), Error> {
-    habit_owned(conn, profile, id)?;
+    habit_owned(conn, pid, id)?;
     match conn.execute(
         "DELETE FROM habit_day WHERE habit_id = ? AND day = ?",
         params![id, day],
@@ -174,6 +176,69 @@ pub fn habit_day_delete(
         0 => Err(Error::not_found("habit_day", format!("{id} {day}"))),
         _ => Ok(()),
     }
+}
+
+/// The tracker `input` is counted into: the profile's by its uid or, ignoring
+/// case, its name when it counts the same unit, else a new one below
+/// [`HABITS_MAX`]; and whether it is new. `Err` the reason there is none.
+pub fn habit_adopt(
+    conn: &Connection,
+    pid: ProfileId,
+    input: &CheckedHabit,
+) -> Result<Result<(i64, bool), String>, Error> {
+    let had: Option<(i64, String, String)> = conn
+        .query_row(
+            "SELECT id, name, unit FROM habit WHERE profile_id = ?1
+             AND (uid = ?2 OR name = ?3 COLLATE NOCASE) ORDER BY uid IS NOT ?2 LIMIT 1",
+            params![pid, input.uid, input.name],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    if let Some((id, name, unit)) = had {
+        if !unit.eq_ignore_ascii_case(&input.unit) {
+            return Ok(Err(format!(
+                "the habit {name:?} here counts {unit:?}, Loop's {:?}",
+                input.unit
+            )));
+        }
+        return Ok(Ok((id, false)));
+    }
+    let count: u32 = conn.query_row(
+        "SELECT count(*) FROM habit WHERE profile_id = ?",
+        [pid],
+        |r| r.get(0),
+    )?;
+    if count >= HABITS_MAX {
+        return Ok(Err(format!("a profile has at most {HABITS_MAX} habits")));
+    }
+    conn.execute(
+        "INSERT INTO habit (profile_id, name, unit, goal_value, goal_dir, archived, uid)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        params![
+            pid,
+            input.name,
+            input.unit,
+            input.goal_value,
+            input.goal_dir,
+            input.archived,
+            input.uid
+        ],
+    )?;
+    Ok(Ok((conn.last_insert_rowid(), true)))
+}
+
+/// Add tracker `id`'s total on `day` unless it has one; whether it was added.
+pub fn habit_day_add_missing(
+    conn: &Connection,
+    id: i64,
+    day: &str,
+    amount: f64,
+) -> Result<bool, Error> {
+    Ok(conn.execute(
+        "INSERT INTO habit_day (habit_id, day, amount) VALUES (?, ?, ?)
+         ON CONFLICT (habit_id, day) DO NOTHING",
+        params![id, day, amount],
+    )? > 0)
 }
 
 /// A profile's tracker totals in `[?2, ?3]` ([`IN_RANGE`]: `profile_id`
@@ -189,13 +254,13 @@ fn habit_days_sql() -> String {
 /// tracker.
 pub fn habit_days(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     from: Option<&str>,
     to: Option<&str>,
 ) -> Result<Vec<HabitDay>, Error> {
     let mut stmt = conn.prepare_cached(&habit_days_sql())?;
     Ok(stmt
-        .query_map(params![profile, from, to], |r| {
+        .query_map(params![pid, from, to], |r| {
             Ok(HabitDay {
                 habit_id: r.get(0)?,
                 day: r.get(1)?,
@@ -208,11 +273,13 @@ pub fn habit_days(
 /// What the built-ins' amounts are read from, taken under the lock and
 /// computed after it ([`builtin_days_of`]): the stored totals as text
 /// (with what hydration and coverage read of them), the grams by
-/// category, and the days with a food eaten that has none.
+/// category, the days with a food eaten that has none, and the days whose
+/// food isn't the whole day's ([`super::unsized_days`]).
 pub struct BuiltinInputs {
     eaten: Vec<super::EatenRow>,
     grams: BTreeMap<(String, String), f64>,
     uncategorised: BTreeSet<String>,
+    incomplete: BTreeSet<String>,
 }
 
 impl BuiltinInputs {
@@ -224,6 +291,7 @@ impl BuiltinInputs {
             eaten,
             grams: BTreeMap::new(),
             uncategorised: BTreeSet::new(),
+            incomplete: BTreeSet::new(),
         }
     }
 }
@@ -234,15 +302,16 @@ impl BuiltinInputs {
 /// A read fails.
 pub fn builtin_inputs(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     from: Option<&str>,
     to: Option<&str>,
 ) -> Result<BuiltinInputs, Error> {
     let (from, to) = (from.unwrap_or("0000-01-01"), to.unwrap_or("9999-12-31"));
     Ok(BuiltinInputs {
-        eaten: super::eaten_rows(conn, profile, from, to)?,
-        grams: category_grams(conn, profile, from, to)?,
-        uncategorised: uncategorised_days(conn, profile, from, to)?,
+        eaten: super::eaten_rows(conn, pid, from, to)?,
+        grams: category_grams(conn, pid, from, to)?,
+        uncategorised: uncategorised_days(conn, pid, from, to)?,
+        incomplete: super::unsized_days(conn, pid, from, to)?,
     })
 }
 
@@ -253,14 +322,15 @@ pub fn builtin_inputs(
 /// nutrient were [`crate::nutrients::KNOWN`] of the day's food (ADR 0030:
 /// by dry matter; caffeine, alcohol and creatine by what could hold them);
 /// hydration's, once foods whose water is known were; a category's, once
-/// every food eaten has a category (yours set, or an importer's).
+/// every food eaten has a category (yours set, or an importer's). None is
+/// known on a day whose food isn't the whole day's.
 pub fn builtin_days(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     from: Option<&str>,
     to: Option<&str>,
 ) -> Result<Vec<HabitDayRow>, Error> {
-    builtin_days_of(builtin_inputs(conn, profile, from, to)?)
+    builtin_days_of(builtin_inputs(conn, pid, from, to)?)
 }
 
 /// A day's hydration being added up (ADR 0020): ml, and the dry matter of
@@ -301,6 +371,7 @@ pub fn builtin_days_of(inputs: BuiltinInputs) -> Result<Vec<HabitDayRow>, Error>
         eaten: rows,
         grams,
         uncategorised,
+        incomplete,
     } = inputs;
     let mut eaten = Eaten::default();
     let mut hydration: BTreeMap<String, Drunk> = BTreeMap::new();
@@ -331,12 +402,14 @@ pub fn builtin_days_of(inputs: BuiltinInputs) -> Result<Vec<HabitDayRow>, Error>
             }
             // An export's water counts, but can't be vouched for.
             super::RowBasis::Imported => day.add(n.get("water"), alcohol, macro_dry(&n), false),
+            super::RowBasis::Text => day.add(None, 0.0, super::text_dry(&n), false),
         }
         eaten.add(&row.day, &n, row.grams, &row.basis);
     }
+    // Neither an export nor a text names a category.
     let imported: BTreeSet<&str> = rows
         .iter()
-        .filter(|r| matches!(r.basis, super::RowBasis::Imported))
+        .filter(|r| matches!(r.basis, super::RowBasis::Imported | super::RowBasis::Text))
         .map(|r| r.day.as_str())
         .collect();
     let eaten = eaten.days();
@@ -360,7 +433,7 @@ pub fn builtin_days_of(inputs: BuiltinInputs) -> Result<Vec<HabitDayRow>, Error>
                 habit: b.key.to_owned(),
                 day: day.clone(),
                 amount,
-                known,
+                known: known && !incomplete.contains(day),
             });
         }
     }
@@ -389,43 +462,24 @@ impl Hydrates {
     }
 }
 
-/// A recipe's [`Hydrates`] (`memo` keeps each once).
-///
-/// # Errors
-/// A read fails, or stored values aren't valid JSON.
-pub(super) fn recipe_hydration(
-    conn: &Connection,
-    id: i64,
-    memo: &mut BTreeMap<i64, Hydrates>,
-) -> Result<Hydrates, Error> {
-    if let Some(&h) = memo.get(&id) {
-        return Ok(h);
-    }
-    let items: Vec<(i64, bool, f64, bool, String)> = conn
-        .prepare_cached(
-            "SELECT i.food_id, f.kind = 'recipe', i.grams, f.drink, f.per100
-             FROM recipe_item i JOIN food f ON f.id = i.food_id WHERE i.recipe_id = ?",
-        )?
-        .query_map([id], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
-    let cooked: Option<f64> =
-        conn.query_row("SELECT cooked_g FROM food WHERE id = ?", [id], |r| r.get(0))?;
+/// A recipe's [`Hydrates`] from its parts: grams, drink, values per 100 g,
+/// and a recipe part's own [`Hydrates`].
+pub(super) fn hydrates_of<'a>(
+    parts: impl Iterator<Item = (f64, bool, &'a Nutrients, Option<Hydrates>)>,
+    cooked: Option<f64>,
+) -> Hydrates {
     let mut sum = Hydrates::default();
     let mut total = 0.0;
-    for (food, recipe, grams, drink, per100) in items {
+    for (grams, drink, per100, recipe) in parts {
         total += grams;
-        if recipe {
-            let h = recipe_hydration(conn, food, memo)?;
+        if let Some(h) = recipe {
             sum.water += h.water * grams;
             sum.alcohol += h.alcohol * grams;
             sum.dry += h.dry * grams;
             sum.dry_known += h.dry_known * grams;
             continue;
         }
-        let n: Nutrients = from_json(&per100)?;
-        let n = n.scale(grams / 100.0);
+        let n = per100.scale(grams / 100.0);
         sum.alcohol += n.get("alcohol").unwrap_or(0.0);
         let dry = dry_of(&n, grams, drink);
         sum.dry += dry;
@@ -435,7 +489,7 @@ pub(super) fn recipe_hydration(
         }
     }
     let weight = cooked.unwrap_or(total);
-    let out = if weight > 0.0 {
+    if weight > 0.0 {
         let water = if sum.water > 0.0 {
             (sum.water + weight - total).max(0.0)
         } else {
@@ -449,9 +503,7 @@ pub(super) fn recipe_hydration(
         }
     } else {
         Hydrates::default()
-    };
-    memo.insert(id, out);
-    Ok(out)
+    }
 }
 
 /// The days in `[from, to]` with a food eaten that has no category: a
@@ -460,7 +512,7 @@ pub(super) fn recipe_hydration(
 /// any imported total. A category's grams are a floor on them.
 fn uncategorised_days(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     from: &str,
     to: &str,
 ) -> Result<BTreeSet<String>, Error> {
@@ -479,7 +531,7 @@ fn uncategorised_days(
          WHERE f.kind = 'food' AND f.category IS NULL AND f.source = 'custom'",
     )?;
     Ok(stmt
-        .query_map(params![profile, from, to, PLANNED], |r| r.get(0))?
+        .query_map(params![pid, from, to, PLANNED], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?)
 }
 
@@ -489,7 +541,7 @@ fn uncategorised_days(
 /// recipes in recipes.
 fn category_grams(
     conn: &Connection,
-    profile: ProfileId,
+    pid: ProfileId,
     from: &str,
     to: &str,
 ) -> Result<BTreeMap<(String, String), f64>, Error> {
@@ -513,7 +565,7 @@ fn category_grams(
          GROUP BY p.day, f.category",
     )?;
     Ok(stmt
-        .query_map(params![profile, from, to, PLANNED], |r| {
+        .query_map(params![pid, from, to, PLANNED], |r| {
             Ok(((r.get(0)?, r.get(1)?), r.get(2)?))
         })?
         .collect::<rusqlite::Result<_>>()?)

@@ -4,7 +4,7 @@
 #[cfg(test)]
 use super::device::DAY_COLUMNS;
 use super::device::{
-    day_list, import_insert, import_list, sleep_stage_list, stages_put, stored_naps,
+    day_list, google_days_list, google_days_put, sleep_stage_list, stages_put, stored_naps,
 };
 use super::foods::{insert_food, insert_recipe};
 use super::prelude::*;
@@ -18,10 +18,10 @@ use super::{
 use crate::model::{
     CheckedImport, EXPORT_FORMAT, EXPORT_VERSION, ExportedActivity, ExportedBinding,
     ExportedDailyItem, ExportedDayTotal, ExportedEntry, ExportedExercise, ExportedFood,
-    ExportedHabit, ExportedHabitDay, ExportedItem, ExportedMeasurement, ExportedNap, ExportedNote,
-    ExportedPlan, ExportedProfile, ExportedScaleReading, ExportedSet, ExportedStep, ExportedTarget,
-    ExportedWeight, ExportedWorkout, GoalDir, IMPORT_KEY_PREFIX, KcalSource, OPENSCALE,
-    ProfileExport,
+    ExportedHabit, ExportedHabitDay, ExportedHiddenSuggestion, ExportedItem, ExportedMeasurement,
+    ExportedNap, ExportedNote, ExportedPlan, ExportedProfile, ExportedScaleReading, ExportedSet,
+    ExportedStep, ExportedTarget, ExportedWeight, ExportedWorkout, GoalDir, IMPORT_KEY_PREFIX,
+    KcalSource, OPENSCALE, ProfileExport,
 };
 
 /// The tables an export reaches by ref besides those a profile owns (the
@@ -85,6 +85,7 @@ pub const EXPORTED: &[(&str, &[&str])] = &[
     ("daily_skip", &["day"]),
     ("day_total", &["day", "grp", "nutrients"]),
     ("favorite", &["food_id"]),
+    ("suggestion_hidden", &["food_id", "until"]),
     (
         "activity",
         &[
@@ -291,6 +292,13 @@ fn reference(id: i64) -> String {
 /// use (recipes with their ingredients, recursively) and the exercises its
 /// sets use (with their root moves).
 pub fn profile_export(conn: &Connection, pid: ProfileId) -> Result<ProfileExport, Error> {
+    // One read transaction: a commit from another process (an import)
+    // lands wholly before or after the file, never between two reads.
+    let tx = conn.unchecked_transaction()?;
+    export_read(&tx, pid)
+}
+
+fn export_read(conn: &Connection, pid: ProfileId) -> Result<ProfileExport, Error> {
     let (profile, exported_at, synced_workouts, water_food) = conn.query_row(
         "SELECT name, sex, birth_date, height_cm, activity, goal_kg_per_week,
              strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), synced_workouts, water_food_id, goal_date,
@@ -354,7 +362,7 @@ pub fn profile_export(conn: &Connection, pid: ProfileId) -> Result<ProfileExport
         naps: exported_naps(conn, pid)?,
         sleep_stages: sleep_stage_list(conn, pid, None, None)?,
         device_sessions: activity.sessions,
-        import_days: import_list(conn, pid)?,
+        import_days: google_days_list(conn, pid)?,
         workout_tombstones: tombstone_list(conn, pid)?,
         measurements: measurement_list(conn, pid, None, None)?
             .into_iter()
@@ -372,6 +380,7 @@ pub fn profile_export(conn: &Connection, pid: ProfileId) -> Result<ProfileExport
             })
             .collect(),
         check_ins: check_in_list(conn, pid, None, None)?,
+        incomplete_days: Vec::new(),
         insight_prefs: insight_pref_list(conn, pid)?,
         entries: exported_entries(conn, pid, &daily_refs)?,
         day_totals: exported_day_totals(conn, pid)?,
@@ -379,10 +388,29 @@ pub fn profile_export(conn: &Connection, pid: ProfileId) -> Result<ProfileExport
             .prepare("SELECT food_id FROM favorite WHERE profile_id = ? ORDER BY food_id")?
             .query_map([pid], |r| Ok(reference(r.get(0)?)))?
             .collect::<rusqlite::Result<_>>()?,
+        hidden_suggestions: exported_hidden(conn, pid)?,
         foods: exported_foods(conn, pid)?,
         habits: exported_habits(conn, pid)?,
         daily_items,
     })
+}
+
+/// The foods hidden from suggestions, by ref.
+fn exported_hidden(
+    conn: &Connection,
+    pid: ProfileId,
+) -> Result<Vec<ExportedHiddenSuggestion>, Error> {
+    Ok(conn
+        .prepare(
+            "SELECT food_id, until FROM suggestion_hidden WHERE profile_id = ? ORDER BY food_id",
+        )?
+        .query_map([pid], |r| {
+            Ok(ExportedHiddenSuggestion {
+                food: reference(r.get(0)?),
+                until: r.get(1)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?)
 }
 
 /// The profile's daily items, oldest first, refs by place; and each one's
@@ -624,6 +652,7 @@ fn exported_foods(conn: &Connection, pid: ProfileId) -> Result<Vec<ExportedFood>
             "WITH RECURSIVE used(id) AS (
                  SELECT food_id FROM entry WHERE profile_id = ?1 AND food_id IS NOT NULL
                  UNION SELECT food_id FROM favorite WHERE profile_id = ?1
+                 UNION SELECT food_id FROM suggestion_hidden WHERE profile_id = ?1
                  UNION SELECT food_id FROM daily_item WHERE profile_id = ?1
                  UNION SELECT water_food_id FROM profile
                      WHERE id = ?1 AND water_food_id IS NOT NULL
@@ -754,6 +783,15 @@ fn write_entries(
             ],
         )?;
     }
+    // A day not fully logged, from before it was a one-off item, as
+    // migration 74 makes it.
+    for d in &file.incomplete_days {
+        tx.execute(
+            "INSERT OR IGNORE INTO entry (profile_id, day, grp, name, amount, uid)
+             VALUES (?, ?, 'Eaten', 'Not fully logged', '', 'incomplete-' || ?2)",
+            params![pid, d],
+        )?;
+    }
     // An entry's values are its food's here: a matched food may
     // say other numbers than the file's.
     for id in foods.values().collect::<BTreeSet<_>>() {
@@ -832,6 +870,12 @@ pub fn profile_import(
             params![pid, foods[r.as_str()]],
         )?;
     }
+    for h in &file.hidden_suggestions {
+        tx.execute(
+            "INSERT OR IGNORE INTO suggestion_hidden (profile_id, food_id, until) VALUES (?, ?, ?)",
+            params![pid, foods[h.food.as_str()], h.until],
+        )?;
+    }
     if let Some(r) = &file.water_food {
         let id = foods[r.as_str()];
         tx.execute(
@@ -853,7 +897,7 @@ pub fn profile_import(
         )?;
     }
     super::scale::weights_repick(&tx, Some(pid), now, tz)?;
-    super::sync_workouts::copies_collapse(&tx, Some(pid))?;
+    super::device_sessions::copies_collapse(&tx, Some(pid))?;
     let profile = written(profile_get(&tx, pid)?);
     tx.commit()?;
     Ok(profile)
@@ -893,8 +937,8 @@ fn write_daily_items<'f>(
     Ok(ids)
 }
 
-/// The profile's weights, measurements, notes, check-ins and imported
-/// totals.
+/// The profile's weights, measurements, notes, check-ins, days not fully
+/// logged and imported totals.
 fn write_days(tx: &Transaction, pid: ProfileId, file: &ProfileExport) -> Result<(), Error> {
     for w in &file.weights {
         tx.execute(
@@ -942,7 +986,7 @@ fn write_days(tx: &Transaction, pid: ProfileId, file: &ProfileExport) -> Result<
             ],
         )?;
     }
-    import_insert(tx, pid, &file.import_days)?;
+    google_days_put(tx, pid, &file.import_days)?;
     stages_put(tx, pid, &file.sleep_stages)?;
     for t in &file.workout_tombstones {
         tombstone(tx, pid, &t.key, t.kind, t.start_at.as_deref())?;

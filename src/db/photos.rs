@@ -99,6 +99,15 @@ pub fn photo_list(conn: &Connection, pid: ProfileId, day: &str) -> Result<Vec<Ph
         .collect::<rusqlite::Result<_>>()?)
 }
 
+/// Whether `pid` has the photo `uid`.
+pub fn photo_exists(conn: &Connection, pid: ProfileId, uid: &str) -> Result<bool, Error> {
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM photo WHERE profile_id = ? AND uid = ?)",
+        params![pid, uid],
+        |r| r.get(0),
+    )?)
+}
+
 /// A photo's type and bytes by its `uid`, if it is `pid`'s.
 pub fn photo_bytes(
     conn: &Connection,

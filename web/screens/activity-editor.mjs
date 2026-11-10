@@ -30,6 +30,7 @@ import {
   energyContext,
   exerciseRow,
   loadResting,
+  section,
   sourceText,
   weightOf,
 } from "../rows.mjs";
@@ -582,19 +583,9 @@ export async function activityHistory(params = new URLSearchParams()) {
     }
     list.append(
       ...[...months].map(([month, rows]) =>
-        h(
-          "section",
-          { class: "finder-section" },
-          h(
-            "h2",
-            {},
-            `${month} · ${plural(rows.length, "activity", "activities")}`,
-          ),
-          h(
-            "ul",
-            { class: "results card" },
-            rows.map((x) => activityRow(x, here)),
-          ),
+        section(
+          `${month} · ${plural(rows.length, "activity", "activities")}`,
+          rows.map((x) => activityRow(x, here)),
         ),
       ),
     );

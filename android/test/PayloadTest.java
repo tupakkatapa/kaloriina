@@ -56,7 +56,7 @@ public final class PayloadTest {
         outcome();
         plural();
         binding();
-        syncEvent();
+        theme();
         checks();
         builder();
         pages();
@@ -81,19 +81,19 @@ public final class PayloadTest {
     private static void outcome() {
         String counts = "{\"days\":1,\"sessions\":1,\"nights\":1,\"skipped\":0}";
         same(
-                Payload.outcome(200, counts),
+                answered(200, counts),
                 new Outcome("1 day, 1 activity, 1 night", false, true),
                 "200: done, counted");
         same(
-                Payload.outcome(200, "{\"days\":3,\"sessions\":0,\"nights\":2,\"skipped\":1}"),
+                answered(200, "{\"days\":3,\"sessions\":0,\"nights\":2,\"skipped\":1}"),
                 new Outcome("3 days, 0 activities, 2 nights", false, true),
                 "200: plurals");
         Outcome signIn = new Outcome("Sign in again: open the app", false, false);
-        same(Payload.outcome(200, null), signIn, "200 that isn't JSON: a login page");
-        same(Payload.outcome(401, null), signIn, "401");
-        same(Payload.outcome(403, "{\"error\":\"Forbidden\"}"), signIn, "403");
+        same(answered(200, null), signIn, "200 that isn't JSON: a login page");
+        same(answered(401, null), signIn, "401");
+        same(answered(403, "{\"error\":\"Forbidden\"}"), signIn, "403");
         same(
-                Payload.outcome(
+                answered(
                         400,
                         "{\"error\":\"Steps must be at most 100000"
                                 + " (\\\"days\\\")\",\"code\":\"invalid\","
@@ -101,7 +101,7 @@ public final class PayloadTest {
                 new Outcome("Steps must be at most 100000 (\"days\")", false, false),
                 "400: the server's sentence, no retry");
         same(
-                Payload.outcome(
+                answered(
                         404,
                         "{\"error\":\"Profile not"
                                 + " found\",\"code\":\"not_found\",\"resource\":\"profile\"}"),
@@ -111,26 +111,30 @@ public final class PayloadTest {
                         false),
                 "404: choose another profile");
         same(
-                Payload.outcome(
-                        413, "{\"error\":\"Request body too large\",\"code\":\"too_large\"}"),
+                answered(413, "{\"error\":\"Request body too large\",\"code\":\"too_large\"}"),
                 new Outcome("Request body too large", false, false),
                 "413: no retry");
         same(
-                Payload.outcome(409, "{\"code\":\"stale\"}"),
+                answered(409, "{\"code\":\"stale\"}"),
                 new Outcome("HTTP 409", false, false),
                 "an error without a sentence");
         same(
-                Payload.outcome(500, "{\"error\":\"Internal error\",\"code\":\"internal\"}"),
+                answered(500, "{\"error\":\"Internal error\",\"code\":\"internal\"}"),
                 new Outcome("Server error (HTTP 500)", true, false),
                 "500: the server answered, retry");
         same(
-                Payload.outcome(502, null),
+                answered(502, null),
                 new Outcome("Server error (HTTP 502)", true, false),
                 "502 from a proxy");
         same(
                 Payload.UNREACHABLE,
                 new Outcome("Server unreachable", true, false),
                 "no answer: retry");
+    }
+
+    /** The outcome of an answer read as the phone reads it: null when it isn't JSON. */
+    private static Outcome answered(int code, String json) {
+        return Payload.outcome(code, json == null ? null : ((Map<?, ?>) MiniJson.parse(json))::get);
     }
 
     private static void plural() {
@@ -148,24 +152,26 @@ public final class PayloadTest {
         same(Payload.lastOkAfterBind(0, 2, "2026-10-07"), null, "a first binding starts over");
     }
 
-    private static void syncEvent() {
-        String on = "dispatchEvent(new CustomEvent(\"kaloriina-sync\",{detail:";
-        same(Payload.syncEvent(true, "", ""), on + "{\"synced\":true}}))", "synced");
-        same(Payload.syncEvent(false, "", ""), on + "{}}))", "no profile: nothing synced");
-        same(
-                Payload.syncEvent(true, "Server error (HTTP 502)", ""),
-                on + "{\"error\":\"Server error (HTTP 502)\"}}))",
-                "the run's error");
-        same(
-                Payload.syncEvent(true, "old", "Waiting for Health Connect's read limit"),
-                on + "{\"note\":\"Waiting for Health Connect's read limit\"}}))",
-                "a note is this run's, an error may be older");
-        // The server's sentence goes into script: no quote, backslash or line
-        // separator may end the string.
-        same(
-                Payload.syncEvent(true, "a\"b\\c\u2028d\ne'f", ""),
-                on + "{\"error\":\"a\\\"b\\\\c\\u2028d\\ne'f\"}}))",
-                "escaped");
+    private static void theme() {
+        same(Payload.theme("bg=000000&dark=1"), new Payload.Theme(0xff000000, true), "AMOLED");
+        same(Payload.theme("bg=f5f5f2&dark=0"), new Payload.Theme(0xfff5f5f2, false), "light");
+        for (String bad :
+                new String[] {
+                    null,
+                    "",
+                    "bg=F5F5F2&dark=0",
+                    "bg=f5f5f&dark=0",
+                    "bg=f5f5f22&dark=0",
+                    "bg=#f5f5f2&dark=0",
+                    "bg=g5f5f2&dark=0",
+                    "bg=f5f5f2&dark=2",
+                    "bg=f5f5f2&dark=true",
+                    "bg=f5f5f2",
+                    "dark=0&bg=f5f5f2",
+                    "bg=f5f5f2&dark=0&x=1",
+                }) {
+            same(Payload.theme(bad), null, "refused: " + bad);
+        }
     }
 
     private static void checks() {

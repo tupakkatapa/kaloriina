@@ -51,22 +51,6 @@ const EDITORS = [
     savedAfter: (tag) => `Saved Recipe ${tag} renamed`,
   },
   {
-    kind: "meal",
-    slot: 193,
-    open: async ({ request, tag }) => {
-      const f = await food(request, { name: `Egg ${tag}` });
-      const m = await (
-        await request.post("/api/meals", {
-          data: { name: `Meal ${tag}`, items: [{ food_id: f.id, grams: 60 }] },
-        })
-      ).json();
-      return { url: `/#/meal/${m.id}` };
-    },
-    field: "Name",
-    value: (tag) => `Meal ${tag} renamed`,
-    savedAfter: (tag) => `Saved Meal ${tag} renamed`,
-  },
-  {
     kind: "entry",
     slot: 194,
     open: async ({ page, request, tag, day }) => {
@@ -258,7 +242,7 @@ test("leaving a clean editor never puts its address back", async ({
   expect(await page.evaluate(() => window.addresses)).toEqual([]);
 });
 
-// Pick food `name` into a recipe's or meal's items.
+// Pick food `name` into a recipe's items.
 async function pickItem(page, name) {
   await page.getByLabel("Search foods to add").fill(name);
   await page.getByRole("button", { name: starts(name) }).click();
@@ -297,17 +281,6 @@ const CREATES = [
           )
         ).json()
       ).filter((f) => f.name === name).length,
-  },
-  {
-    kind: "meal",
-    slot: 1116,
-    url: "/#/meal/new",
-    glob: "**/api/meals",
-    fill: (page, tag) => pickItem(page, `Item ${tag}`),
-    count: async (request, name) =>
-      (await (await request.get("/api/meals")).json()).filter(
-        (m) => m.name === name,
-      ).length,
   },
   {
     kind: "habit",

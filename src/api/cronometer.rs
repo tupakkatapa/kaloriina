@@ -3,7 +3,7 @@
 //! keeps the JSON-only CSRF guard. Its rows can be matched to a food.
 
 use super::prelude::*;
-use crate::import;
+use crate::cronometer;
 use axum::extract::DefaultBodyLimit;
 
 pub(super) fn routes() -> Router<AppState> {
@@ -29,7 +29,7 @@ async fn cronometer(
     Path(pid): Path<ProfileId>,
     permit: ImportPermit,
     Json(files): Json<Files>,
-) -> Res<import::Report> {
+) -> Res<cronometer::Report> {
     if files.servings.is_none() && files.summary.is_none() {
         return Err(Error::invalid(
             "choose servings.csv, dailysummary.csv or both",
@@ -38,7 +38,7 @@ async fn cronometer(
     let db = s.db.clone();
     let report = import_work(permit, move || {
         // Up to 64 MiB of CSV: read off the lock, which only the write takes.
-        let parsed = import::read(
+        let parsed = cronometer::read(
             files.servings.as_deref().map(str::as_bytes),
             files.summary.as_deref().map(str::as_bytes),
         )?;
@@ -64,7 +64,7 @@ async fn imported_match(
     State(s): State<AppState>,
     Path(pid): Path<ProfileId>,
     Json(m): Json<Match>,
-) -> Res<model::import::MatchReport> {
+) -> Res<model::cronometer::MatchReport> {
     let name = model::text(&m.name, "name", model::NAME_MAX)?;
     Ok(Json(
         on_profile(&s, pid, move |conn| {

@@ -352,15 +352,25 @@ async fn a_goal_date_is_a_date_or_null() {
     assert_eq!(me["goal_date"], Value::Null);
     let mut body = me.clone();
     body["goal_date"] = json!("2027-03-01");
+    body["day"] = json!(DAY);
     let (status, p) = call(&app, "PUT", "/api/profiles/1", Some(body.clone())).await;
     assert_eq!(status, StatusCode::OK, "{p}");
     assert_eq!(p["goal_date"], "2027-03-01");
-    for bad in [json!("2027-02-30"), json!("soon"), json!(3)] {
+    for bad in ["2027-02-30", "soon"] {
         let mut b = p.clone();
-        b["goal_date"] = bad.clone();
+        b["goal_date"] = json!(bad);
+        b["day"] = json!(DAY);
         let (status, e) = call(&app, "PUT", "/api/profiles/1", Some(b)).await;
-        assert!(status.is_client_error(), "{bad}: {e}");
+        assert_eq!(
+            (status, &e["field"]),
+            (StatusCode::BAD_REQUEST, &json!("goal_date")),
+            "{bad}: {e}"
+        );
     }
+    let mut b = p.clone();
+    b["goal_date"] = json!(3);
+    let (status, e) = call(&app, "PUT", "/api/profiles/1", Some(b)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{e}");
     // PUT replaces the whole profile: leaving it out is no way to clear it.
     let mut b = p.clone();
     b.as_object_mut().unwrap().remove("goal_date");

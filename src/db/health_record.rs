@@ -1,15 +1,12 @@
 //! The raw store (`health_record`, ADR 0019): written and read here only
 //! (`no_reader_selects_health_record`). Nothing shows it; the server makes
 //! Health Connect's nights, resting energy and day distance from it
-//! (`nights_derive`, `resting_derive`, `distance_derive`). Upserted by key; a source's rows go when its data is
-//! removed (Remove synced data, Remove the import) or with the profile;
-//! exports leave it out, backups keep it.
+//! (`nights_derive`, `resting_derive`, `distance_derive`). Upserted by key;
+//! a source's rows go when its data is removed (Remove synced data, Remove
+//! the import) or with the profile; exports leave it out, backups keep it.
 
-use super::derived::{distance_derive, nights_derive, resting_derive};
 use super::prelude::*;
-use crate::model::{
-    HEALTH_CONNECT, HealthRecord, RawCounts, RecordsPost, RecordsResult, health_connect_sleeps,
-};
+use crate::model::{HEALTH_CONNECT, HealthRecord};
 
 /// Upsert one record of `source`: its data replaces what the key held,
 /// and `received_at` says when it last changed. The same record sent again
@@ -35,81 +32,6 @@ pub(super) fn record_put(
             pid, source, r.kind, r.id, r.start_at, r.end_at, r.day, r.data, now
         ])?;
     Ok(changed > 0)
-}
-
-/// Keep a page of the phone's records, in one transaction. What the server
-/// makes of its new or changed ones follows in it: the nights of the days
-/// its sleep sessions woke on and the day before each, and of the nights
-/// its HRV readings may fall in; the resting energy of the days its basal
-/// metabolic rates name (an older phone posts its window before its pages). Its outcome adds to
-/// the sync's records outcome (`sync_state.records_result`: its pages, the
-/// first after a window starting it over), and is logged.
-pub fn records_put(
-    conn: &mut Connection,
-    pid: ProfileId,
-    post: &RecordsPost,
-    now: i64,
-    tz: &TimeZone,
-) -> Result<RawCounts, Error> {
-    let tx = write(conn)?;
-    let mut changed = Vec::new();
-    for r in &post.records {
-        if record_put(&tx, pid, HEALTH_CONNECT, r, now)? {
-            changed.push(r);
-        }
-    }
-    let of = |kind: &'static str| changed.iter().copied().filter(move |r| r.kind == kind);
-    let sessions: Vec<(String, String)> = of(SLEEP_SESSION)
-        .map(|r| (r.id.clone(), r.data.clone()))
-        .collect();
-    let mut nights = BTreeSet::new();
-    for day in health_connect_sleeps(&sessions, tz).days {
-        nights.extend(day_and_before(&day));
-    }
-    for r in of(HRV) {
-        // A reading late in the evening is the next night's.
-        nights.extend(r.day.as_deref().and_then(next_day));
-        nights.extend(r.day.clone());
-    }
-    nights_derive(&tx, pid, &nights, tz)?;
-    let resting: BTreeSet<String> = of(BMR).filter_map(|r| r.day.clone()).collect();
-    resting_derive(&tx, pid, &resting)?;
-    let walked: BTreeSet<String> = of(DISTANCE).filter_map(|r| r.day.clone()).collect();
-    distance_derive(&tx, pid, &walked)?;
-    let counts = RawCounts {
-        records: post.records.len() as u64,
-        truncated: post.records.iter().filter(|r| r.truncated).count() as u64,
-        skipped: post.skipped,
-        failed: post.failed,
-    };
-    // A page after a window starts the next sync's outcome: the window
-    // marks the outcome `closed` (`device_replace`), so no clock decides.
-    let before: Option<String> = tx
-        .query_row(
-            "SELECT records_result FROM sync_state WHERE profile_id = ? AND source = ?
-             AND NOT coalesce(json_extract(records_result, '$.closed'), 0)",
-            params![pid, HEALTH_CONNECT],
-            |r| r.get::<_, Option<String>>(0),
-        )
-        .optional()?
-        .flatten();
-    let ongoing: Option<RecordsResult> = before.as_deref().map(from_json).transpose()?;
-    let total = ongoing.unwrap_or_default().add(counts, now);
-    tx.execute(
-        "INSERT INTO sync_state (profile_id, source, records_result) VALUES (?1, ?2, ?3)
-         ON CONFLICT (profile_id, source) DO UPDATE SET records_result = ?3",
-        params![pid, HEALTH_CONNECT, json(&total)],
-    )?;
-    tx.commit()?;
-    tracing::info!(
-        profile = pid.0,
-        records = counts.records,
-        truncated = counts.truncated,
-        skipped = counts.skipped,
-        failed = counts.failed,
-        "health records kept"
-    );
-    Ok(counts)
 }
 
 /// Keep `records` of `source` unless their key is already there (an
@@ -144,29 +66,6 @@ pub(super) const SLEEP_SESSION: &str = "SleepSession";
 pub(super) const HRV: &str = "HeartRateVariabilityRmssd";
 pub(super) const BMR: &str = "BasalMetabolicRate";
 pub(super) const DISTANCE: &str = "Distance";
-
-/// `day` and the day before it (both when `day` reads).
-fn day_and_before(day: &str) -> Vec<String> {
-    let Ok(d) = day.parse::<jiff::civil::Date>() else {
-        return Vec::new();
-    };
-    [d.yesterday().ok(), Some(d)]
-        .into_iter()
-        .flatten()
-        .map(|d| d.to_string())
-        .collect()
-}
-
-/// The day after `day`.
-fn next_day(day: &str) -> Option<String> {
-    Some(
-        day.parse::<jiff::civil::Date>()
-            .ok()?
-            .tomorrow()
-            .ok()?
-            .to_string(),
-    )
-}
 
 /// `pid`'s Health Connect records of `kind` whose day (their start's) is in
 /// `[from, to]` (either end open): `(record id, data)`.

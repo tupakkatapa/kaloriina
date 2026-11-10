@@ -111,7 +111,7 @@ test("stats: total, days, peak (earliest on a tie), per logged day and week, ove
   });
 });
 
-test("stats: an unknown day is no 0: means over the known days, totals at least the floors (AC2-1)", () => {
+test("stats: an unknown day is no 0: means over the known days, totals at least the floors", () => {
   // The owner's Oct 5–11: drinks on known days, and Oct 10 unknown with
   // ≥ 13.1 drinks (a Moscow mule without its alcohol set).
   const rows = [
@@ -371,7 +371,7 @@ test("rows in shown units; series over every logged day; built-ins in the Summar
   assert.equal(summaryHabits(withGoal, []).length, 1);
 });
 
-test("an unknown day is no sample: Highlights never read it as 0 (AC2-2)", () => {
+test("an unknown day is no sample: Highlights never read it as 0", () => {
   // The owner's Oct 5–11: Oct 10 unknown (≥ 13.1 drinks) was read a sober day.
   const days = [
     { habit: "alcohol", day: "2026-10-09", amount: 0, known: true },
@@ -468,7 +468,7 @@ test("us_label_salt_is_sodium_mg: a nutrient built-in follows the label", () => 
   setRegistry([]);
 });
 
-test("mg reads whole wherever a habit's amount is said (TFA-H15, U3-19)", () => {
+test("mg reads whole wherever a habit's amount is said", () => {
   const caffeine = builtinHabit(
     { ...WATER, key: "caffeine", unit: "mg", one: "mg", factor: 1 },
     [],
@@ -478,7 +478,7 @@ test("mg reads whole wherever a habit's amount is said (TFA-H15, U3-19)", () => 
   assert.equal(cellText(builtinHabit(WATER, []), 2.688), "2.7");
 });
 
-test("a day's mean over known days only from 3 of them; else a floor over the food days (TFA-H4)", () => {
+test("a day's mean over known days only from 3 of them; else a floor over the food days", () => {
   const caffeine = builtinHabit(
     { ...WATER, key: "caffeine", unit: "mg", one: "mg", factor: 1 },
     [],
@@ -527,13 +527,13 @@ test("a day's mean over known days only from 3 of them; else a floor over the fo
   });
 });
 
-test("a count whose floor is 0 is not known, never none (TFA-H7)", () => {
+test("a count whose floor is 0 is not known, never none", () => {
   assert.equal(countText(0, true), "–");
   assert.equal(countText(2, true), nbsp("≥ 2"));
   assert.equal(countText(0, false), "0");
 });
 
-test("hydration's calendar key is worded by the day's goal it shades by (TFA-H6)", () => {
+test("hydration's calendar key is worded by the day's goal it shades by", () => {
   const targets = [{ metric: "water", value: 2500 }];
   const water = builtinHabit({ ...WATER, source: "hydration" }, targets);
   assert.deepEqual(goalWords(water), [
@@ -555,7 +555,7 @@ test("hydration's calendar key is worded by the day's goal it shades by (TFA-H6)
   assert.equal(goalWords(fruit), null);
 });
 
-test("UX11-15: grams read whole from 10 g, a tenth under it; calendar cells alike", () => {
+test("grams read whole from 10 g, a tenth under it; calendar cells alike", () => {
   const fruit = builtinHabit(
     { ...WATER, key: "fruit", unit: "g", one: "g", factor: 1 },
     [],
@@ -566,7 +566,7 @@ test("UX11-15: grams read whole from 10 g, a tenth under it; calendar cells alik
   assert.equal(cellText(fruit, 9.46), "9.5");
 });
 
-test("UX11-4: a habit's series carries the day's goal its insight judges by", () => {
+test("a habit's series carries the day's goal its insight judges by", () => {
   const hydration = { ...WATER, source: "hydration" };
   const minutes = new Map([["2026-10-02", 90]]);
   const water = builtinHabit(

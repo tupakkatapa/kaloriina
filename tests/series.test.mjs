@@ -77,7 +77,7 @@ test("the energy chart is exactly eaten and burned, points and trend, and the ta
   // A day without burned is no point, not 0.
   assert.deepEqual(marks[2].data, [2200, null]);
   assert.equal(marks[4].value, 2000);
-  // Owner (2026-10-14): the target is what to eat, named so.
+  // The target is what to eat, named so.
   assert.equal(marks[4].text, "Eaten target: 2000 kcal");
   // Without a target: no line.
   const bare = energySeries({
@@ -104,7 +104,7 @@ test("the energy chart is exactly eaten and burned, points and trend, and the ta
   );
 });
 
-test("a day whose eaten energy leaves some out is a ≥ point of eaten's, as the Diary's (EN-11, E3-6, U3-6)", () => {
+test("a day whose eaten energy leaves some out is a ≥ point of eaten's, as the Diary's", () => {
   const { marks } = energySeries({
     days: [
       day("2026-10-10", 2000),
@@ -135,7 +135,7 @@ test("a day whose eaten energy leaves some out is a ≥ point of eaten's, as the
   );
 });
 
-test("a year's week is one eaten point, its mean over all its days, ≥ when any is partial (E3-2, TFA-F1)", () => {
+test("a year's week is one eaten point, its mean over all its days, ≥ when any is partial", () => {
   // Week of Mon Oct 5: five whole days and two partial ones.
   const whole = [1729, 1694, 1883, 1810, 1790].map((kcal, i) =>
     day(`2026-10-0${5 + i}`, kcal),
@@ -160,7 +160,7 @@ test("a year's week is one eaten point, its mean over all its days, ≥ when any
   assert.deepEqual(eaten[0].partly, [true]);
 });
 
-test("a year's week sets eaten against burned over the same days: its food days (E3-1)", () => {
+test("a year's week sets eaten against burned over the same days: its food days", () => {
   // Week of Sep 7: one food day; burned every day, 2,507 on the food day.
   const burned = [2507, 2300, 2300, 2300, 2300, 2300, 2300].map((kcal, i) => ({
     day: `2026-09-${String(7 + i).padStart(2, "0")}`,
@@ -192,7 +192,7 @@ test("a year's week sets eaten against burned over the same days: its food days 
   );
 });
 
-test("burned is to 10 kcal everywhere it's said, points and trend (E3-9)", () => {
+test("burned is to 10 kcal everywhere it's said, points and trend", () => {
   const { marks } = energySeries({
     days: [day("2026-10-01", 2000), day("2026-10-02", 2000)],
     burned: [
@@ -211,7 +211,7 @@ test("burned is to 10 kcal everywhere it's said, points and trend (E3-9)", () =>
   assert.deepEqual(burned[0].data, [2380, 2190]);
 });
 
-test("a series' points by kind: maintenance names its method per point, its own shape (B-7, B3-7, B3-10)", () => {
+test("a series' points by kind: maintenance names its method per point, its own shape", () => {
   const daily = [
     { day: "2026-10-03", value: 2156, source: "balance" },
     { day: "2026-10-04", value: 2190, source: "burned" },
@@ -301,7 +301,7 @@ test("a trend only where a moving average reads truer than the points", () => {
 const resting = () => ({ kcal: 1700, source: "mifflin" });
 const spent = (d, kcal, source = "active") => ({ day: d, kcal, source });
 
-test("energy balance: everyday movement every day, active the rest; even inside the error (EN-5, EN-6)", () => {
+test("energy balance: everyday movement every day, active the rest; even inside the error", () => {
   // A quiet device day (burned = resting + TEF + everyday) and a busy one
   // (active 600).
   const n = periodNumbers({
@@ -344,7 +344,7 @@ test("energy balance: everyday movement every day, active the rest; even inside 
   );
 });
 
-test("the balance's gap from a floor of eaten is a bound, never 'about even' over a possible surplus (U3-1)", () => {
+test("the balance's gap from a floor of eaten is a bound, never 'about even' over a possible surplus", () => {
   const words = (net, partly) => {
     const { word } = periodNumbers({
       days: [{ ...day("2026-10-01", 2000 + net), energy_unknown: partly }],
@@ -414,7 +414,7 @@ test("a min–max target is a field, the macro's target (item 21; owner 2026-10-
   );
 });
 
-test("a year is by week; a water-only day is no food day (QUAL-2)", () => {
+test("a year is by week; a water-only day is no food day", () => {
   // Mon 2 – Wed 4 March: 1,800 and 2,200 eaten, Wednesday water only.
   const { keys, marks } = energySeries({
     days: [
@@ -430,6 +430,39 @@ test("a year is by week; a water-only day is no food day (QUAL-2)", () => {
   });
   assert.deepEqual(keys, ["2026-03-02"]);
   assert.deepEqual(marks[0].data, [2000]);
+});
+
+test("a day not fully logged is in no chart and no energy balance", () => {
+  const partial = { ...day("2026-03-03", 900), incomplete: true };
+  const days = [day("2026-03-02", 1800), partial];
+  const { keys, marks } = energySeries({
+    days,
+    burned: [],
+    target: null,
+    by: "day",
+    show: same,
+    say,
+  });
+  assert.deepEqual(keys, ["2026-03-02"]);
+  assert.deepEqual(marks[0].data, [1800]);
+  assert.deepEqual(
+    macroSeries({
+      days,
+      key: "energy",
+      label: "Energy",
+      target: null,
+      by: "day",
+      say,
+    }).keys,
+    ["2026-03-02"],
+  );
+  assert.deepEqual(eatenSeries(days).energy.samples, ["2026-03-02"]);
+  const n = periodNumbers({
+    days,
+    burned: [spent("2026-03-02", 2000), spent("2026-03-03", 2000)],
+    bmr: resting,
+  });
+  assert.equal(n.n, 1);
 });
 
 const points = (data) => ({ key: "w", kind: "points", data });
@@ -466,7 +499,7 @@ test("a field hides whole, only when both its edges are far", () => {
   );
 });
 
-test("Body lines: goals to the tenth, the recommended BMI by age, the goal's BMI (item 20, TEST-5)", () => {
+test("Body lines: goals to the tenth, the recommended BMI by age, the goal's BMI", () => {
   const table = [
     [18, 18.5, 25],
     [65, 22, 27],
@@ -511,7 +544,7 @@ test("Body lines: goals to the tenth, the recommended BMI by age, the goal's BMI
   assert.equal(bmiRange(null, "2026-10-14", table), null);
 });
 
-test("Body's maintenance ends at Targets' maintenance: the trend's lead-in (QUAL-3)", async () => {
+test("Body's maintenance ends at Targets' maintenance: the trend's lead-in", async () => {
   const yesterday = shift(today(), -1);
   // 2,000 kcal a day for 40 days, a weigh-in a day falling 0.1 kg but
   // the days before the window's first a kilo up (the trend there reads
@@ -553,7 +586,7 @@ test("Body's maintenance ends at Targets' maintenance: the trend's lead-in (QUAL
   );
 });
 
-test("a Diary day's active energy nets a typed activity of resting (ARCH-5)", () => {
+test("a Diary day's active energy nets a typed activity of resting", () => {
   const person = {
     sex: "female",
     birth_date: "1990-01-01",
@@ -596,7 +629,7 @@ test("a Diary day's active energy nets a typed activity of resting (ARCH-5)", ()
   );
 });
 
-test("caffeine's and alcohol's series: the days the day knows them (TFA-H1)", () => {
+test("caffeine's and alcohol's series: the days the day knows them", () => {
   // Coffee carries next to no dry matter or energy: the server weighs
   // caffeine by what could hold it, so a day of food and coffee is known.
   // A day without either holds none, known.
@@ -632,7 +665,7 @@ test("caffeine's and alcohol's series: the days the day knows them (TFA-H1)", ()
   assert.equal(energy.samples.length, 4);
 });
 
-test("a zoomed axis ticks at round values, an edge only clear of them (E3-12, U3-8, B3-5)", () => {
+test("a zoomed axis ticks at round values, an edge only clear of them", () => {
   // Energy month 1,503–3,545: round 500s, the floor labelled, the top
   // (45 from 3,500) not, so no two labels collide.
   assert.deepEqual(zoomTicks(1503, 3545, 0), [1503, 2000, 2500, 3000, 3500]);
@@ -645,7 +678,7 @@ test("a zoomed axis ticks at round values, an edge only clear of them (E3-12, U3
   assert.deepEqual(zoomTicks(24.5, 25.6, 1), [24.5, 25, 25.5]);
 });
 
-test("a zoomed axis spans at least its metric's minimum, round at both ends (B3-6)", () => {
+test("a zoomed axis spans at least its metric's minimum, round at both ends", () => {
   // Maintenance 2,153–2,155 kcal: no cliff, 100 kcal or more.
   const [lo, hi] = spanAtLeast(2153, 2155, 100);
   assert.ok(hi - lo >= 100 && lo <= 2153 && hi >= 2155, `${lo}–${hi}`);
@@ -690,7 +723,7 @@ test("energy balance: resting's sources over the period, counted", () => {
   );
 });
 
-test("a gap against measured maintenance is judged by the balance's rule; kJ in 50s (UX11-5, QUAL11-N2)", () => {
+test("a gap against measured maintenance is judged by the balance's rule; kJ in 50s", () => {
   // Eaten 2,000 against a weight trend's 2,308.
   assert.deepEqual(gapOf(2000 - 2308, false), {
     net: -308,

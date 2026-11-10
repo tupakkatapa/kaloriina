@@ -4,6 +4,7 @@
 import {
   activitiesMetres,
   counted,
+  exerciseBest,
   MIN_MINUTES,
   targetWeeks,
   tracksActivity,
@@ -12,10 +13,16 @@ import { get, scoped } from "../api.mjs";
 import { calendarView } from "../calendar.mjs";
 import { legendWords, step } from "../calendar-grid.mjs";
 import { touching } from "../correlate.mjs";
-import { daysIn, duration, pretty, today } from "../dates.mjs";
+import { daysIn, duration, pretty, shift, today } from "../dates.mjs";
 import { activeMark } from "../energy-text.mjs";
 import { fmt, isNil, noun, plural, qty } from "../format.mjs";
-import { everyDay } from "../insights.mjs";
+import {
+  activitiesVersus,
+  everyDay,
+  prepare,
+  present,
+  versusBefore,
+} from "../insights.mjs";
 import { href } from "../nav.mjs";
 import { kcalParts } from "../nutrients.mjs";
 import {
@@ -24,25 +31,28 @@ import {
   estimateKcal,
   periodNumbers,
 } from "../series.mjs";
-import { h } from "../ui.mjs";
 import { tiles } from "../tiles.mjs";
+import { h } from "../ui.mjs";
 import { unitQty } from "../units.mjs";
+import { setText } from "../workouts.mjs";
 import { highlightStack } from "./summary-highlights.mjs";
 import { cardioSection, loadCardio } from "./summary-load.mjs";
 
 export const KEY = "activity";
 export const LABEL = "Activity";
 
-// The period's activities and plans, and the activities of the period before
-// (the Highlights compare them); the weekly target, Health Connect,
+// The period's activities and plans, the period before's activities and
+// device days (the tiles compare them), and the records (`/records`:
+// Records' bests); the weekly target, Health Connect,
 // check-ins, the energy burned and the activity rows come shared
 // (web/series.mjs).
 export async function load(p, sharing) {
   const range = `from=${p.from}&to=${p.to}`;
-  const [shared, plans, exercises] = await Promise.all([
+  const [shared, plans, exercises, records] = await Promise.all([
     sharing,
     get(scoped(`/plans?${range}`)),
     get("/exercises"),
+    get(scoped("/records")),
   ]);
   const [activities, before, beforeDevice, beforeFood, food, cardio] =
     await Promise.all([
@@ -68,12 +78,38 @@ export async function load(p, sharing) {
     activities,
     plans,
     before,
+    beforeDevice,
     exercises,
     food,
     cardio,
+    bests: bestsOf(records),
     since: !tracked || tracked < p.from ? p.from : tracked,
   };
 }
+
+// The bests a Highlight may name, as Records counts them: the best step
+// day, the longest night and each exercise's ([{what, value, day}]).
+const bestsOf = (records) => {
+  const d = records.days;
+  return [
+    d.steps && {
+      what: "most steps",
+      value: plural(d.steps.value, "step"),
+      day: d.steps.day,
+    },
+    d.night && {
+      what: "longest night",
+      value: duration(d.night.value),
+      day: d.night.day,
+    },
+    ...records.exercises.flatMap((r) => {
+      const best = exerciseBest(r);
+      return best
+        ? [{ what: r.name, value: setText(best.set), day: best.day }]
+        : [];
+    }),
+  ].filter(Boolean);
+};
 
 // " since Jun 2" when the period's numbers start after its first day.
 const sinceText = (p, since) =>
@@ -83,6 +119,8 @@ const sinceText = (p, since) =>
 // day is a 0, not missing data.
 const activitySeries = (activities, from, to) =>
   everyDay(from, to, activities, () => 1);
+const minutesSeries = (activities, from, to) =>
+  everyDay(from, to, activities, (s) => s.minutes);
 
 // The first day the sync is seen covering among what is loaded, when any
 // device activity is: a comparison starting before it would count their
@@ -98,9 +136,61 @@ const syncedFrom = (activities, days) => {
 // months before tracking began are no rest and burned nothing measured.
 export function render(
   p,
-  { activities, plans, before, exercises, food, cardio, since },
+  {
+    activities,
+    plans,
+    before,
+    beforeDevice,
+    exercises,
+    food,
+    cardio,
+    bests,
+    since,
+  },
   shared,
 ) {
+  const deviceFrom = syncedFrom([...before, ...activities], shared.deviceDays);
+  const bmr = shared.burned.bmr;
+  // The tiles' comparisons: activities through today, the device's through
+  // yesterday (today's are still coming in).
+  const counts = (list, from, to) => ({
+    activities: activitySeries(list, from, to),
+  });
+  const now = prepare({
+    kind: p.kind,
+    from: p.from,
+    to: p.to,
+    last: today(),
+    before: p.before,
+    deviceFrom,
+    series: counts(activities, p.from, p.to),
+    prev: counts(before, p.before.from, p.before.to),
+  });
+  const synced = prepare({
+    kind: p.kind,
+    from: p.from,
+    to: p.to,
+    last: shift(today(), -1),
+    before: p.before,
+  });
+  const vs = {
+    activities: activitiesVersus(now),
+    minutes: versusBefore(
+      now,
+      minutesSeries(activities, p.from, p.to),
+      minutesSeries(before, p.before.from, p.before.to),
+    ),
+    steps: versusBefore(
+      synced,
+      present(shared.deviceDays, "steps"),
+      present(beforeDevice, "steps"),
+    ),
+    active: versusBefore(
+      synced,
+      activeSeries(knownActive(shared.deviceDays, activities, bmr)),
+      activeSeries(knownActive(beforeDevice, before, bmr)),
+    ),
+  };
   return [
     // An activity logged today is whole, so today counts.
     highlightStack(
@@ -117,12 +207,13 @@ export function render(
           ...shared.series,
         },
         targets: shared.targets,
-        deviceFrom: syncedFrom([...before, ...activities], shared.deviceDays),
+        deviceFrom,
         prev: {
           activities: activitySeries(before, p.before.from, p.before.to),
         },
-        // Muscle gaps, the target streak, distance and pace.
+        // Muscle gaps, the target streak, distance and pace; new bests.
         activities,
+        bests,
         // Cardio load against the 4 weeks before (ADR 0034).
         cardio,
         beforeActivities: before,
@@ -140,6 +231,7 @@ export function render(
       shared.targets.workouts_per_week?.value ?? null,
       shared.burned.bmr,
       since,
+      vs,
       movementSummary(
         p,
         shared.deviceDays,
@@ -151,6 +243,7 @@ export function render(
           steps: shared.targets.steps?.value ?? null,
         },
         since,
+        vs,
       ),
     ),
     cardioSection(p, cardio, since),
@@ -252,8 +345,18 @@ const activityNoun = (k) => noun(k, "activity", "activities");
 // activeEnergy, `bmr` a bmrOf): measured as it is; not set on one, it is
 // estimated (≈, read out as "includes estimates") from its type, time and
 // the weight in effect on its day; without one it isn't. The day's whole
-// burned is Daily movement's.
-function activitiesSummary(p, activities, plans, target, bmr, since, movement) {
+// burned is Daily movement's. `vs`: each tile's change from the period
+// before (render's).
+function activitiesSummary(
+  p,
+  activities,
+  plans,
+  target,
+  bmr,
+  since,
+  vs,
+  movement,
+) {
   const end = p.throughToday;
   const done = activities.filter((s) => s.day <= end);
   const n = done.length;
@@ -300,22 +403,26 @@ function activitiesSummary(p, activities, plans, target, bmr, since, movement) {
               value: fmt(n),
               short: activityNoun(n),
               long: "Activities this week: the ones you logged and the ones a device recorded that you added.",
+              vs: vs.activities,
             }
           : {
               value: `${fmt(toward)} of ${fmt(target)}`,
               short: [`${activityNoun(target)} this week`, note],
               long: `Activities this week against your target of ${plural(target, "activity", "activities")} a week.${short ? ` One under ${qty(MIN_MINUTES, "min", 0)} doesn't count: a device's leftover.` : ""}`,
+              vs: vs.activities,
             }
         : {
             value: fmt(n),
             short: `${activityNoun(n)} · ${fmt(n / (Math.max(1, daysIn(since, end)) / 7), 1)} a week`,
             long: `Activities${sinceText(p, since)} this ${p.kind}, and how many that makes a week on average.`,
+            vs: vs.activities,
           },
       n
         ? {
             value: duration(minutes),
             short: "active",
             long: "The time of all the activities, added up.",
+            vs: vs.minutes,
           }
         : null,
       burned
@@ -367,6 +474,33 @@ function activitiesSummary(p, activities, plans, target, bmr, since, movement) {
   );
 }
 
+// Each day's active energy among Health Connect `deviceDays` and the
+// `activities` ([{day, kcal, floor, estimated}]): the device's or its
+// activities', the larger (activeKcal); a day without the device's holds
+// its activities alone, a floor. `bmr` a bmrOf.
+function knownActive(deviceDays, activities, bmr) {
+  const device = new Map(deviceDays.map((d) => [d.day, d]));
+  const done = byDay(activities);
+  return [...new Set([...device.keys(), ...done.keys()])]
+    .toSorted()
+    .map((day) => {
+      const known = activeKcal({
+        deviceDay: device.get(day) ?? null,
+        energies: (done.get(day) ?? []).map((s) =>
+          activeEnergy(s, bmr(day)?.kcal ?? null),
+        ),
+      });
+      return known && { day, ...known };
+    })
+    .filter(Boolean);
+}
+
+// knownActive as a series, its floors `partly`.
+const activeSeries = (list) => ({
+  ...present(list, "kcal"),
+  partly: new Set(list.filter((x) => x.floor).map((x) => x.day)),
+});
+
 // "≈ 510 kcal active a day", "12 of 28 days" (at the Active energy
 // target), "8,743 steps a day", "6.1 km a day" (the device's distance),
 // "9 of 17 days" (at the steps target), "42.3 km in activities", "≈ 2,640 kcal burned a day": through yesterday
@@ -378,7 +512,8 @@ function activitiesSummary(p, activities, plans, target, bmr, since, movement) {
 // distance the activities covered, and what a day burned by the energy
 // model (`burned`, web/series.mjs) over Food's balance's days
 // (periodNumbers of the period's `food` days: those with food logged), as
-// Food says it. `targets` {active, steps}: kcal and steps a day, or null.
+// Food says it. `targets` {active, steps}: kcal and steps a day, or null;
+// `vs` render's.
 function movementSummary(
   p,
   all,
@@ -387,6 +522,7 @@ function movementSummary(
   { days: burnedAll, bmr },
   { active: target, steps: stepsTarget },
   since,
+  vs,
 ) {
   const end = p.through;
   const days = all.filter((d) => d.day <= end);
@@ -400,20 +536,11 @@ function movementSummary(
   const stepDays = stepped.length;
   const walked = days.filter((d) => !isNil(d.distance_m));
   const elapsed = Math.max(0, daysIn(since, end));
-  // Each day's active energy, the device's or its activities' (activeKcal);
-  // a day without the device's holds its activities alone, a floor.
-  const device = new Map(days.map((d) => [d.day, d]));
-  const done = byDay(activities.filter((s) => s.day <= end));
-  const known = [...new Set([...device.keys(), ...done.keys()])]
-    .map((day) =>
-      activeKcal({
-        deviceDay: device.get(day) ?? null,
-        energies: (done.get(day) ?? []).map((s) =>
-          activeEnergy(s, bmr(day)?.kcal ?? null),
-        ),
-      }),
-    )
-    .filter(Boolean);
+  const known = knownActive(
+    days,
+    activities.filter((s) => s.day <= end),
+    bmr,
+  );
   const activeDays = known.map((x) => x.kcal);
   const alone = known.filter((x) => x.floor).length;
   const mark = activeMark({
@@ -436,6 +563,7 @@ function movementSummary(
           value: `${mark}${active}`,
           short: `${unit} active a day`,
           long: `Your average energy burned moving, beyond resting, over the ${plural(activeDays.length, "day")} it's known${sinceText(p, since)}${elapsed > activeDays.length ? ` (of ${plural(elapsed, "day")})` : ""}: your device's measure, or your activities' when larger.${alone ? ` At least: on ${plural(alone, "day")} only your activities said it.` : ""}`,
+          vs: vs.active,
         }
       : null,
     activeDays.length > 0 && !isNil(target)
@@ -450,6 +578,7 @@ function movementSummary(
           value: fmt(sum("steps") / stepDays),
           short: "steps a day",
           long: `Your average steps a day, over the ${plural(stepDays, "day")} your device counted them.`,
+          vs: vs.steps,
         }
       : null,
     // A day's distance, the device's (all it counted, walking too).

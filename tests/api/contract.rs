@@ -1255,6 +1255,22 @@ async fn best_match_puts_names_starting_with_the_query_first() {
 }
 
 #[tokio::test]
+async fn search_forgives_marks_and_one_typo() {
+    let app = app();
+    create_food(&app, "Crème fraîche", json!({})).await;
+    create_food(&app, "Äyriäiset", json!({})).await;
+    create_food(&app, "Milk", json!({})).await;
+    let (_, cream) = search(&app, "q=creme+fraiche").await;
+    assert_eq!(names(&cream), ["Crème fraîche"]);
+    let (_, shellfish) = search(&app, "q=ayri").await;
+    assert_eq!(names(&shellfish), ["Äyriäiset"]);
+    let (_, milk) = search(&app, "q=mielk").await;
+    assert_eq!(names(&milk), ["Milk"], "one letter extra");
+    let (_, short) = search(&app, "q=mlk").await;
+    assert_eq!(names(&short), Vec::<&str>::new(), "short words need a hit");
+}
+
+#[tokio::test]
 async fn recent_foods_are_per_profile() {
     let app = app();
     let oats = create_food(&app, "Oats", json!({ "energy": 380.0 })).await;

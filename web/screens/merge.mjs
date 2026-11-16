@@ -2,6 +2,7 @@
 // moves, confirm.
 
 import { api, get } from "../api.mjs";
+import { drop } from "../drafts.mjs";
 import { entriesUpdated, plural } from "../format.mjs";
 import { go, href } from "../nav.mjs";
 import { foodRow, searchFoods } from "../rows.mjs";
@@ -35,6 +36,9 @@ export async function mergeFood(id) {
       from: b.id,
       rev: a.rev,
     });
+    // Its drafts go with it.
+    drop(`food:${b.id}`);
+    drop(`recipe:${b.id}`);
     go(back);
     notify(`Merged ${b.name} into ${a.name}${entriesUpdated(kept)}`);
   };

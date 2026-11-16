@@ -918,7 +918,10 @@ export function markInvalid(form, at) {
 // - Delete asks first (in an in-app dialog), then leaves for `remove.after`
 //   and toasts `remove.done` (or `done(result of run)`, as `saved` may);
 // - leaving with unsaved changes asks first (in the app and on reload);
-//   `unsaved` opens it with some (a restored draft).
+//   `unsaved` opens it with some (a restored draft). With `draft` (a
+//   drafts.mjs keeper: food and recipe editors) they're kept as a draft
+//   instead, and a toast says so; asked only when they can't be kept. What
+//   counts as saved (Save, Delete, `markClean`) drops it.
 // `state()` adds what the form fields don't hold (lists built in code).
 // Returns {node, form, dirty, markClean, failed} for the editor to use.
 export function editor({
@@ -936,6 +939,7 @@ export function editor({
   saveLabel = "Save",
   action = null,
   unsaved = false,
+  draft = null,
 }) {
   const route = nav;
   const status = h("div", { class: "status", role: "status" });
@@ -964,7 +968,7 @@ export function editor({
                   return;
                 try {
                   const result = await remove.run();
-                  clean = snapshot();
+                  markClean();
                   route.go(remove.after);
                   say(
                     typeof remove.done === "function"
@@ -1003,6 +1007,7 @@ export function editor({
   const dirty = () => clean !== null && snapshot() !== clean;
   const markClean = () => {
     clean = snapshot();
+    draft?.drop();
   };
   // Taken once the screen is built (lists fill in after this returns). A
   // form that opens with unsaved work (a restored draft) starts dirty.
@@ -1025,7 +1030,7 @@ export function editor({
             {
               type: "button",
               onclick: () => {
-                clean = snapshot();
+                markClean();
                 route.reload();
               },
             },
@@ -1053,7 +1058,7 @@ export function editor({
         const result = await save();
         // Undefined: the editor reported why it didn't save.
         if (result === undefined) return;
-        clean = snapshot();
+        markClean();
         const next = after?.(result);
         if (next && next !== location.hash) route.go(next);
         else route.reload();
@@ -1066,6 +1071,10 @@ export function editor({
 
   route.guard(form, () => {
     if (!dirty()) return true;
+    if (draft?.keep()) {
+      notify("Saved as a draft");
+      return true;
+    }
     return confirmDialog(leaveAsk, {
       detail: "Your changes will be lost.",
       confirm: "Leave",
@@ -1073,7 +1082,7 @@ export function editor({
     });
   });
   const unload = (e) => {
-    if (form.isConnected && dirty()) e.preventDefault();
+    if (form.isConnected && dirty() && !draft?.keep()) e.preventDefault();
   };
   window.addEventListener("beforeunload", unload, { signal: route.signal });
 

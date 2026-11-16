@@ -164,26 +164,117 @@ pub struct FoodQuery<'a> {
     pub labels: Vec<&'static str>,
 }
 
-/// `LIKE` pattern text for `s`, its wildcards escaped with `\\`.
-pub(super) fn like_escaped(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
+/// `s` lowercased, a Latin letter with marks read as its base letter
+/// (`ä` as `a`, `æ` as `ae`) and combining marks dropped: what search
+/// compares, so either spelling finds the other.
+pub(super) fn plain(s: &str) -> String {
+    if s.is_ascii() {
+        return s.to_ascii_lowercase();
+    }
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars().flat_map(char::to_lowercase) {
+        let base = match c {
+            '\u{300}'..='\u{36f}' => continue,
+            'æ' => {
+                out.push_str("ae");
+                continue;
+            }
+            'œ' => {
+                out.push_str("oe");
+                continue;
+            }
+            'ß' => {
+                out.push_str("ss");
+                continue;
+            }
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => 'a',
+            'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' => 'c',
+            'ď' | 'đ' => 'd',
+            'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => 'e',
+            'ĝ' | 'ğ' | 'ġ' | 'ģ' => 'g',
+            'ĥ' | 'ħ' => 'h',
+            'ì' | 'í' | 'î' | 'ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ı' => 'i',
+            'ĵ' => 'j',
+            'ķ' => 'k',
+            'ĺ' | 'ļ' | 'ľ' | 'ŀ' | 'ł' => 'l',
+            'ñ' | 'ń' | 'ņ' | 'ň' => 'n',
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => 'o',
+            'ŕ' | 'ŗ' | 'ř' => 'r',
+            'ś' | 'ŝ' | 'ş' | 'š' => 's',
+            'ţ' | 'ť' | 'ŧ' => 't',
+            'ù' | 'ú' | 'û' | 'ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => 'u',
+            'ŵ' => 'w',
+            'ý' | 'ÿ' | 'ŷ' => 'y',
+            'ź' | 'ż' | 'ž' => 'z',
+            c => c,
+        };
+        out.push(base);
+    }
+    out
+}
+
+/// Whether a word of `text`, or the start of one, is at most one edit (a
+/// letter extra, missing or wrong) from `word`.
+pub(super) fn near(text: &str, word: &str) -> bool {
+    let mut words = text.split(|c: char| !c.is_alphanumeric());
+    // Most names are ASCII: compared as bytes, nothing allocated per food.
+    if text.is_ascii() && word.is_ascii() {
+        return words.any(|t| near_word(t.as_bytes(), word.as_bytes()));
+    }
+    let word: Vec<char> = word.chars().collect();
+    words.any(|t| near_word(&t.chars().collect::<Vec<_>>(), &word))
+}
+
+/// Whether `t`, or its start, is at most one edit from `word`.
+fn near_word<T: PartialEq>(t: &[T], word: &[T]) -> bool {
+    (word.len().saturating_sub(1)..=word.len() + 1)
+        .take_while(|&n| n <= t.len())
+        .any(|n| n > 0 && one_edit(&t[..n], word))
+}
+
+/// Whether `a` and `b` are at most one edit apart.
+fn one_edit<T: PartialEq>(a: &[T], b: &[T]) -> bool {
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    if long.len() - short.len() > 1 {
+        return false;
+    }
+    let same = short.iter().zip(long).take_while(|(x, y)| x == y).count();
+    if same == short.len() {
+        return true;
+    }
+    let skip = usize::from(short.len() == long.len());
+    short[same + skip..] == long[same + 1..]
 }
 
 /// Foods matching a query, at most [`SEARCH_LIMIT`]. Every word of `q` must
-/// appear in the name or brand, in any order (or `q` is the exact barcode). A
-/// food without a value for a nutrient rule fails it; sorting by a nutrient
-/// puts missing values last.
+/// appear in the name or brand, in any order, marks and case aside (or `q`
+/// is the exact barcode). When no food matches, a word of 4 letters or more,
+/// letters only, may also be one edit off ([`near`]): a typo in a number is
+/// another number. A food without a value for a nutrient rule fails it;
+/// sorting by a nutrient puts missing values last.
 pub fn food_search(conn: &Connection, query: &FoodQuery) -> Result<Vec<Food>, Error> {
-    // Folded here once; each food folds its name and brand once in the
-    // subquery.
-    let words: Vec<String> = query
+    let found = food_search_with(conn, query, &[])?;
+    let typos: Vec<String> = query
         .q
         .split_whitespace()
-        .map(|w| like_escaped(&w.to_lowercase()))
+        .map(plain)
+        .filter(|w| w.chars().count() >= 4 && w.chars().all(char::is_alphabetic))
         .collect();
-    let first = words.first().cloned().unwrap_or_default();
+    if found.is_empty() && !typos.is_empty() {
+        return food_search_with(conn, query, &typos);
+    }
+    Ok(found)
+}
+
+/// [`food_search`], the words in `typos` matched by [`near`] too.
+fn food_search_with(
+    conn: &Connection,
+    query: &FoodQuery,
+    typos: &[String],
+) -> Result<Vec<Food>, Error> {
+    // Made plain here once; each food's name and brand once in the
+    // subquery.
+    let words: Vec<String> = query.q.split_whitespace().map(plain).collect();
     let sources = if query.sources.is_empty() {
         FoodScope::ALL.to_vec()
     } else {
@@ -219,7 +310,7 @@ pub fn food_search(conn: &Connection, query: &FoodQuery) -> Result<Vec<Food>, Er
          SELECT {FOOD_COLS} FROM (
              SELECT *, json_extract(per100, '$.energy') AS energy,
                  json_extract(per100, '$.protein') AS protein,
-                 fold(name) AS fname, fold(coalesce(brand, '')) AS fbrand
+                 plain(name) AS pname, plain(coalesce(brand, '')) AS pbrand
              FROM food
          ) f
          CROSS JOIN l
@@ -230,8 +321,9 @@ pub fn food_search(conn: &Connection, query: &FoodQuery) -> Result<Vec<Food>, Er
              AND CASE kind WHEN 'recipe' THEN 'recipe' ELSE source END
                  IN (SELECT value FROM json_each(?4))
              AND (barcode = ?2 OR NOT EXISTS (SELECT 1 FROM json_each(?1) w
-                 WHERE NOT (fname LIKE '%' || w.value || '%' ESCAPE '\\'
-                     OR fbrand LIKE '%' || w.value || '%' ESCAPE '\\')))
+                 WHERE NOT (instr(pname, w.value) > 0 OR instr(pbrand, w.value) > 0
+                     OR (w.value IN (SELECT value FROM json_each(?14))
+                         AND (near(pname, w.value) OR near(pbrand, w.value))))))
              AND NOT EXISTS (SELECT 1 FROM json_each(?5) r
                  WHERE coalesce(json_extract(per100, '$.' || r.key) >= r.value, 0) = 0)
              AND NOT EXISTS (SELECT 1 FROM json_each(?6) r
@@ -239,7 +331,16 @@ pub fn food_search(conn: &Connection, query: &FoodQuery) -> Result<Vec<Food>, Er
              AND NOT EXISTS (SELECT 1 FROM json_each(?13) l
                  WHERE NOT EXISTS (SELECT 1 FROM food_label fl
                      WHERE fl.label = l.value AND fl.food_id = f.id))
-         ORDER BY {order} fname LIKE ?7 ESCAPE '\\' DESC, name COLLATE NOCASE
+         ORDER BY {order}
+             -- The name is the query, starts with it, has a word starting
+             -- with each of its words, or the rest.
+             CASE WHEN pname = ?7 THEN 0 WHEN instr(pname, ?7) = 1 THEN 1
+                 WHEN NOT EXISTS (SELECT 1 FROM json_each(?1) w
+                     WHERE instr(replace(replace(replace(replace(
+                         ' ' || pname || ' ' || pbrand,
+                         ',', ' '), '(', ' '), '-', ' '), '/', ' '), ' ' || w.value) = 0)
+                 THEN 2 ELSE 3 END,
+             name COLLATE NOCASE
          LIMIT {SEARCH_LIMIT}"
         ),
         params![
@@ -249,13 +350,14 @@ pub fn food_search(conn: &Connection, query: &FoodQuery) -> Result<Vec<Food>, Er
             json(&sources),
             rules(&query.min),
             rules(&query.max),
-            format!("{first}%"),
+            words.join(" "),
             query.profile,
             left.energy,
             left.protein,
             left.net_carbs,
             left.fat,
             json(&query.labels),
+            json(&typos),
         ],
     )
 }

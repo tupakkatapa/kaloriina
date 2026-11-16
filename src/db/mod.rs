@@ -316,6 +316,8 @@ fn prune_snapshots(path: &Path, keep: &Path) {
 
 /// - `fold(text)`: Unicode lowercase. `SQLite`'s own `lower` and `LIKE`
 ///   fold ASCII only, so "äyri" would miss "Äyriäiset".
+/// - `plain(text)`: [`foods::plain`], what search compares.
+/// - `near(text, word)`: [`foods::near`], search's typo match.
 /// - `fit_score(energy, protein, net_carbs, fat, portion_g, left energy,
 ///   protein, net_carbs, fat)`: [`crate::model::fit_score`]; a missing
 ///   macro counts as 0, a missing energy gives `NULL`.
@@ -324,6 +326,12 @@ fn register_functions(conn: &Connection) -> rusqlite::Result<()> {
     let flags = FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC;
     conn.create_scalar_function("fold", 1, flags, |ctx| {
         Ok(ctx.get::<Option<String>>(0)?.map(|s| s.to_lowercase()))
+    })?;
+    conn.create_scalar_function("plain", 1, flags, |ctx| {
+        Ok(ctx.get::<Option<String>>(0)?.map(|s| foods::plain(&s)))
+    })?;
+    conn.create_scalar_function("near", 2, flags, |ctx| {
+        Ok(foods::near(&ctx.get::<String>(0)?, &ctx.get::<String>(1)?))
     })?;
     conn.create_scalar_function("fit_score", 9, flags, |ctx| {
         let at = |i| ctx.get::<Option<f64>>(i);

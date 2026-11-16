@@ -25,6 +25,7 @@ pub mod fineli;
 pub mod google_health;
 mod hooks;
 pub mod loop_habits;
+pub mod mcp;
 pub mod model;
 mod nutrients;
 mod off;
@@ -112,6 +113,13 @@ impl AppState {
     #[must_use]
     pub fn today(&self) -> String {
         model::today_in(&self.tz).to_string()
+    }
+
+    /// The diary day now, in the server's time zone: before
+    /// [`model::DAY_START`], the day before ([`model::diary_day_at`]).
+    #[must_use]
+    pub fn diary_today(&self) -> String {
+        model::diary_day_at(&jiff::Timestamp::now().to_zoned(self.tz.clone())).to_string()
     }
 }
 

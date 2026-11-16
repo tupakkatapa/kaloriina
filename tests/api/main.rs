@@ -27,6 +27,7 @@ mod suggestions;
 mod targets;
 mod text_entries;
 mod transfer;
+mod trends;
 mod water;
 
 use std::path::Path as FsPath;

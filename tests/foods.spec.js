@@ -661,7 +661,6 @@ test("nutrition shows in every food view and follows the amounts", async ({
 
   // A recipe: its whole, updated as items change.
   await page.goto("/#/recipe/new");
-  await answer(page, "Leave");
   await page.getByLabel("Search foods to add").fill(`Panel oats ${tag}`);
   await page.getByRole("button", { name: starts(`Panel oats ${tag}`) }).click();
   await page.getByLabel("Search foods to add").fill(`Panel milk ${tag}`);
@@ -761,7 +760,7 @@ test("an ingredient starts at its food's default serving and opens the food, kee
     .getByRole("button", { name: "Make Big scoop the default" })
     .click();
   await page.getByRole("button", { name: "Save" }).click();
-  await expect(page).toHaveURL(/#\/recipe\/new\?draft=1$/u);
+  await expect(page).toHaveURL(/#\/recipe\/new$/u);
   await expect(page.getByLabel("Name", { exact: true })).toHaveValue(
     `Shake ${tag}`,
   );
@@ -821,7 +820,7 @@ test("your own foods and recipes come first in search", async ({
   await expect(rows).toHaveText([`Rahka ${tag} breakfast`, `Rahka ${tag} z`]);
 });
 
-test("the food editor saves in place and asks before losing changes", async ({
+test("the food editor saves in place and keeps unsaved changes as a draft", async ({
   page,
   request,
 }, testInfo) => {
@@ -840,23 +839,23 @@ test("the food editor saves in place and asks before losing changes", async ({
   await expect(page).toHaveURL(new RegExp(`#/food/${f.id}$`, "u"));
   await expect(page.getByLabel("Energy (kcal)")).toHaveValue("260");
 
-  // Unsaved changes: leaving asks; Cancel keeps them, Leave goes.
+  // Unsaved changes: leaving keeps them as a draft, unsaved; Discard
+  // drops them.
   await name.fill(`Shell loaf ${tag}`);
-  const foodsTab = page
+  await page
     .getByRole("navigation", { name: "Main" })
-    .getByRole("link", { name: "Foods" });
-  await foodsTab.click();
-  expect(await answer(page, "Stay")).toBe("Leave without saving?");
-  await expect(page).toHaveURL(new RegExp(`#/food/${f.id}$`, "u"));
-  await expect(name).toHaveValue(`Shell loaf ${tag}`);
-  await foodsTab.click();
-  await answer(page, "Leave");
+    .getByRole("link", { name: "Foods" })
+    .click();
   await expect(page).toHaveURL(/#\/foods$/u);
+  await expect(page.locator("#toast")).toContainText("Saved as a draft");
   const kept = await (await request.get(`/api/foods/${f.id}`)).json();
   expect(kept.name).toBe(`Shell bread ${tag}`);
+  await page.goto(`/#/food/${f.id}`);
+  await expect(name).toHaveValue(`Shell loaf ${tag}`);
+  await page.getByRole("button", { name: "Discard" }).click();
+  await settled(page);
 
   // A server error says why at the bar and marks the field it names.
-  await page.goto(`/#/food/${f.id}`);
   await expect(name).toHaveValue(`Shell bread ${tag}`);
   await page.getByLabel("Barcode", { exact: true }).fill("12");
   await page.getByRole("button", { name: "Save", exact: true }).click();
@@ -985,59 +984,6 @@ test("a search with no match offers the new food, then back to logging", async (
   await expect(
     page.getByRole("button", { name: "Add to Planned" }),
   ).toBeVisible();
-});
-
-test("a recipe draft comes back only on the return from its ingredient", async ({
-  page,
-  request,
-}, testInfo) => {
-  const { tag } = unique(124, testInfo);
-  await food(request, { name: `Draft rice ${tag}`, per100: { energy: 350 } });
-  const name = page.getByLabel("Name", { exact: true });
-  const grams = page.getByLabel(`Draft rice ${tag} quantity`);
-  const start = async () => {
-    await page.goto("/#/recipe/new");
-    // Not the restored draft still showing from before.
-    await expect(page.getByText("Your unsaved changes are back")).toHaveCount(
-      0,
-    );
-    await name.fill(`Pilaf ${tag}`);
-    await page.getByLabel("Search foods to add").fill(`Draft rice ${tag}`);
-    await page
-      .getByRole("button", { name: starts(`Draft rice ${tag}`) })
-      .click();
-    await grams.fill("150");
-    await page.getByRole("button", { name: `Edit Draft rice ${tag}` }).click();
-    await expect(
-      page.getByRole("heading", { name: `Draft rice ${tag}` }),
-    ).toBeVisible();
-  };
-
-  // Back from the food: the unsaved recipe is restored.
-  await start();
-  await page.getByRole("link", { name: "Back" }).click();
-  await expect(page).toHaveURL(/#\/recipe\/new\?draft=1$/u);
-  await expect(page.getByText("Your unsaved changes are back")).toBeVisible();
-  await expect(name).toHaveValue(`Pilaf ${tag}`);
-  await expect(grams).toHaveValue("150");
-  // Restored but still unsaved: leaving asks, as it did before.
-  const foodsTab = page
-    .getByRole("navigation", { name: "Main" })
-    .getByRole("link", { name: "Foods" });
-  await foodsTab.click();
-  expect(await answer(page, "Stay")).toBe("Leave without saving?");
-  await expect(name).toHaveValue(`Pilaf ${tag}`);
-  await foodsTab.click();
-  await answer(page, "Leave");
-  await expect(page).toHaveURL(/#\/foods$/u);
-
-  // Opening a new recipe afresh (not that return) starts empty.
-  await start();
-  await page.goto("/#/recipe/new");
-  await expect(page.getByRole("heading", { name: "New recipe" })).toBeVisible();
-  await expect(name).toHaveValue("");
-  await expect(grams).toHaveCount(0);
-  await expect(page.getByText("Your unsaved changes are back")).toHaveCount(0);
 });
 
 test("editing what you log is a header action", async ({
@@ -1357,7 +1303,7 @@ for (const [kind, slot] of [["recipe", 931]])
     await page.getByLabel("Serving name").last().fill("Big scoop");
     await page.getByLabel("Serving grams").last().fill("45");
     await page.getByRole("button", { name: "Save" }).click();
-    await expect(page).toHaveURL(new RegExp(`#/${kind}/new\\?draft=1$`, "u"));
+    await expect(page).toHaveURL(new RegExp(`#/${kind}/new$`, "u"));
 
     const unit = page.getByLabel(`Fresh whey ${tag} unit`);
     await expect(unit.locator("option")).toHaveText([

@@ -371,6 +371,8 @@ test("an EMOM repeat is set in the editor and each round waits out its minute", 
     "2 rounds · every 30 s",
   );
   await page.getByRole("button", { name: "Save", exact: true }).click();
+  // The app has its answer: the editor no longer holds unsaved changes.
+  await expect(toast(page)).toContainText(`Saved Emom ${tag}`);
   await expect
     .poll(
       async () =>

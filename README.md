@@ -111,6 +111,21 @@ Each day's weight is its first reading after you woke.
 
 It gets a `POST` to `{address}/api/webhook/{id}` with `{event, profile, workout, at}` when a workout starts or finishes.
 
+## Agents
+
+`kaloriina mcp` gives an agent the diary's tools over the Model Context Protocol: read days, summaries and trends, search foods, and log. It calls a running instance's API, so it needs no database; `--host` sends a name the instance allows. Days without a date go to the diary's today, which turns at 03:00.
+
+```json
+{
+  "mcpServers": {
+    "kaloriina": {
+      "command": "kaloriina",
+      "args": ["mcp", "--url", "http://127.0.0.1:8080", "--profile", "Anna"]
+    }
+  }
+}
+```
+
 ## Backups
 
 The module copies the database to `/var/lib/kaloriina/backups` every night, compressed with zstd, and keeps the newest 14. The copies sit on the database's disk: copy them off the host for a disk failure. A copy over 48 hours old shows on the Diary.

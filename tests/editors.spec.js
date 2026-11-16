@@ -1,5 +1,6 @@
 // Every editor works the same way (the one editor shell): leaving with
-// unsaved changes asks first, and Save says exactly what it saved.
+// unsaved changes asks first (food and recipe editors keep them as a draft
+// instead), and Save says exactly what it saved.
 
 import { expect, test } from "@playwright/test";
 import {
@@ -15,7 +16,7 @@ import {
 } from "./helpers.js";
 
 // Each editor: its slot, how to open one (made through the API), the field
-// to change and the toast its Save shows.
+// to change, the toast its Save shows, and whether it keeps a draft.
 const EDITORS = [
   {
     kind: "food",
@@ -30,6 +31,7 @@ const EDITORS = [
     field: "Name",
     value: (tag) => `Food ${tag} renamed`,
     savedAfter: (tag) => `Saved Food ${tag} renamed`,
+    drafts: true,
   },
   {
     kind: "recipe",
@@ -49,6 +51,7 @@ const EDITORS = [
     field: "Name",
     value: (tag) => `Recipe ${tag} renamed`,
     savedAfter: (tag) => `Saved Recipe ${tag} renamed`,
+    drafts: true,
   },
   {
     kind: "entry",
@@ -140,7 +143,7 @@ const EDITORS = [
 ];
 
 for (const ed of EDITORS)
-  test(`the ${ed.kind} editor asks before leaving unsaved changes and says what it saved`, async ({
+  test(`the ${ed.kind} editor ${ed.drafts ? "keeps" : "asks before leaving"} unsaved changes and says what it saved`, async ({
     page,
     request,
   }, testInfo) => {
@@ -151,14 +154,21 @@ for (const ed of EDITORS)
     await expect(input).toBeVisible();
     await input.fill(ed.value(tag));
 
-    // Leaving asks; Cancel keeps the edit where it was.
+    // Leaving asks, and Stay keeps the edit where it was; or it's kept as
+    // a draft the editor opens with.
     const here = page.url();
     await page
       .getByRole("navigation", { name: "Main" })
       .getByRole("link", { name: "Summary" })
       .click();
-    expect(await answer(page, "Stay")).toBe("Leave without saving?");
-    expect(page.url()).toBe(here);
+    if (ed.drafts) {
+      await expect(page.locator("#toast")).toContainText("Saved as a draft");
+      await expect(page).not.toHaveURL(here);
+      await page.goto(url);
+    } else {
+      expect(await answer(page, "Stay")).toBe("Leave without saving?");
+      expect(page.url()).toBe(here);
+    }
     await expect(input).toHaveValue(ed.value(tag));
 
     await page.getByRole("button", { name: "Save", exact: true }).click();
@@ -168,7 +178,7 @@ for (const ed of EDITORS)
   });
 
 // A slow editor build that a newer navigation superseded never takes the
-// guard: the editor shown still asks.
+// guard: the editor shown still keeps its draft.
 test("a slow earlier editor doesn't steal the guard", async ({
   page,
   request,
@@ -205,7 +215,8 @@ test("a slow earlier editor doesn't steal the guard", async ({
     .getByRole("navigation", { name: "Main" })
     .getByRole("link", { name: "Summary" })
     .click();
-  expect(await answer(page, "Stay")).toBe("Leave without saving?");
+  await expect(page.locator("#toast")).toContainText("Saved as a draft");
+  await page.goto(`/#/food/${fast.id}`);
   await expect(name).toHaveValue(`Fast ${tag} renamed`);
 });
 

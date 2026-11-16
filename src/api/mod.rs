@@ -195,9 +195,10 @@ impl<S: Send + Sync> axum::extract::FromRequest<S> for JsonBytes {
 }
 
 /// A whole-entity update: PUT replaces, so every field `T` reads must be
-/// present (`null` where it may be). A missing one is 400 `invalid` naming
-/// it, never a reset to its default: "missing = keep" is PATCH, and can't
-/// say "clear". Creates keep their defaults (plain `Json`).
+/// present (`null` where it may be). Missing ones are one 400 `invalid`
+/// naming them all, `field` the first, never a reset to their defaults:
+/// "missing = keep" is PATCH, and can't say "clear". Creates keep their
+/// defaults (plain `Json`).
 struct Replace<T>(T);
 
 /// An input a PUT replaces whole.
@@ -252,12 +253,19 @@ impl<S: Send + Sync, T: Whole> axum::extract::FromRequest<S> for Replace<T> {
     async fn from_request(req: Request<Body>, state: &S) -> Result<Self, Response> {
         let JsonBytes(bytes) = JsonBytes::from_request(req, state).await?;
         // Not an object: `Json` says what's wrong with it.
-        if let Ok(Value::Object(body)) = serde_json::from_slice::<Value>(&bytes)
-            && let Some(f) = T::fields()
+        if let Ok(Value::Object(body)) = serde_json::from_slice::<Value>(&bytes) {
+            let missing: Vec<&str> = T::fields()
                 .into_iter()
-                .find(|f| !T::OPTIONAL.contains(f) && !body.contains_key(*f))
-        {
-            return Err(Error::invalid_field(f, format!("{f} is required")).into_response());
+                .filter(|f| !T::OPTIONAL.contains(f) && !body.contains_key(*f))
+                .collect();
+            let message = match missing.as_slice() {
+                [] => None,
+                [f] => Some(format!("{f} is required")),
+                [rest @ .., last] => Some(format!("{} and {last} are required", rest.join(", "))),
+            };
+            if let (Some(first), Some(message)) = (missing.first(), message) {
+                return Err(Error::invalid_field(first, message).into_response());
+            }
         }
         Json::<T>::from_bytes(&bytes)
             .map(|Json(t)| Self(t))

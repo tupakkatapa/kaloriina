@@ -85,6 +85,23 @@ enum Command {
         /// Unzipped Fineli open-data package (holding `food.csv`).
         dir: PathBuf,
     },
+    /// Serve an agent the diary's tools (Model Context Protocol) on stdio.
+    ///
+    /// One JSON-RPC message a line. Each tool calls a running instance's
+    /// HTTP API; this process holds no database.
+    Mcp {
+        /// The instance's base URL.
+        #[arg(long, env = "KALORIINA_URL", default_value = "http://127.0.0.1:8080")]
+        url: String,
+        /// `Host` header to send: a name the instance allows
+        /// (`serve --allowed-host`).
+        #[arg(long, env = "KALORIINA_HOST")]
+        host: Option<String>,
+        /// Profile (name or id) a tool call that names none goes to; may be
+        /// left out when there is only one.
+        #[arg(long, env = "KALORIINA_PROFILE")]
+        profile: Option<String>,
+    },
     /// Print the open feedback (Profile → Feedback) as Markdown.
     #[command(group(clap::ArgGroup::new("mode").required(true).args(["pull", "list"])))]
     Feedback {
@@ -313,6 +330,22 @@ fn feedback(db: &std::path::Path, pull: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `kaloriina mcp`: answer each line of stdin on stdout, flushed, until
+/// stdin ends.
+async fn mcp(url: &str, host: Option<String>, profile: Option<String>) -> anyhow::Result<()> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let client = kaloriina::mcp::Client::new(url, host, profile).context("--url")?;
+    let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+    let mut out = tokio::io::stdout();
+    while let Some(line) = lines.next_line().await.context("reading stdin")? {
+        if let Some(answer) = kaloriina::mcp::handle_line(&client, &line).await {
+            out.write_all(format!("{answer}\n").as_bytes()).await?;
+            out.flush().await?;
+        }
+    }
+    Ok(())
+}
+
 /// WARN when the newest backup copy is over 48 hours old (or there is
 /// none): the backup job failing is otherwise silent.
 fn warn_on_old_backups(dir: &std::path::Path) {
@@ -483,6 +516,7 @@ async fn main() -> anyhow::Result<()> {
             db, create, dir, ..
         } => fineli_import(&db, create, &dir)?,
         Command::Feedback { db, pull, .. } => feedback(&db, pull)?,
+        Command::Mcp { url, host, profile } => mcp(&url, host, profile).await?,
     }
     Ok(())
 }

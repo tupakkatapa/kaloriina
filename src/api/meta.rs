@@ -3,7 +3,8 @@
 //! exercise traits, the body measurements, the goals besides nutrients, the
 //! built-in habits, the food categories, the hook events, every input limit,
 //! the food sources there are to search, the food labels and the version.
-//! Clients read these instead of copying them.
+//! Clients read these instead of copying them. `/api/now` says the diary
+//! day and time in the server's zone.
 
 use super::prelude::*;
 
@@ -109,8 +110,35 @@ pub(super) struct Meta {
     labels: &'static [model::Label],
 }
 
+/// The diary's now, in the server's time zone: what a client without a
+/// clock of its own logs to.
+#[derive(Serialize)]
+struct Now {
+    /// The diary day ([`model::diary_day_at`]).
+    day: String,
+    /// The clock time, "HH:MM".
+    time: String,
+    /// When a diary day starts, "HH:MM".
+    day_start: String,
+    /// IANA name; null for a fixed offset.
+    time_zone: Option<String>,
+}
+
 pub(super) fn routes() -> Router<AppState> {
-    Router::new().route("/api/meta", get(meta))
+    Router::new()
+        .route("/api/meta", get(meta))
+        .route("/api/now", get(now))
+}
+
+async fn now(State(s): State<AppState>) -> impl IntoResponse {
+    let at = jiff::Timestamp::now().to_zoned(s.tz.clone());
+    let now = Now {
+        day: model::diary_day_at(&at).to_string(),
+        time: model::hh_mm(i64::from(at.hour()) * 60 + i64::from(at.minute())),
+        day_start: model::hh_mm(i64::from(model::DAY_START) * 60),
+        time_zone: s.tz.iana_name().map(str::to_owned),
+    };
+    ([(header::CACHE_CONTROL, "no-store")], Json(now))
 }
 
 async fn meta(State(s): State<AppState>) -> Res<Meta> {

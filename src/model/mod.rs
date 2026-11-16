@@ -82,6 +82,7 @@ mod score;
 pub(crate) mod sleep;
 pub mod suggest;
 mod transfer;
+mod trends;
 mod workout;
 pub use activity::*;
 pub use clock::*;
@@ -105,6 +106,7 @@ pub use score::{REASONS, Reason, Scoring, sweetened};
 pub use sleep::{HealthConnectSleeps, health_connect_sleeps};
 pub use suggest::{HideInput, LastAmount, Suggestion};
 pub use transfer::*;
+pub use trends::*;
 pub use workout::*;
 
 /// A profile's id. A distinct type so it can't be mixed up with entry ids.

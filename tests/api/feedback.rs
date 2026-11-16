@@ -55,6 +55,54 @@ async fn feedback_is_kept_open_until_pulled_and_checked() {
 }
 
 #[tokio::test]
+async fn open_feedback_is_read_and_pulled_by_id() {
+    let app = app();
+    let mut ids = Vec::new();
+    for text in ["The scale row wraps.", "Photos of meals"] {
+        let (_, made) = call(
+            &app,
+            "POST",
+            "/api/feedback",
+            Some(json!({ "kind": "bug", "text": text })),
+        )
+        .await;
+        ids.push(made["id"].as_i64().unwrap());
+    }
+    let (status, open) = call(&app, "GET", "/api/feedback/open", None).await;
+    assert_eq!(status, StatusCode::OK, "{open}");
+    let texts: Vec<&str> = open
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(texts, ["The scale row wraps.", "Photos of meals"]);
+
+    // An id that isn't open is passed over; the rest stay open.
+    let (status, left) = call(
+        &app,
+        "POST",
+        "/api/feedback/pull",
+        Some(json!({ "ids": [ids[0], 9999] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{left}");
+    assert_eq!(left, json!({ "open": 1 }));
+    let (_, open) = call(&app, "GET", "/api/feedback/open", None).await;
+    assert_eq!(open.as_array().unwrap().len(), 1, "{open}");
+    assert_eq!(open[0]["id"], ids[1]);
+
+    let (status, err) = call(
+        &app,
+        "POST",
+        "/api/feedback/pull",
+        Some(json!({ "ids": "all" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+}
+
+#[tokio::test]
 async fn feedback_count_only() {
     // The web reads a count: no household member's text goes out, and
     // pulled feedback isn't counted.

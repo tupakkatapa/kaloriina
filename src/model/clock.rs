@@ -1,9 +1,14 @@
 //! The server's clock: one "now" and one rule for "today". The server's
-//! own today is [`crate::AppState::today`], in its `--time-zone`.
+//! own today is [`crate::AppState::today`], in its `--time-zone`; its diary
+//! day is [`crate::AppState::diary_today`].
 
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
-use jiff::{Timestamp, ToSpan, Unit};
+use jiff::{Timestamp, ToSpan, Unit, Zoned};
+
+/// The hour a diary day starts (`DAY_START` in web/dates.mjs): a time
+/// before it is the night of the day before, 24:00 + t.
+pub const DAY_START: u32 = 3;
 
 /// Now, in epoch milliseconds.
 #[must_use]
@@ -43,6 +48,17 @@ pub fn today_in(tz: &TimeZone) -> Date {
     Timestamp::now().to_zoned(tz.clone()).date()
 }
 
+/// The diary day at `now`: its date, or the day before when its clock
+/// reads before [`DAY_START`].
+#[must_use]
+pub fn diary_day_at(now: &Zoned) -> Date {
+    if i64::from(now.hour()) < i64::from(DAY_START) {
+        now.date().saturating_sub(1.day())
+    } else {
+        now.date()
+    }
+}
+
 /// The last day a reading may fall on: tomorrow in `tz`.
 #[must_use]
 pub fn latest_day(tz: &TimeZone) -> Date {
@@ -67,6 +83,25 @@ mod tests {
 
     fn at(instant: &str) -> Timestamp {
         instant.parse().unwrap()
+    }
+
+    #[test]
+    fn the_diary_day_turns_at_day_start() {
+        let helsinki = TimeZone::get("Europe/Helsinki").unwrap();
+        let berlin = TimeZone::get("Europe/Berlin").unwrap();
+        for (tz, instant, day) in [
+            (&helsinki, "2026-11-14T23:24:00Z", "2026-11-14"),
+            (&helsinki, "2026-11-15T00:59:59Z", "2026-11-14"),
+            (&helsinki, "2026-11-15T01:00:00Z", "2026-11-15"),
+            (&TimeZone::UTC, "2027-01-01T02:59:00Z", "2026-12-31"),
+            (&TimeZone::UTC, "2027-01-01T03:00:00Z", "2027-01-01"),
+            // 03:30 on the clock the night it springs forward (02:00 to
+            // 03:00): two hours after midnight, still the new day.
+            (&berlin, "2026-03-29T01:30:00Z", "2026-03-29"),
+        ] {
+            let now = at(instant).to_zoned(tz.clone());
+            assert_eq!(diary_day_at(&now).to_string(), day, "{now}");
+        }
     }
 
     #[test]

@@ -4,9 +4,9 @@
 use super::prelude::*;
 use crate::model::{
     BORNE, BodyPart, BodyValue, Borne, BuiltinValue, CheckIn, CheckInInput, Composition,
-    DAILY_ITEMS_MAX, DRY, DayNote, DayView, EntryKey, EntryKind, EntryPatch, Facts, GROUPS, Group,
-    HabitValue, InsightPref, Known, Measurement, Nullable, PLANNED, Ratings, Repeat, RepeatInput,
-    Source, borne_weight, dry_of, eaten, known_from, macro_dry, share,
+    DAILY_ITEMS_MAX, DRY, DailyDays, DayNote, DayView, EntryKey, EntryKind, EntryPatch, Facts,
+    GROUPS, Group, HabitValue, InsightPref, Known, Measurement, Nullable, PLANNED, Ratings, Repeat,
+    RepeatInput, Source, borne_weight, dry_of, eaten, known_from, macro_dry, share,
 };
 use crate::nutrients::KNOWN;
 use std::collections::btree_map;
@@ -1173,6 +1173,63 @@ fn due_entry(conn: &Connection, s: Series, day: &str) -> Result<Entry, Error> {
 const DUE: &str = "start <= ?2
      AND NOT EXISTS (SELECT 1 FROM daily_skip s WHERE s.daily_item_id = d.id AND s.day = ?2)
      AND NOT EXISTS (SELECT 1 FROM entry e WHERE e.daily_item_id = d.id AND e.day = ?2)";
+
+/// `pid`'s daily items, by id, with the days in `[from, to]` each was
+/// skipped and ticked on.
+pub fn daily_days(
+    conn: &Connection,
+    pid: ProfileId,
+    from: &str,
+    to: &str,
+) -> Result<Vec<DailyDays>, Error> {
+    let mut items: Vec<DailyDays> = conn
+        .prepare_cached(
+            "SELECT d.id, d.food_id, f.name, d.start FROM daily_item d
+             JOIN food f ON f.id = d.food_id
+             WHERE d.profile_id = ?1 ORDER BY d.id",
+        )?
+        .query_map(params![pid], |r| {
+            Ok(DailyDays {
+                id: r.get(0)?,
+                food_id: r.get(1)?,
+                name: r.get(2)?,
+                start: day_at(r, 3)?,
+                skipped: BTreeSet::new(),
+                ticked: BTreeSet::new(),
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut stmt = conn.prepare_cached(
+        "SELECT s.daily_item_id, s.day, 0 FROM daily_skip s
+         JOIN daily_item d ON d.id = s.daily_item_id
+         WHERE d.profile_id = ?1 AND s.day BETWEEN ?2 AND ?3
+         UNION ALL
+         SELECT daily_item_id, day, 1 FROM entry
+         WHERE profile_id = ?1 AND daily_item_id IS NOT NULL AND day BETWEEN ?2 AND ?3",
+    )?;
+    let days = stmt.query_map(params![pid, from, to], |r| {
+        Ok((r.get::<_, i64>(0)?, day_at(r, 1)?, r.get::<_, bool>(2)?))
+    })?;
+    for row in days {
+        let (id, day, ticked) = row?;
+        if let Some(item) = items.iter_mut().find(|i| i.id == id) {
+            if ticked {
+                item.ticked.insert(day);
+            } else {
+                item.skipped.insert(day);
+            }
+        }
+    }
+    Ok(items)
+}
+
+/// A text column holding a day, `YYYY-MM-DD`.
+fn day_at(r: &Row, i: usize) -> rusqlite::Result<jiff::civil::Date> {
+    let text: String = r.get(i)?;
+    text.parse().map_err(|e: jiff::Error| {
+        rusqlite::Error::FromSqlConversionFailure(i, rusqlite::types::Type::Text, Box::new(e))
+    })
+}
 
 /// The series due on `day` as Planned entries, by series id (ADR 0023).
 pub fn daily_due(conn: &Connection, pid: ProfileId, day: &str) -> Result<Vec<Entry>, Error> {

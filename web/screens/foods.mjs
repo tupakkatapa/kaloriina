@@ -5,6 +5,7 @@ import { amountControl, byVolume, PORTION, weightText } from "../amount.mjs";
 import { api, get, meta, scoped } from "../api.mjs";
 import { recipeKnown, recipePer100, wholeOf } from "../coverage.mjs";
 import { today } from "../dates.mjs";
+import * as drafts from "../drafts.mjs";
 import { isNil, NBSP, PER_100G, plural, qty } from "../format.mjs";
 import { weightGuessed } from "../health.mjs";
 import { go, href, safeBack } from "../nav.mjs";
@@ -31,6 +32,7 @@ import {
   busy,
   confirmDialog,
   editor,
+  empty,
   field,
   fill,
   h,
@@ -192,19 +194,50 @@ function checkCaps(per100, basis) {
   }
 }
 
-// Merging a duplicate into this food or recipe starts here.
-const mergeLink = (id) =>
-  h("a", { class: "button", href: href.merge(id) }, "Merge…");
+// Merging a duplicate into this food or recipe starts here. Unsaved
+// changes are given up first, not kept as a draft: the merge changes what
+// they were made on.
+const mergeLink = (id, shell) =>
+  h(
+    "a",
+    {
+      class: "button",
+      href: href.merge(id),
+      onclick: async (e) => {
+        if (!shell().dirty()) return;
+        e.preventDefault();
+        const leave = await confirmDialog("Leave without saving?", {
+          detail: "Your changes will be lost.",
+          confirm: "Leave",
+          cancel: "Stay",
+        });
+        if (!leave) return;
+        shell().markClean();
+        go(href.merge(id));
+      },
+    },
+    "Merge…",
+  );
 
 // Open Food Facts' form for a product it doesn't have (asks you to sign in
 // there first). Its product page for an unknown code only says so.
 const offAdd = (code) =>
   `https://world.openfoodfacts.org/cgi/product.pl?${new URLSearchParams({ type: "add", code })}`;
 
+// Recipe editor address `back`, asked to add food `id` (`?add=`).
+const adding = (back, id) => {
+  const [path, query] = back.split("?");
+  const params = new URLSearchParams(query);
+  params.set("add", id);
+  return `${path}?${params}`;
+};
+
 // Where a food or recipe editor returns to: the address it was opened
-// from (`?back=`), the log screen it came from (`?day&group`), or itself.
+// from (`?back=`; with `?add`, asked to add what was saved), the log
+// screen it came from (`?day&group`), or itself.
 function returnTo(params, saved, self) {
   const back = safeBack(params.get("back"));
+  if (back && params.get("add")) return adding(back, saved.id);
   if (back) return back;
   const day = params.get("day");
   if (day)
@@ -231,6 +264,72 @@ const categorySelect = (value) =>
 // shown when they can't be read).
 const withTargets = (paint) => get(scoped("/targets")).then(paint, () => {});
 
+// The draft (drafts.mjs) of `kind` `id` ("new" for a new one) to open the
+// editor with (`kept`), kept as `key`. A new one opened with a name or
+// barcode given (`prefill`, as a query: "name=Soup") is kept apart, as
+// `food:new?name=Soup`; the plain new one's draft is offered `aside`.
+function draftOf(kind, id, prefill = "") {
+  const key = `${kind}:${id}${prefill ? `?${prefill}` : ""}`;
+  return {
+    key,
+    kept: drafts.read(key),
+    aside: prefill ? drafts.read(`${kind}:${id}`) : null,
+  };
+}
+
+// Item `path` read for its editor; when it's gone, its draft (`key`) goes
+// too.
+const readFor = (path, key) =>
+  get(path).catch((err) => {
+    if (err.code === "not_found") drafts.drop(key);
+    throw err;
+  });
+
+// The line over an editor opened from its draft: "Draft · Discard", saying
+// so when what's saved changed since (`loaded`'s rev; its Save then
+// fails). Discard opens what's saved (`discard()`).
+const draftNote = (kept, loaded, what, discard) =>
+  kept
+    ? h(
+        "p",
+        { class: "note" },
+        !isNil(kept.rev) && kept.rev !== loaded.rev
+          ? `Draft, but this ${what} has changed since: saving it will fail · `
+          : "Draft · ",
+        h(
+          "button",
+          { type: "button", class: "link", onclick: discard },
+          "Discard",
+        ),
+      )
+    : null;
+
+// A new item's older draft beside a prefilled editor: "Draft “Soup” · Open
+// · Discard", Open at `open`. Discard drops it and the line.
+function asideNote(aside, key, open, untitled) {
+  if (!aside) return null;
+  const note = h(
+    "p",
+    { class: "note" },
+    `Draft “${aside.name || untitled}” · `,
+    h("a", { href: open }, "Open"),
+    " · ",
+    h(
+      "button",
+      {
+        type: "button",
+        class: "link",
+        onclick: () => {
+          drafts.drop(key);
+          note.remove();
+        },
+      },
+      "Discard",
+    ),
+  );
+  return note;
+}
+
 // A sugary drink is a drink of itself, as the server derives it
 // (src/model/food.rs `drink_by_kind`).
 const DRINK = "sugary_drinks";
@@ -251,7 +350,17 @@ const shownValue = (key, stored) =>
 
 export async function foodEditor(id, params) {
   const isNew = id === "new";
-  const [food, usage] = await Promise.all([
+  const draft = draftOf(
+    "food",
+    id,
+    isNew
+      ? new URLSearchParams(
+          [...params].filter(([k]) => k === "name" || k === "barcode"),
+        ).toString()
+      : "",
+  );
+  const restored = draft.kept;
+  const [loaded, usage] = await Promise.all([
     isNew
       ? {
           name: params.get("name") ?? "",
@@ -261,17 +370,18 @@ export async function foodEditor(id, params) {
           servings: [],
           archived: false,
         }
-      : get(`/foods/${id}`),
+      : readFor(`/foods/${id}`, draft.key),
     isNew ? null : usageOf(id),
   ]);
-  if (food.kind === "recipe") {
+  if (loaded.kind === "recipe") {
     location.replace(href.recipe(id));
     return null;
   }
+  const food = restored ? { ...loaded, ...restored } : loaded;
   // Fineli's name and values are its own: shown, not edited.
   const fineli = food.source === "fineli";
   // Drink, derived; a tick changed is yours (one tick: ADR 0020).
-  const touched = new Set();
+  const touched = new Set(restored && "drink" in restored ? ["drink"] : []);
   const ticks = {
     drink: h("input", {
       type: "checkbox",
@@ -442,7 +552,8 @@ export async function foodEditor(id, params) {
   else remember();
   syncBasis();
   // As the form reads them before any edit: what a change is measured by.
-  const loadedValues = JSON.stringify(per100());
+  // A draft may differ from what's saved already: counted as changed.
+  const loadedValues = restored ? null : JSON.stringify(per100());
   // Live: the health cues, and the other view of what's typed: per 100 g
   // when typed per a serving, else the default serving's values.
   const panel = nutritionPanel();
@@ -482,7 +593,7 @@ export async function foodEditor(id, params) {
   const removing = isNew
     ? { secondary: [], remove: null }
     : removal(
-        food,
+        loaded,
         usage,
         (change) => send(body(change), food.id),
         () => shell,
@@ -503,9 +614,22 @@ export async function foodEditor(id, params) {
     ...(isNew ? {} : { rev: food.rev }),
     ...change,
   });
+  const keep = drafts.keeper(draft.key, body, () => shell.dirty());
+  const aside = asideNote(
+    draft.aside,
+    "food:new",
+    href.newFood(
+      Object.fromEntries(
+        [...params].filter(
+          ([k]) => !["name", "barcode", "notfound"].includes(k),
+        ),
+      ),
+    ),
+    "Untitled food",
+  );
   const shell = editor({
-    title: isNew ? "New food" : food.name,
-    action: isNew ? null : await favoriteStar(food),
+    title: isNew ? "New food" : loaded.name,
+    action: isNew ? null : await favoriteStar(loaded),
     back:
       safeBack(params.get("back")) ??
       (params.get("day")
@@ -516,6 +640,11 @@ export async function foodEditor(id, params) {
           ? href.foods()
           : href.log(today(), null, food.id)),
     body: [
+      draftNote(restored, loaded, "food", () => {
+        shell.markClean();
+        go(location.hash);
+      }),
+      aside,
       params.get("notfound")
         ? h(
             "p",
@@ -616,7 +745,7 @@ export async function foodEditor(id, params) {
               drink: ticks.drink.checked,
             }),
           ),
-          mergeLink(id),
+          mergeLink(id, () => shell),
         ],
     save: async () => {
       if (!fineli) checkCaps(per100(), basisOf()?.label);
@@ -633,9 +762,9 @@ export async function foodEditor(id, params) {
         return;
       if (isNew) return send(body());
       if (
-        !(await confirmChange(id, food.name, {
+        !(await confirmChange(id, loaded.name, {
           changed: JSON.stringify(per100()) !== loadedValues,
-          gone: goneServings(food.servings, servings.value()),
+          gone: goneServings(loaded.servings, servings.value()),
         }))
       )
         return;
@@ -643,10 +772,13 @@ export async function foodEditor(id, params) {
     },
     after: (saved) => returnTo(params, saved, (x) => href.food(x)),
     aside: panel.node,
+    draft: keep,
+    unsaved: Boolean(restored),
   });
   shell.form.addEventListener("input", () => {
     syncBasis();
     repaint();
+    keep.soon();
   });
   repaint();
   withTargets((t) => {
@@ -676,8 +808,8 @@ const itemOf = (f) => ({
 // Items of a recipe: food, amount (a quantity of one of its servings,
 // or grams) and, for a serving, its weight per row. `onChange` runs after every
 // add, remove or amount edit; `parts` gives what the nutrition panel needs; a
-// food's name opens its editor through `onEdit`. A new item (`start` null)
-// begins as logging would: the food's default serving.
+// food's name opens its editor through `onEdit`. A new item (`start` null,
+// or `add(item)`) begins as logging would: the food's default serving.
 function itemsEditor(initial, onChange = () => {}, onEdit = null) {
   const list = h("ul", { class: "items" });
   // Row → {item, amount}.
@@ -731,6 +863,23 @@ function itemsEditor(initial, onChange = () => {}, onEdit = null) {
       search: searchFoods,
       row: foodRow,
       onPick: (f) => addItem(itemOf(f), null),
+      // As on the diary's Add: a food made here comes back as an item.
+      none: (q) => [
+        empty(
+          [
+            "No matches. ",
+            h(
+              "a",
+              {
+                class: "button",
+                href: href.newFood({ name: q, back: location.hash, add: 1 }),
+              },
+              `New food “${q}”`,
+            ),
+          ],
+          "li",
+        ),
+      ],
     }),
   );
   // Each item as read back: its grams, and the serving and quantity they
@@ -748,31 +897,13 @@ function itemsEditor(initial, onChange = () => {}, onEdit = null) {
       food_id: item.food_id,
       ...amount.body(),
     }));
-  return { node, value, parts: rows, named: rows };
-}
-
-// An unsaved recipe, kept while you edit one of its foods: taken
-// back only when you return from there (`?draft=1`), so an abandoned one
-// never fills a later visit. Keyed by the editor's address.
-const draft = {
-  key: (path) => `draft:${path}`,
-  keep: (path, value) =>
-    sessionStorage.setItem(draft.key(path), JSON.stringify(value)),
-  read: (path) => {
-    try {
-      return JSON.parse(sessionStorage.getItem(draft.key(path)));
-    } catch {
-      return null;
-    }
-  },
-  drop: (path) => sessionStorage.removeItem(draft.key(path)),
-};
-
-// The editor's own address and whether it was returned to with a draft.
-function draftOf(params) {
-  const path = location.hash.split("?")[0];
-  const kept = params.get("draft") ? draft.read(path) : null;
-  return { path, kept };
+  return {
+    node,
+    value,
+    parts: rows,
+    named: rows,
+    add: (item) => addItem(item, null),
+  };
 }
 
 // A draft's items with their foods as they are now (one was likely just
@@ -788,22 +919,23 @@ const current = (items) =>
     ),
   );
 
-// Leave for an ingredient's food, keeping the unsaved editor as a draft that
-// its Save or Back returns to, with where the editor itself goes back to
-// (`params`). Nothing lost, the editor (`shell()`) won't ask.
-const editIngredient = (path, params, value, shell) => (item) => {
-  const kept = [...params].filter(([k]) => k !== "draft");
-  const back = `${path}?${new URLSearchParams([...kept, ["draft", "1"]])}`;
-  draft.keep(path, value());
-  shell().markClean();
-  history.replaceState(history.state, "", back);
-  location.hash = href.food({ id: item.food_id, kind: item.kind }, back);
+// Leave for an ingredient's food, its Save or Back returning here; the
+// recipe's unsaved changes wait as its draft.
+const editIngredient = (item) => {
+  location.hash = href.food(
+    { id: item.food_id, kind: item.kind },
+    location.hash,
+  );
 };
 
 export async function recipeEditor(id, params) {
+  const at = location.hash;
   const isNew = id === "new";
-  const { path, kept } = draftOf(params);
-  const [loaded, usage] = await Promise.all([
+  const draft = draftOf("recipe", id);
+  const { kept } = draft;
+  // A food made from the ingredient search (`?add=`), added once.
+  const add = params.get("add");
+  const [loaded, usage, added] = await Promise.all([
     isNew
       ? {
           name: "",
@@ -812,8 +944,17 @@ export async function recipeEditor(id, params) {
           servings: [],
           archived: false,
         }
-      : get(`/recipes/${id}`),
+      : readFor(`/recipes/${id}`, draft.key),
     isNew ? null : usageOf(id),
+    add
+      ? get(`/foods/${add}`).catch((err) => {
+          if (err.code !== "not_found")
+            notify("Couldn't add the new food: add it from the search", {
+              error: true,
+            });
+          return null;
+        })
+      : null,
   ]);
   const recipe = kept
     ? { ...loaded, ...kept, items: await current(kept.items) }
@@ -892,10 +1033,14 @@ export async function recipeEditor(id, params) {
     category: category.value || null,
     rev: recipe.rev,
   });
+  const keep = drafts.keeper(draft.key, state, () => shell.dirty());
   items = itemsEditor(
     recipe.items,
-    repaint,
-    editIngredient(path, params, state, () => shell),
+    () => {
+      repaint();
+      keep.soon();
+    },
+    editIngredient,
   );
   servings = servingsEditor(recipe.servings, weight, portion);
   repaint();
@@ -908,6 +1053,18 @@ export async function recipeEditor(id, params) {
   const makeup = () =>
     JSON.stringify([items.value(), numberOrNull(cooked), numberOrNull(makes)]);
   const loadedMakeup = kept ? null : makeup();
+  if (added) items.add(itemOf(added));
+  if (add) {
+    params.delete("add");
+    const query = params.toString();
+    // Not over a screen opened meanwhile.
+    if (location.hash === at)
+      history.replaceState(
+        history.state,
+        "",
+        `${at.split("?")[0]}${query ? `?${query}` : ""}`,
+      );
+  }
   const send = saveOnce("/recipes");
   const removing = isNew
     ? { secondary: [], remove: null }
@@ -926,7 +1083,7 @@ export async function recipeEditor(id, params) {
     notes: notes.value,
     archived: recipe.archived,
     category: category.value || null,
-    ...(isNew ? {} : { rev: loaded.rev }),
+    ...(isNew ? {} : { rev: recipe.rev }),
     ...change,
   });
   const shell = editor({
@@ -938,13 +1095,10 @@ export async function recipeEditor(id, params) {
         ? href.add(params.get("day"), params.get("group"))
         : href.foods()),
     body: [
-      kept
-        ? h(
-            "p",
-            { class: "note" },
-            "Your unsaved changes are back: save to keep them.",
-          )
-        : null,
+      draftNote(kept, loaded, "recipe", () => {
+        shell.markClean();
+        go(location.hash);
+      }),
       recipe.archived
         ? h("p", { class: "note" }, "Archived: hidden from search.")
         : null,
@@ -979,7 +1133,7 @@ export async function recipeEditor(id, params) {
       : [
           ...removing.secondary,
           copyForm("/recipes", body, () => shell, href.food),
-          mergeLink(id),
+          mergeLink(id, () => shell),
         ],
     save: async () => {
       if (isNew) return send(body());
@@ -995,10 +1149,12 @@ export async function recipeEditor(id, params) {
     },
     after: (saved) => returnTo(params, saved, (x) => href.recipe(x.id)),
     aside: panel.node,
-    unsaved: Boolean(kept),
+    draft: keep,
+    unsaved: Boolean(kept || added),
   });
-  shell.form.addEventListener("input", repaint);
-  // A draft is taken once: a later visit starts from what's saved.
-  draft.drop(path);
+  shell.form.addEventListener("input", () => {
+    repaint();
+    keep.soon();
+  });
   return shell.node;
 }

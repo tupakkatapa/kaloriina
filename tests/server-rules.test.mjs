@@ -8,6 +8,7 @@ import test from "node:test";
 
 import { MIN_KMH } from "../web/activities.mjs";
 import { DAY_START } from "../web/dates.mjs";
+import { TREND_DAYS } from "../web/energy.mjs";
 import { MAX_ALCOHOL, THRESHOLDS } from "../web/health.mjs";
 
 const rust = (path) =>
@@ -21,8 +22,15 @@ const number = (text, re) => {
 
 test("the day starts at the server's hour", () => {
   assert.equal(
-    number(rust("src/model/suggest.rs"), /pub const DAY_START: u32 = (\d+);/u),
+    number(rust("src/model/clock.rs"), /pub const DAY_START: u32 = (\d+);/u),
     DAY_START,
+  );
+});
+
+test("the weight trend spans the server's days", () => {
+  assert.equal(
+    number(rust("src/model/trends.rs"), /pub const TREND_DAYS: i64 = (\d+);/u),
+    TREND_DAYS,
   );
 });
 

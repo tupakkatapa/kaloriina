@@ -4,6 +4,7 @@
 import { logged, serverCopy, storedOrKept } from "../actions.mjs";
 import { api, createId, get, meta, offlineOr, scoped } from "../api.mjs";
 import { eatenTime } from "../dates.mjs";
+import { list as drafts } from "../drafts.mjs";
 import { capitalized, isNil, PER_100G } from "../format.mjs";
 import { go, href, leaving } from "../nav.mjs";
 import {
@@ -52,6 +53,24 @@ import { unitOf } from "../units.mjs";
 import { addWater } from "../water.mjs";
 import { amountView, repeatFrom } from "./amount-view.mjs";
 import { addText } from "../text-entry.mjs";
+
+// This device's unsaved foods and recipes, each opening its editor.
+const draftRows = () =>
+  drafts().map(({ key, body }) => {
+    const [path, prefill] = key.split("?");
+    const [kind, id] = path.split(":");
+    const recipe = kind === "recipe";
+    return resultRow({
+      href: recipe
+        ? href.recipe(id)
+        : id === "new"
+          ? href.newFood(Object.fromEntries(new URLSearchParams(prefill)))
+          : href.food({ id }),
+      name: body.name || (recipe ? "Untitled recipe" : "Untitled food"),
+      detail: recipe ? "recipe" : null,
+      extra: h("span", { class: "badge" }, "Draft"),
+    });
+  });
 
 // Back from logging: the group's Add screen, or the Foods tab.
 const backFrom = (day, group) => (group ? href.add(day, group) : href.foods());
@@ -820,8 +839,8 @@ export async function finder({ day, group, q: start = "", replace = null }) {
         )
       : null;
 
-  // Suggestions open; the rest folded. With none, the first list that has
-  // anything opens instead.
+  // Drafts first (the Foods tab), then suggestions open; the rest folded.
+  // With no suggestions, the first list that has anything opens instead.
   const browse = () => {
     const folds = [
       [
@@ -859,6 +878,7 @@ export async function finder({ day, group, q: start = "", replace = null }) {
         : folds.find(([, , rows]) => rows.length > 0)?.[0];
     return [
       waterRow,
+      group ? null : section("Drafts", draftRows()),
       suggestions.length > 0
         ? section(
             "Suggestions",

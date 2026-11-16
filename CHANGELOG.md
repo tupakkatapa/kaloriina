@@ -35,7 +35,14 @@ Breaking: meals are gone, each one becomes a recipe (database 70 → 75; from 0.
 - Wins in the Highlights: Energy or Protein on target, a logging streak, a new best from Records; one always among the three shown
 - Summary tiles say their change from the period before past the Highlights' bars: activities, time active, steps, active energy, sleep, RHR, HRV and the picked habit's mean
 - Food quality on Summary → Food: the period's energy by rating (Healthy, OK, Unhealthy, Not rated) as one bar, and Healthy's change in points
+- `kaloriina mcp`: the diary's tools for an agent (Model Context Protocol on stdio), calling a running instance's API
+- Drafts: a food or recipe left unsaved is kept on this device and comes back when its editor opens, marked Draft, with Discard; Foods lists them
+- "New food “…”" in a recipe's ingredient search: after its Save the recipe is back as typed, with the new food as an ingredient
+- Food search reads letters without their marks (`creme fraiche` finds Crème fraîche, `ayri` Äyriäiset) and, when nothing matches, forgives one wrong, missing or extra letter in a word of 4 letters or more
 - API:
+  - `GET /api/now`: the diary day and time in the server's zone
+  - `GET /api/feedback/open` (the open feedback with its texts) and `POST /api/feedback/pull` (`ids`), with the `feedback_list` and `feedback_pull` tools of `kaloriina mcp`
+  - `GET …/trends?from&to&by=week|month`: per week or month, mean energy, protein and alcohol over the counted days, the weight trend and the daily items' adherence
   - `incomplete` on a day and a summary day; a summary day's `ratings` (its eaten kcal by `healthy`, `ok`, `unhealthy`, `unrated`)
   - `GET …/foods/suggestions?day&time` and `GET …/foods/{id}/last`
   - `GET …/suggestions/hidden`, `PUT`/`DELETE …/suggestions/hidden/{food_id}` (`until` or for good); the export's `hidden_suggestions`
@@ -71,6 +78,9 @@ Breaking: meals are gone, each one becomes a recipe (database 70 → 75; from 0.
 - Error messages name fields as the screen does ("Webhook ID", "Distance"), and the Home Assistant card marks the field at fault
 - Android: a page that won't load shows why, with Retry and Settings; a failed check or sync says why the server couldn't be reached
 - Summary's subtabs share one read of the period; Records and Summary → Activity read the day bests from the server instead of every device day
+- API: a PUT missing several fields names them all in one 400 ("Brand, servings and category are required"; `field` is the first)
+- Food search ranks an exact name first, then a name starting with the search, then one with a word starting with each word searched; favourites, your own foods and recent ones still come first
+- The food and recipe editors no longer ask before leaving unsaved changes: they are kept as a draft ("Saved as a draft")
 
 ### Removed
 

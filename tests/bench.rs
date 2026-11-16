@@ -622,6 +622,8 @@ fn within(name: &str, p50: Duration, p99: Duration, budget: Duration) -> bool {
 fn read_uri(name: &str, i: usize, words: &[&str]) -> String {
     match name {
         "search" => format!("/api/profiles/1/foods?q={}", words[i % words.len()]),
+        // No hit, so every food is read again for one typo.
+        "search (typo)" => format!("/api/profiles/1/foods?q={}x", words[i % words.len()]),
         "day" => format!("/api/profiles/1/day/{}", day(i % DAYS)),
         "recent" => "/api/profiles/1/foods/recent".to_owned(),
         "suggestions" => format!(
@@ -700,6 +702,7 @@ async fn hot_reads_stay_within_budget() {
     // (or its sort picked), a screen's read; with one, a keystroke.
     let budgets = [
         ("search", 50),
+        ("search (typo)", 50),
         ("day", 150),
         ("recent", 150),
         ("suggestions", 150),

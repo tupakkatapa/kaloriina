@@ -341,19 +341,19 @@ async fn measurement_delete(
 }
 
 #[derive(Serialize)]
-struct DaySummary {
-    day: String,
-    total: Nutrients,
+pub(super) struct DaySummary {
+    pub(super) day: String,
+    pub(super) total: Nutrients,
     /// How far `total` is known ([`model::Known`], ADR 0030): a recipe's
     /// keys as far as its ingredients carry them, an imported total's only
     /// for energy, the macros and alcohol.
     known: model::Known,
     /// An eaten entry carries no energy: `total.energy` is a lower bound.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
-    energy_unknown: bool,
+    pub(super) energy_unknown: bool,
     /// Its food isn't the whole day's ([`model::DayView::incomplete`]).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
-    incomplete: bool,
+    pub(super) incomplete: bool,
     /// Its eaten energy by rating; none without energy.
     #[serde(skip_serializing_if = "Option::is_none")]
     ratings: Option<model::Ratings>,
@@ -397,8 +397,7 @@ struct SummaryQuery {
 }
 
 /// What was eaten per day over `[from, to]`, every nutrient or `?keys`
-/// only. The stored totals are read
-/// under the lock and parsed after it.
+/// only.
 async fn summary(
     State(s): State<AppState>,
     Path(pid): Path<ProfileId>,
@@ -420,6 +419,21 @@ async fn summary(
                 .collect::<Result<Vec<_>, _>>()
         })
         .transpose()?;
+    let (from, to) = (from.to_owned(), to.to_owned());
+    let days = eaten_days(&s, pid, &from, &to, keys).await?;
+    Ok(Json(Summary { from, to, days }))
+}
+
+/// Each day over `[from, to]` with food logged: what was eaten, every
+/// nutrient or `keys` only. The stored totals are read under the lock and
+/// parsed after it.
+pub(super) async fn eaten_days(
+    s: &AppState,
+    pid: ProfileId,
+    from: &str,
+    to: &str,
+    keys: Option<Vec<&'static str>>,
+) -> Result<Vec<DaySummary>, Error> {
     let wanted = |k: &str| keys.as_ref().is_none_or(|keys| keys.contains(&k));
     let only = |n: Nutrients| match &keys {
         None => n,
@@ -433,13 +447,12 @@ async fn summary(
             out
         }
     };
-    let (from, to) = (from.to_owned(), to.to_owned());
     let mut rows = Vec::new();
     let (mut unknown, mut sizeless_days) = (BTreeSet::new(), BTreeSet::new());
     let mut ratings = BTreeMap::new();
     // A month under the lock at a time: All time's years never hold it long.
-    for (f, t) in months(&from, &to)? {
-        let (eaten, energy_unknown, sizeless, rated) = on_profile(&s, pid, move |conn| {
+    for (f, t) in months(from, to)? {
+        let (eaten, energy_unknown, sizeless, rated) = on_profile(s, pid, move |conn| {
             Ok((
                 db::eaten_rows(conn, pid, &f, &t)?,
                 db::energy_unknown_days(conn, pid, &f, &t)?,
@@ -456,29 +469,25 @@ async fn summary(
     let days = tokio::task::spawn_blocking(move || db::eaten_days(&rows))
         .await
         .map_err(|e| Error::Internal(format!("summary task failed: {e}")))??;
-    Ok(Json(Summary {
-        from,
-        to,
-        days: days
-            .into_iter()
-            .map(|(day, (total, mut known))| {
-                let sizeless = sizeless_days.contains(&day);
-                if sizeless {
-                    db::unvouched(&mut known, &total);
-                }
-                // The dry matter weighs a day among others: always kept.
-                known.retain(|k, _| k == model::DRY || wanted(k));
-                DaySummary {
-                    energy_unknown: unknown.contains(&day),
-                    incomplete: sizeless,
-                    ratings: ratings.remove(&day),
-                    day,
-                    total: only(total),
-                    known,
-                }
-            })
-            .collect(),
-    }))
+    Ok(days
+        .into_iter()
+        .map(|(day, (total, mut known))| {
+            let sizeless = sizeless_days.contains(&day);
+            if sizeless {
+                db::unvouched(&mut known, &total);
+            }
+            // The dry matter weighs a day among others: always kept.
+            known.retain(|k, _| k == model::DRY || wanted(k));
+            DaySummary {
+                energy_unknown: unknown.contains(&day),
+                incomplete: sizeless,
+                ratings: ratings.remove(&day),
+                day,
+                total: only(total),
+                known,
+            }
+        })
+        .collect())
 }
 
 #[cfg(test)]

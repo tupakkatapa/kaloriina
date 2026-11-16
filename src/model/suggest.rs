@@ -11,12 +11,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use jiff::civil::Weekday;
 
+pub use super::DAY_START;
 use super::Food;
 use super::prelude::*;
 
-/// The hour a diary day starts (`DAY_START` in web/dates.mjs): a time
-/// before it is the night of the day before, 24:00 + t.
-pub const DAY_START: u32 = 3;
 /// Days of history read before the day.
 pub const HISTORY_DAYS: u32 = 90;
 /// Suggestions given at most.

@@ -1512,6 +1512,38 @@ async fn requires_every_field(app: &Router, uri: &str, fields: &[&str]) {
     assert_eq!(status, StatusCode::OK, "{uri} as read: {e}");
 }
 
+/// A PUT short of several fields names them all in one 400, the first as
+/// its `field`; short of one, the message names it alone.
+#[tokio::test]
+async fn a_put_names_every_missing_field() {
+    let app = app();
+    let oats = create_food(&app, "Oats", json!({ "energy": 380 })).await;
+    let uri = format!("/api/foods/{oats}");
+    let (status, e) = put_without(&app, &uri, "brand").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        e,
+        json!({ "error": "Brand is required", "code": "invalid", "field": "brand" })
+    );
+    let mut food = read_one(&app, &uri).await;
+    for key in ["servings", "brand", "category"] {
+        food.as_object_mut().unwrap().remove(key);
+    }
+    let (status, e) = call(&app, "PUT", &uri, Some(food)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        e,
+        json!({
+            "error": "Brand, servings and category are required",
+            "code": "invalid",
+            "field": "brand",
+        }),
+        "in the order the input reads them"
+    );
+    let (status, e) = put_without(&app, &uri, "id").await;
+    assert_eq!(status, StatusCode::OK, "none missing: {e}");
+}
+
 /// Every library entity a PUT replaces requires each field it reads.
 #[tokio::test]
 async fn every_library_put_field_is_required() {

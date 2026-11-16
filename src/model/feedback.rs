@@ -1,5 +1,5 @@
 //! Feedback for the instance's maintainer: a bug or a feature idea, open
-//! until `kaloriina feedback --pull` prints it.
+//! until it is pulled (`kaloriina feedback --pull`, or the API).
 
 use super::opt_multiline;
 use std::fmt::Write;
@@ -14,7 +14,7 @@ text_enum! {
 }
 
 text_enum! {
-    /// Open until the CLI pulls it.
+    /// Open until pulled.
     pub enum FeedbackStatus {
         Open = "open",
         Pulled = "pulled",

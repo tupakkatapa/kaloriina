@@ -128,6 +128,181 @@ fn search_puts_favourites_then_your_own_first() {
     assert_eq!(names, ["Apple z", "Apple b", "Apple m", "Apple a"]);
 }
 
+#[test]
+fn plain_lowercases_and_strips_marks() {
+    use super::foods::plain;
+    for (from, to) in [
+        ("ÀÁÂÃÄÅĀĂĄàáâãäåāăą", "aaaaaaaaaaaaaaaaaa"),
+        ("ÇĆČçćč", "cccccc"),
+        ("ĎĐďđ", "dddd"),
+        ("ÈÉÊËĒĘĚèéêëēęě", "eeeeeeeeeeeeee"),
+        ("ĞğĢģ", "gggg"),
+        ("ÌÍÎÏĪĮìíîïīįı", "iiiiiiiiiiiii"),
+        ("ĶķĹĺĻļĽľŁł", "kkllllllll"),
+        ("ÑŃŅŇñńņň", "nnnnnnnn"),
+        ("ÒÓÔÕÖØŌŐòóôõöøōő", "oooooooooooooooo"),
+        ("ŔŘŕř", "rrrr"),
+        ("ŚŞŠśşš", "ssssss"),
+        ("ŢŤţť", "tttt"),
+        ("ÙÚÛÜŪŮŰŲùúûüūůűų", "uuuuuuuuuuuuuuuu"),
+        ("ÝŸýÿ", "yyyy"),
+        ("ŹŻŽźżž", "zzzzzz"),
+        ("Æ æ Œ œ ß", "ae ae oe oe ss"),
+        ("Crème fraîche", "creme fraiche"),
+        ("e\u{301}", "e"),
+        ("Кефир 10%", "кефир 10%"),
+        ("", ""),
+    ] {
+        assert_eq!(plain(from), to, "{from}");
+    }
+}
+
+#[test]
+fn search_reads_letters_without_their_marks() {
+    let conn = memory();
+    conn.execute_batch(
+        "INSERT INTO food (name, brand, source, per100) VALUES
+           ('Crème fraîche', NULL, 'custom', '{}'),
+           ('Äyriäiset', NULL, 'custom', '{}'),
+           ('Kefir', 'Valio Ölåf', 'custom', '{}');",
+    )
+    .unwrap();
+    let names = |q| -> Vec<String> {
+        food_search(&conn, &query(q))
+            .unwrap()
+            .into_iter()
+            .map(|f| f.name)
+            .collect()
+    };
+    assert_eq!(names("creme fraiche"), ["Crème fraîche"]);
+    assert_eq!(names("CRÈME"), ["Crème fraîche"]);
+    assert_eq!(names("ayri"), ["Äyriäiset"]);
+    assert_eq!(names("Äyri"), ["Äyriäiset"]);
+    assert_eq!(names("olaf"), ["Kefir"], "brands too");
+}
+
+#[test]
+fn search_ranks_exact_then_start_then_word_starts_then_the_rest() {
+    let conn = memory();
+    conn.execute_batch(
+        "INSERT INTO food (id, name, brand, source, per100) VALUES
+           (21, 'Buttermilk', NULL, 'custom', '{}'),
+           (22, 'Oat milk', NULL, 'custom', '{}'),
+           (23, 'Milk chocolate', NULL, 'custom', '{}'),
+           (24, 'Mílk', NULL, 'custom', '{}'),
+           (25, 'Drink (milk)', NULL, 'custom', '{}'),
+           (26, 'Bar', 'Milky Way', 'custom', '{}'),
+           (27, 'Almond milk', NULL, 'custom', '{}');",
+    )
+    .unwrap();
+    let names = |q| -> Vec<String> {
+        food_search(&conn, &query(q))
+            .unwrap()
+            .into_iter()
+            .map(|f| f.name)
+            .collect()
+    };
+    assert_eq!(
+        names("milk"),
+        [
+            "Mílk",
+            "Milk chocolate",
+            "Almond milk",
+            "Bar",
+            "Drink (milk)",
+            "Oat milk",
+            "Buttermilk"
+        ]
+    );
+    assert_eq!(
+        names("milk oat"),
+        ["Oat milk"],
+        "every word starts a word, any order"
+    );
+    conn.execute(
+        "INSERT INTO favorite (profile_id, food_id) VALUES (1, 21)",
+        [],
+    )
+    .unwrap();
+    assert_eq!(names("milk")[0], "Buttermilk", "favourites stay first");
+}
+
+#[test]
+fn a_typo_finds_a_food_only_when_nothing_else_does() {
+    let conn = memory();
+    conn.execute_batch(
+        "INSERT INTO food (name, brand, barcode, source, per100) VALUES
+           ('Milk', NULL, NULL, 'custom', '{}'),
+           ('Mild cheese', NULL, NULL, 'custom', '{}'),
+           ('Juusto', NULL, NULL, 'custom', '{}'),
+           ('Skimmed yoghurt', NULL, NULL, 'custom', '{}'),
+           ('Buttermilk 1.5%', NULL, NULL, 'custom', '{}'),
+           ('Quince t1293d00', NULL, NULL, 'custom', '{}'),
+           ('Bar', 'Fazer', '6410000000001', 'custom', '{}');",
+    )
+    .unwrap();
+    let names = |q| -> Vec<String> {
+        food_search(&conn, &query(q))
+            .unwrap()
+            .into_iter()
+            .map(|f| f.name)
+            .collect()
+    };
+    assert_eq!(names("mielk"), ["Milk"], "a letter extra");
+    assert_eq!(names("juusto"), ["Juusto"]);
+    assert_eq!(names("justo"), ["Juusto"], "a letter missing");
+    assert_eq!(names("kuusto"), ["Juusto"], "a letter wrong");
+    assert_eq!(names("skimmd"), ["Skimmed yoghurt"], "the start of a word");
+    assert_eq!(names("mlik"), Vec::<String>::new(), "two letters swapped");
+    assert_eq!(names("fazr"), ["Bar"], "brands too");
+    assert_eq!(names("mlk"), Vec::<String>::new(), "short words never");
+    assert_eq!(
+        names("milk"),
+        ["Milk", "Buttermilk 1.5%"],
+        "a hit, so no typos"
+    );
+    assert_eq!(names("milk 2.5%"), Vec::<String>::new(), "numbers exact");
+    assert_eq!(
+        names("quince t1293m00"),
+        Vec::<String>::new(),
+        "letters only"
+    );
+    assert_eq!(
+        names("buttermlk 1.5%"),
+        ["Buttermilk 1.5%"],
+        "a typo beside a number"
+    );
+    assert_eq!(
+        names("skim yoghrt"),
+        ["Skimmed yoghurt"],
+        "the other words as before"
+    );
+    assert_eq!(
+        names("mmed yoghrt"),
+        ["Skimmed yoghurt"],
+        "inside a word too"
+    );
+    assert_eq!(names("6410000000001"), ["Bar"]);
+    assert_eq!(
+        names("6410000000002"),
+        Vec::<String>::new(),
+        "barcodes exact"
+    );
+}
+
+#[test]
+fn near_is_one_edit_from_a_word_or_its_start() {
+    use super::foods::near;
+    assert!(near("skimmed milk", "mielk"));
+    assert!(near("skimmed milk", "skimmd"));
+    assert!(!near("maito, rasvaton", "rasvtn"));
+    assert!(near("maito, rasvaton", "rasvat"));
+    assert!(!near("buttermilk", "milk"), "inside a word");
+    assert!(!near("milk", "mlik"), "a swap is two edits");
+    assert!(!near("", "milk"));
+    assert!(near("kefir кефир", "кефри"), "past ASCII too");
+}
+
 fn nut(pairs: &[(&str, f64)]) -> Nutrients {
     Nutrients::of(pairs)
 }
